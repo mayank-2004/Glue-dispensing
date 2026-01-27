@@ -1,0 +1,16 @@
+.console {
+  background: #212529;
+  color: #ffffff;
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  padding: 8px;
+  border-radius: 4px;
+  max-height: 120px;
+  overflow-y: auto;
+  border: 1px solid #495057;
+}
+
+.console div {
+  margin: 2px 0;
+  word-break: break-all;
+}

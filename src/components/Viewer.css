@@ -1,0 +1,119 @@
+.viewer {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  border: 1px solid #dee2e6;
+  margin: 16px;
+  border-radius: 8px;
+  overflow: hidden;
+  height: 60vh;
+}
+
+.viewer .canvas {
+  flex: 1;
+  background: #f8f9fa;
+  position: relative;
+  overflow: hidden;
+  min-height: 400px;
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.viewer .canvas svg {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.viewer .canvas.zoom-mode {
+  cursor: zoom-in;
+}
+
+.viewer .canvas.zoom-mode:hover {
+  background: rgba(59, 130, 246, 0.05);
+  border-radius: 4px;
+}
+
+.viewer .viewer-toolbar {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 10;
+  display: flex;
+  gap: 8px;
+}
+
+.zoom-btn {
+  background: rgba(255, 255, 255, 0.95);
+  color: #374151;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 13px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  transition: all 0.2s ease;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.zoom-btn:hover {
+  background: rgba(255, 255, 255, 0.98);
+  border-color: #9ca3af;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transform: translateY(-1px);
+}
+
+.zoom-btn.on {
+  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+  color: #fff;
+  border-color: #1d4ed8;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+}
+
+.zoom-btn.on:hover {
+  background: linear-gradient(135deg, #2563eb, #1e40af);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+}
+
+.zoom-btn:not(.on) {
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+  color: #fff;
+  border-color: #dc2626;
+}
+
+.zoom-btn:not(.on):hover {
+  background: linear-gradient(135deg, #dc2626, #b91c1c);
+}
+
+.viewer.zoom-enabled {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+}
+
+.viewer.zoomed {
+  border-color: #ef4444;
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.1);
+}
+
+.viewer .canvas:empty::before {
+  content: "Drop Gerber files here or click 'Open Gerbers / ZIP' to start";
+  color: #6b7280;
+  font-style: italic;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  border: 2px dashed #d1d5db;
+  border-radius: 8px;
+  background: #f9fafb;
+}

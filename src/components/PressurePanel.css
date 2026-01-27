@@ -1,0 +1,27 @@
+.advanced-controls {
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+  padding: 12px;
+  background: #f8f9fa;
+}
+
+.grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.preset-info {
+  background: #fff;
+  padding: 8px;
+  border-radius: 4px;
+  border: 1px solid #e9ecef;
+}
+
+.info {
+  background: #e7f3ff;
+  border: 1px solid #b3d9ff;
+  border-radius: 4px;
+  padding: 8px;
+  font-size: 0.9em;
+}

@@ -1,0 +1,29 @@
+.layer-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+  max-height: 40vh;
+  overflow: auto;
+}
+
+.layer-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.layer-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 210px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layer-list .tags {
+  font-size: 12px;
+  opacity: .8;
+}

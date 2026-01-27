@@ -1,0 +1,35 @@
+.speed-controls {
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+  padding: 12px;
+  background: #f8f9fa;
+}
+
+.profile-stats {
+  background: #e7f3ff;
+  border: 1px solid #b3d9ff;
+  border-radius: 4px;
+  padding: 8px;
+  font-size: 0.9em;
+}
+
+.profiles-detail {
+  border-top: 1px solid #dee2e6;
+  padding-top: 12px;
+}
+
+.profile-item {
+  transition: background-color 0.2s ease;
+}
+
+.profile-item:hover {
+  background-color: #e9ecef !important;
+}
+
+.info {
+  background: #e7f3ff;
+  border: 1px solid #b3d9ff;
+  border-radius: 4px;
+  padding: 8px;
+  font-size: 0.9em;
+}
