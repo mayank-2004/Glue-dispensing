@@ -40,7 +40,6 @@ export function home({ x = true, y = true, z = true, r = false } = {}, axisMap =
   if (x) parts.push(axisMap.X);
   if (y) parts.push(axisMap.Y);
   if (z) parts.push(axisMap.Z);
-  // only home R if your firmware supports it:
   if (r) parts.push(axisMap.R);
   return [`G28 ${parts.join(" ")}`.trim()];
 }

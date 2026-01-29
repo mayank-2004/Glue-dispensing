@@ -9,7 +9,8 @@ export default function Viewer({
   zoomEnabled,
   isZoomed,
   onToggleZoom,
-  onZoomOut
+  onZoomOut,
+  onMouseDown
 }) {
   const canvasRef = useRef(null);
 
@@ -44,7 +45,7 @@ export default function Viewer({
 
   return (
     <div className={`viewer ${zoomEnabled ? "zoom-enabled" : ""} ${isZoomed ? "zoomed" : ""}`}>
-      <div className="viewer-toolbar">
+      {/* <div className="viewer-toolbar">
         {!isZoomed ? (
           <button
             className={`zoom-btn ${zoomEnabled ? "on" : ""}`}
@@ -62,12 +63,13 @@ export default function Viewer({
             ⬅ Zoom Out
           </button>
         )}
-      </div>
+      </div> */}
 
       <div
         ref={canvasRef}
         className={`canvas ${zoomEnabled && !isZoomed ? "zoom-mode" : ""}`}
         onClick={handleCanvasClick}
+        onMouseDown={onMouseDown}
         style={{
           cursor: zoomEnabled && !isZoomed ? "zoom-in" : "default"
         }}

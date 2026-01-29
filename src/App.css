@@ -1,3 +1,22 @@
+:root{
+  --gradient-bg: radial-gradient(circle at top, #0f172a, #020617);
+  --bg-tertiary: rgba(15, 23, 42, 0.8);
+  --border-primary: rgba(148, 163, 184, 0.2);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.3);
+  --bg-button: rgba(30, 41, 59, 0.6);
+  --border-secondary: rgba(148, 163, 184, 0.15);
+  --text-secondary: #cbd5e1;
+  --bg-button-hover: rgba(51, 65, 85, 0.8);
+  --border-primary: rgba(148, 163, 184, 0.2);
+  --text-primary: #e2e8f0;
+  --gradient-button-active: linear-gradient(135deg, rgba(59, 130, 246, 0.3), rgba(37, 99, 235, 0.2));
+  --border-accent: rgba(59, 130, 246, 0.5);
+  --accent-text: #93c5fd;
+  --shadow-sm: 0 2px 8px rgba(59, 130, 246, 0.3);
+  --border-accent-hover: rgba(59, 130, 246, 0.6);
+  --accent-text-hover: #bfdbfe;
+}
+
 /* Global Styles */
 * {
   box-sizing: border-box;
@@ -549,4 +568,56 @@ pre {
   font-size: 18px;
   font-weight: 600;
   color: #343a40;
+}
+
+.navbar {
+  width: 100%;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  border-radius: 12px;
+  padding: 8px;
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow-md);
+  transition: background 0.3s ease, border-color 0.3s ease;
+}
+
+.navbarContainer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.navItem {
+  padding: 10px 18px;
+  background: var(--bg-button);
+  border: 1px solid var(--border-secondary);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 200ms ease;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.navItem:hover {
+  background: var(--bg-button-hover);
+  border-color: var(--border-primary);
+  color: var(--text-primary);
+  transform: translateY(-1px);
+}
+
+.navItemActive {
+  background: var(--gradient-button-active);
+  border-color: var(--border-accent);
+  color: var(--accent-text);
+  box-shadow: var(--shadow-sm);
+}
+
+.navItemActive:hover {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.4), rgba(37, 99, 235, 0.3));
+  border-color: var(--border-accent-hover);
+  color: var(--accent-text-hover);
 }

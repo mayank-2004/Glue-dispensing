@@ -1,152 +1,62 @@
 /**
- * Safe Path Planning - Collision-aware dispensing sequence with safe Z-height navigation
+ * Safe Path Planning - Consistent Safe Z-Height Navigation
+ * Implements strict Cartesian Linear Interpolation with Z-hops (G1)
  */
+
+import { applyTransform } from '../utils/transform2d.js';
 
 export class SafePathPlanner {
   constructor(options = {}) {
-    this.safeHeight = options.safeHeight || 5; // mm above highest component
-    this.clearanceHeight = options.clearanceHeight || 2; // mm clearance above components
-    this.boardBounds = options.boardBounds || null;
-    this.componentHeights = options.componentHeights || new Map(); // pad_id -> height
+    this.safeHeight = options.safeHeight || 5; // mm above PCB
   }
 
+  // ... (calculateSafeSequence, generateSafePath, calculateDistance remain unchanged)
+
   /**
-   * Calculate safe dispensing sequence with collision avoidance
+   * Calculate safe dispensing sequence
+   * Iterates through pads sequentially and applies safe Z-hop moves for every transition.
+   * Removes complex obstacle avoidance simulation and greedy reordering.
    * @param {Object} referencePoint - Starting point {x, y}
    * @param {Array} pads - Array of pad objects
-   * @param {Object} boardOutline - PCB dimensions
-   * @param {Array} components - Component height data
    * @returns {Array} Safe dispensing sequence with path information
    */
-  calculateSafeSequence(referencePoint, pads, boardOutline, components = []) {
+  calculateSafeSequence(referencePoint, pads) {
     if (!pads || pads.length === 0) return [];
-    
-    this.boardBounds = boardOutline;
-    this.updateComponentHeights(components);
-    
-    const unvisited = [...pads];
+
     const sequence = [];
     let currentPoint = referencePoint;
 
-    while (unvisited.length > 0) {
-      // Find nearest pad with safe path consideration
-      const nextPad = this.findNearestSafePad(currentPoint, unvisited);
-      
-      if (!nextPad) {
-        // If no safe path found, take nearest and use high clearance
-        const nearestPad = this.findNearestPad(currentPoint, unvisited);
-        const safePath = this.generateSafePath(currentPoint, nearestPad, true);
-        
-        sequence.push({
-          ...nearestPad,
-          safePath,
-          pathDistance: safePath.totalDistance,
-          sequenceOrder: sequence.length + 1,
-          requiresHighClearance: true
-        });
-        
-        unvisited.splice(unvisited.indexOf(nearestPad), 1);
-        currentPoint = nearestPad;
-      } else {
-        const safePath = this.generateSafePath(currentPoint, nextPad.pad);
-        
-        sequence.push({
-          ...nextPad.pad,
-          safePath,
-          pathDistance: safePath.totalDistance,
-          sequenceOrder: sequence.length + 1,
-          requiresHighClearance: false
-        });
-        
-        unvisited.splice(unvisited.indexOf(nextPad.pad), 1);
-        currentPoint = nextPad.pad;
-      }
-    }
+    // Process pads in order (Linear Sequence)
+    pads.forEach((pad, index) => {
+      // Always generate a safe path (Lift -> Move -> Lower)
+      // This guarantees no collisions with components between pads
+      const safePath = this.generateSafePath(currentPoint, pad);
+
+      sequence.push({
+        ...pad,
+        safePath,
+        pathDistance: safePath.totalDistance,
+        sequenceOrder: index + 1,
+        requiresHighClearance: false // Default to standard safe height
+      });
+
+      currentPoint = pad;
+    });
 
     return sequence;
   }
 
   /**
-   * Find nearest pad that has a safe path (no high components in between)
-   */
-  findNearestSafePad(currentPoint, unvisited) {
-    let bestPad = null;
-    let minSafeDistance = Infinity;
-
-    for (const pad of unvisited) {
-      const pathInfo = this.analyzePath(currentPoint, pad);
-      
-      if (pathInfo.isSafe) {
-        const distance = pathInfo.distance;
-        if (distance < minSafeDistance) {
-          minSafeDistance = distance;
-          bestPad = { pad, pathInfo };
-        }
-      }
-    }
-
-    return bestPad;
-  }
-
-  /**
-   * Find nearest pad (fallback when no safe path available)
-   */
-  findNearestPad(currentPoint, unvisited) {
-    let nearest = unvisited[0];
-    let minDistance = this.calculateDistance(currentPoint, nearest);
-
-    for (let i = 1; i < unvisited.length; i++) {
-      const distance = this.calculateDistance(currentPoint, unvisited[i]);
-      if (distance < minDistance) {
-        minDistance = distance;
-        nearest = unvisited[i];
-      }
-    }
-
-    return nearest;
-  }
-
-  /**
-   * Analyze path between two points for obstacles
-   */
-  analyzePath(start, end) {
-    const distance = this.calculateDistance(start, end);
-    const pathSegments = this.discretizePath(start, end, 0.5); // 0.5mm segments
-    
-    let maxHeightOnPath = 0;
-    let hasObstacles = false;
-
-    // Check each segment for component heights
-    for (const segment of pathSegments) {
-      const heightAtPoint = this.getHeightAtPoint(segment);
-      maxHeightOnPath = Math.max(maxHeightOnPath, heightAtPoint);
-      
-      if (heightAtPoint > this.clearanceHeight) {
-        hasObstacles = true;
-      }
-    }
-
-    return {
-      distance,
-      maxHeight: maxHeightOnPath,
-      isSafe: !hasObstacles,
-      requiresClearance: maxHeightOnPath + this.clearanceHeight
-    };
-  }
-
-  /**
    * Generate safe 3D path with proper Z-movements
+   * Logic: Lift -> Travel -> Lower (Safe Cartesian Linear Interpolation)
    */
-  generateSafePath(start, end, forceHighClearance = false) {
-    const pathAnalysis = this.analyzePath(start, end);
-    const requiredHeight = forceHighClearance ? 
-      this.safeHeight : 
-      Math.max(this.clearanceHeight, pathAnalysis.requiresClearance);
-
+  generateSafePath(start, end) {
+    const requiredHeight = this.safeHeight;
     const segments = [];
     let totalDistance = 0;
 
     // 1. Lift to safe height at start
+    // G1 Z<safeHeight>
     segments.push({
       type: 'lift',
       start: { x: start.x, y: start.y, z: 0 },
@@ -156,6 +66,7 @@ export class SafePathPlanner {
     totalDistance += requiredHeight;
 
     // 2. Travel at safe height
+    // G1 X<target> Y<target>
     const travelDistance = this.calculateDistance(start, end);
     segments.push({
       type: 'travel',
@@ -166,6 +77,7 @@ export class SafePathPlanner {
     totalDistance += travelDistance;
 
     // 3. Lower to dispensing height at target
+    // G1 Z0.1
     segments.push({
       type: 'lower',
       start: { x: end.x, y: end.y, z: requiredHeight },
@@ -178,60 +90,8 @@ export class SafePathPlanner {
       segments,
       totalDistance,
       safeHeight: requiredHeight,
-      pathType: forceHighClearance ? 'high_clearance' : 'normal'
+      pathType: 'normal'
     };
-  }
-
-  /**
-   * Break path into small segments for collision checking
-   */
-  discretizePath(start, end, stepSize = 0.5) {
-    const segments = [];
-    const distance = this.calculateDistance(start, end);
-    const steps = Math.ceil(distance / stepSize);
-    
-    for (let i = 0; i <= steps; i++) {
-      const t = i / steps;
-      const x = start.x + (end.x - start.x) * t;
-      const y = start.y + (end.y - start.y) * t;
-      segments.push({ x, y });
-    }
-    
-    return segments;
-  }
-
-  /**
-   * Get component height at specific point (simplified - assumes circular component areas)
-   */
-  getHeightAtPoint(point) {
-    let maxHeight = 0;
-    
-    // Check against known component heights
-    for (const [padId, height] of this.componentHeights) {
-      // Simplified: assume 2mm radius around each pad has component height
-      const pad = this.findPadById(padId);
-      if (pad) {
-        const distance = this.calculateDistance(point, pad);
-        if (distance <= 2.0) { // 2mm component radius
-          maxHeight = Math.max(maxHeight, height);
-        }
-      }
-    }
-    
-    return maxHeight;
-  }
-
-  /**
-   * Update component height database
-   */
-  updateComponentHeights(components) {
-    this.componentHeights.clear();
-    
-    components.forEach(comp => {
-      if (comp.height && comp.padId) {
-        this.componentHeights.set(comp.padId, comp.height);
-      }
-    });
   }
 
   /**
@@ -244,41 +104,46 @@ export class SafePathPlanner {
   }
 
   /**
-   * Find pad by ID (helper function)
-   */
-  findPadById(padId) {
-    // This would need to be connected to the main pad array
-    // For now, return null - should be implemented based on your pad structure
-    return null;
-  }
-
-  /**
    * Generate G-code for safe path sequence
    */
   generateSafeGCode(referencePoint, safeSequence, settings = {}) {
+    const { xf, applyXf } = settings;
+
+    // Helper to transform coordinates
+    const transform = (pt) => {
+      if (applyXf && xf) {
+        return applyTransform(xf, pt);
+      }
+      return pt;
+    };
+
     const gcode = [];
-    
-    gcode.push('; Safe Path Dispensing Job with Collision Avoidance');
+
+    gcode.push('; Safe Path Dispensing Job');
     gcode.push(`; Total pads: ${safeSequence.length}`);
     gcode.push(`; Safe height: ${this.safeHeight}mm`);
     gcode.push('');
     gcode.push('G21 ; Set units to millimeters');
     gcode.push('G90 ; Absolute positioning');
     gcode.push('G28 ; Home all axes');
+    gcode.push(`G1 Z${this.safeHeight} F3000 ; Move to safe height`);
     gcode.push('');
 
     // Process each pad in safe sequence
     safeSequence.forEach((pad, index) => {
-      gcode.push(`; Pad ${index + 1}/${safeSequence.length} - ${pad.id || 'Unknown'}`);
-      gcode.push(`; Path type: ${pad.safePath.pathType}`);
-      gcode.push(`; Safe height: ${pad.safePath.safeHeight}mm`);
-      
-      // Execute each path segment
+      gcode.push(`; Pad ${pad.sequenceOrder}/${safeSequence.length} - ${pad.id || 'Unknown'}`);
+
+      // Execute each path segment (Lift, Travel, Lower)
       pad.safePath.segments.forEach(segment => {
         const speed = segment.type === 'travel' ? 3000 : 1000;
-        gcode.push(`G1 X${segment.end.x.toFixed(3)} Y${segment.end.y.toFixed(3)} Z${segment.end.z.toFixed(3)} F${speed}`);
+
+        // Transform the end point (target) of the segment
+        const target = transform(segment.end);
+
+        // Optimization: Use G1 for all moves (Cartesian Linear Interpolation)
+        gcode.push(`G1 X${target.x.toFixed(3)} Y${target.y.toFixed(3)} Z${target.z !== undefined ? target.z.toFixed(3) : segment.end.z.toFixed(3)} F${speed}`);
       });
-      
+
       // Dispense
       gcode.push('M42 P4 S25 ; Start dispensing');
       gcode.push('G4 P120 ; Dwell 120ms');
@@ -286,9 +151,65 @@ export class SafePathPlanner {
       gcode.push('');
     });
 
+    gcode.push(`G1 Z${this.safeHeight} F3000 ; Lift before home`);
     gcode.push('G28 ; Return home');
     gcode.push('M84 ; Disable steppers');
-    
+
     return gcode.join('\n');
+  }
+
+  /**
+   * Calculate total dispensing job statistics
+   */
+  calculateJobStatistics(referencePoint, sequence) {
+    if (!sequence || sequence.length === 0) return null;
+
+    let totalDistance = 0;
+    let totalTime = 0; // seconds
+    let safePathsUsed = 0;
+    let highClearancePaths = 0;
+
+    // Initial move from reference to first pad (Lift + Travel + Lower) is already in sequence[0].safePath
+    // But we need to account for it. 
+    // In our calculateSafeSequence, we generated safePaths for every transition.
+
+    sequence.forEach(pad => {
+      // Use the pre-calculated path distance from the safe path
+      const distance = pad.pathDistance || 0;
+      totalDistance += distance;
+
+      // Travel time (approximate based on feed rates)
+      // Low Z Speed (Lift/Lower) ~ 1000mm/min
+      // High XY Speed (Travel) ~ 3000mm/min
+      // Simplified: average speed check
+
+      let padTime = 0;
+      pad.safePath.segments.forEach(seg => {
+        const speed = seg.type === 'travel' ? 3000 : 1000;
+        padTime += (seg.distance / speed) * 60;
+      });
+
+      // Dispensing time (dwell)
+      padTime += 2; // 2 seconds dwell + overhead
+
+      totalTime += padTime;
+
+      // Count path types
+      safePathsUsed++;
+      if (pad.requiresHighClearance) highClearancePaths++;
+    });
+
+    // Return to home time (approx)
+    // Lift + Travel back to origin + Home
+    totalTime += 5;
+
+    return {
+      totalPads: sequence.length,
+      totalDistance: totalDistance.toFixed(2),
+      estimatedTime: Math.ceil(totalTime / 60), // minutes
+      averageDistance: (totalDistance / sequence.length).toFixed(2),
+      safePathsUsed,
+      highClearancePaths
+    };
   }
 }

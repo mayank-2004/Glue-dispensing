@@ -121,14 +121,14 @@ export default function LinearMovePanel({
     g.push("; --- linearMovePanel (valve actuator) ---");
     g.push("G21");
     g.push("G90");
-    
+
     // Add pressure control setup
     if (pressureController && pressureSettings) {
       const padSize = { width: 1, height: 1 }; // Default pad size
-      const pressure = pressureSettings.viscosity === 'custom' 
+      const pressure = pressureSettings.viscosity === 'custom'
         ? pressureSettings.customPressure
         : pressureController.calculatePressure(padSize, pressureSettings.viscosity);
-      
+
       const pressureGcode = pressureController.generatePressureGcode(pressure, pressureSettings.viscosity);
       g.push(...pressureGcode);
     }
@@ -145,9 +145,9 @@ export default function LinearMovePanel({
       }
     }
 
-    g.push(`G0 Z${fmt(Math.max(zsafe, a.z ?? zsafe))}`);
-    g.push(`G0 X${fmt(a.x)} Y${fmt(a.y)}`);
-    if (isFinite(rotDeg) && rotDeg !== 0) g.push(`G0 ${axisLetter}${fmt(rotDeg, 2)}`);
+    g.push(`G1 Z${fmt(Math.max(zsafe, a.z ?? zsafe))} F${fmt(Math.max(Vx, Vy) * 60, 0)}`);
+    g.push(`G1 X${fmt(a.x)} Y${fmt(a.y)} F${fmt(Math.max(Vx, Vy) * 60, 0)}`);
+    if (isFinite(rotDeg) && rotDeg !== 0) g.push(`G1 ${axisLetter}${fmt(rotDeg, 2)} F${fmt(Math.max(Vx, Vy) * 60, 0)}`);
     g.push(`G1 Z${fmt(zwork)} F${fmt(Vz * 60, 0)}`);
     g.push("; pick");
     g.push(`G1 Z${fmt(zsafe)} F${fmt(Vz * 60, 0)}`);
@@ -156,32 +156,32 @@ export default function LinearMovePanel({
       const z = p.z !== undefined ? p.z : (collisionWarnings.length > 0 ? zsafe : zwork);
       g.push(`G1 X${fmt(p.x)} Y${fmt(p.y)} Z${fmt(z)} F${fmt(p.feed || Math.min(Vx, Vy) * 60, 0)}`);
     }
-    if (isFinite(rotDeg) && rotDeg !== 0) g.push(`G0 ${axisLetter}${fmt(rotDeg, 2)}`);
+    if (isFinite(rotDeg) && rotDeg !== 0) g.push(`G1 ${axisLetter}${fmt(rotDeg, 2)} F${fmt(Math.max(Vx, Vy) * 60, 0)}`);
 
     g.push(`G1 Z${fmt(zwork)} F${fmt(Vz * 60, 0)}`);
     g.push(valveOn);
-    
+
     // Use pressure-adjusted dwell time and speed profiles
     let adjustedDwellMs = dwellMs;
     let feedXY = Math.min(Vx, Vy) * 60;
-    
+
     if (pressureController && pressureSettings) {
       const padSize = { width: 1, height: 1 };
       adjustedDwellMs = pressureSettings.viscosity === 'custom'
         ? pressureSettings.customDwellTime
         : pressureController.calculateDwellTime(padSize, pressureSettings.viscosity);
     }
-    
+
     // Apply speed profile if enabled
     if (speedProfileManager && speedSettings?.autoAdjust) {
       const padSize = { width: 1, height: 1 };
       const speedProfile = speedProfileManager.calculateOptimalSpeeds(padSize, pressureSettings?.viscosity);
       feedXY = speedProfile.speeds.dispense * (speedSettings.globalMultiplier || 1.0);
-      
+
       const speedGcode = speedProfileManager.generateSpeedGcode(speedProfile.speeds, "Speed profile for current pad");
       g.push(...speedGcode);
     }
-    
+
     g.push(`G4 P${Math.max(0, Math.round(adjustedDwellMs))}`);
     g.push(valveOff);
     g.push(`G1 Z${fmt(zsafe)} F${fmt(Vz * 60, 0)}`);
@@ -208,20 +208,20 @@ export default function LinearMovePanel({
     g.push("; Coordinate transformation applied: " + (applyXf && xf ? "YES" : "NO"));
     g.push("G21");
     g.push("G90");
-    g.push(`G0 Z${fmt(zsafe)}`);
-    g.push(`G0 X${fmt(ptA.x)} Y${fmt(ptA.y)}`);
+    g.push(`G1 Z${fmt(zsafe)} F${fmt(Vz * 60, 0)}`);
+    g.push(`G1 X${fmt(ptA.x)} Y${fmt(ptA.y)} F${fmt(feedXY, 0)}`);
 
     for (const dPad of pads) {
       const mPad = toMachine(dPad);
       if (!mPad) continue;
-      
+
       // Calculate pressure, dwell time, and speeds for this specific pad
       let padPressure = 25; // default
       let padDwellTime = dwellMs;
       let padFeedXY = feedXY;
-      
+
       const padSize = { width: dPad.width || 1, height: dPad.height || 1 };
-      
+
       if (pressureController && pressureSettings) {
         if (pressureSettings.viscosity === 'custom') {
           padPressure = pressureSettings.customPressure;
@@ -230,23 +230,23 @@ export default function LinearMovePanel({
           padPressure = pressureController.calculatePressure(padSize, pressureSettings.viscosity);
           padDwellTime = pressureController.calculateDwellTime(padSize, pressureSettings.viscosity);
         }
-        
+
         // Add pressure adjustment for this pad
         const pressureGcode = pressureController.generatePressureGcode(padPressure, pressureSettings.viscosity);
         g.push(...pressureGcode);
       }
-      
+
       // Apply speed profile for this pad
       if (speedProfileManager && speedSettings?.autoAdjust) {
         const speedProfile = speedProfileManager.calculateOptimalSpeeds(padSize, pressureSettings?.viscosity);
         padFeedXY = speedProfile.speeds.dispense * (speedSettings.globalMultiplier || 1.0);
-        
+
         const speedGcode = speedProfileManager.generateSpeedGcode(speedProfile.speeds, `Speed profile for pad ${dPad.id || 'unknown'}`);
         g.push(...speedGcode);
       }
-      
+
       g.push(`G1 X${fmt(mPad.x)} Y${fmt(mPad.y)} F${fmt(padFeedXY, 0)}`);
-      if (isFinite(rotDeg) && rotDeg !== 0) g.push(`G0 ${axisLetter}${fmt(rotDeg, 2)}`);
+      if (isFinite(rotDeg) && rotDeg !== 0) g.push(`G1 ${axisLetter}${fmt(rotDeg, 2)}`);
       g.push(`G1 Z${fmt(zwork)} F${fmt(Vz * 60, 0)}`);
       g.push(valveOn);
       g.push(`G4 P${Math.max(0, Math.round(padDwellTime))}`);
@@ -312,7 +312,7 @@ export default function LinearMovePanel({
   return (
     <div className="panel linear-panel">
       <h3>Pick → Place Planner (XY + Zsafe/Zwork)</h3>
-      
+
       <div className="params-row">
         <fieldset className="box">
           <legend>Point A (mm)</legend>
@@ -472,9 +472,9 @@ export default function LinearMovePanel({
                 stroke="#ffd400"
                 strokeWidth="2"
                 points={previewPts.map(p => {
-                  const q = project(p); 
+                  const q = project(p);
                   return `${q.x},${q.y}`;
-                }).join(" ")} 
+                }).join(" ")}
               />
             )}
             <circle cx={project(B).x} cy={project(B).y} r="3.5" fill="#ef4444" />
@@ -483,15 +483,15 @@ export default function LinearMovePanel({
 
         <div className="box gcode-box">
           <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 14 }}>Generated G-code</div>
-          <pre style={{ 
-            background: '#ffffff', 
-            border: '1px solid #dee2e6', 
-            borderRadius: 4, 
-            padding: 8, 
-            fontFamily: "'Courier New', monospace", 
+          <pre style={{
+            background: '#ffffff',
+            border: '1px solid #dee2e6',
+            borderRadius: 4,
+            padding: 8,
+            fontFamily: "'Courier New', monospace",
             fontSize: 11,
-            maxHeight: 200, 
-            overflowY: 'auto', 
+            maxHeight: 200,
+            overflowY: 'auto',
             margin: 0,
             lineHeight: 1.4
           }}>

@@ -13,6 +13,7 @@ import FiducialPanel from "./components/FiducialPanel.jsx";
 import PressurePanel from "./components/PressurePanel.jsx";
 import SpeedPanel from "./components/SpeedPanel.jsx";
 import AutomatedDispensingPanel from "./components/AutomatedDispensingPanel.jsx";
+// import MotionPanel from "./components/MotionPanel.jsx";
 import LivePreview from "./components/LivePreview.jsx";
 // import { loadOpenCV } from './lib/vision/opencvLoader.js';
 import { identifyLayers } from "./lib/gerber/identifyLayers.js";
@@ -113,10 +114,11 @@ export default function App() {
   const [fiducialDetectionResult, setFiducialDetectionResult] = useState(null);
   const [originCandidates, setOriginCandidates] = useState([]);
   const [selectedOrigin, setSelectedOrigin] = useState(null);
-  const [referencePoint, setReferencePoint] = useState(null); 
-  const [referenceType, setReferenceType] = useState('origin'); 
+  const [referencePoint, setReferencePoint] = useState(null);
+  const [referenceType, setReferenceType] = useState('origin');
   const [xf, setXf] = useState(null);
   const [applyXf, setApplyXf] = useState(false);
+  const [activeComponent, setActiveComponent] = useState('Viewer')
 
   // New feature states
   const [collisionDetector] = useState(() => new CollisionDetector());
@@ -426,8 +428,15 @@ export default function App() {
     const outlineLayer = ls.find(l => l.filename.toLowerCase().includes('outline') || l.filename.toLowerCase().includes('edge'));
     if (outlineLayer) {
       const outline = extractBoardOutline(outlineLayer.text);
-      setBoardOutline(outline);
-      console.log('Board outline detected:', outline);
+      if (outline) {
+        setBoardOutline(outline);
+        console.log('Board outline detected:', outline);
+        console.log(`PCB Board Size: ${outline.width.toFixed(2)}mm x ${outline.height.toFixed(2)}mm`);
+      } else {
+        console.warn('Failed to parse board dimensions from outline layer.');
+      }
+    } else {
+      console.log('No specific board outline layer found (checking for "outline" or "edge" in filenames).');
     }
 
     // Detect origin candidates
@@ -602,9 +611,16 @@ export default function App() {
 
     // Helper to convert mm to current viewBox units with consistent coordinate system
     const mmToCurrentUnits = (ptMm) => {
+      // X: Absolute coordinate conversion
+      const xUnits = ptMm.x / geom.mmPerUnit;
+
+      // Y: FLIP relative to Board Bounds
+      // localY = (MinY + MaxY) - GerberY_units
+      const yUnits = (2 * geom.minY + geom.vbH) - (ptMm.y / geom.mmPerUnit);
+
       const result = {
-        x: ptMm.x / geom.mmPerUnit + geom.minX,
-        y: ptMm.y / geom.mmPerUnit + geom.minY,
+        x: xUnits,
+        y: yUnits,
         r: 1 / geom.mmPerUnit
       };
 
@@ -941,8 +957,8 @@ export default function App() {
       }
     });
 
-    // Draw selected origin point
-    if (selectedOrigin) {
+    // Draw selected origin point - ONLY if no specific reference point is set
+    if (selectedOrigin && !referencePoint) {
       console.log('Drawing origin overlay:', selectedOrigin);
       const go = ensureGroup("overlay-origin");
       const uo = mmToCurrentUnits({ x: selectedOrigin.x, y: selectedOrigin.y });
@@ -1104,9 +1120,15 @@ export default function App() {
     const pt = svgEl.createSVGPoint(); pt.x = evt.clientX; pt.y = evt.clientY;
     const ctm = svgEl.getScreenCTM(); if (!ctm) return null;
     const local = pt.matrixTransform(ctm.inverse());
-    const mmX = (local.x - geom.minX) * geom.mmPerUnit;
-    const mmY = (local.y - geom.minY) * geom.mmPerUnit;
-    console.log('Click conversion:', {
+    // X: Absolute coordinate (no subtraction needed if viewBox matches Gerber coords)
+    const mmX = local.x * geom.mmPerUnit;
+
+    // Y: FLIP relative to Board Bounds (MinY + MaxY - Y)
+    // MaxY = minY + vbH
+    // GerberY = (minY + (minY + vbH)) - local.y
+    const mmY = (2 * geom.minY + geom.vbH - local.y) * geom.mmPerUnit;
+
+    /* console.log('Click conversion:', {
       clientX: evt.clientX,
       clientY: evt.clientY,
       localX: local.x,
@@ -1114,7 +1136,7 @@ export default function App() {
       mmX,
       mmY,
       geom: { minX: geom.minX, minY: geom.minY, mmPerUnit: geom.mmPerUnit }
-    });
+    }); */
     return { x: mmX, y: mmY };
   };
 
@@ -1162,42 +1184,64 @@ export default function App() {
   }
 
   const [dragFid, setDragFid] = useState(null);
+
+  const handleFiducialMouseDown = (e) => {
+    if (!fidPickMode) return;
+    console.log('handleFiducialMouseDown fired');
+
+    // Ensure we have the SVG element for coordinate conversion
+    const svgEl = getSvgEl();
+    if (!svgEl) {
+      console.warn('SVG element not found during mousedown');
+      return;
+    }
+
+    const mm = getEventMm(e); if (!mm) return;
+
+    let targetId = null;
+    let best = { id: null, d: Infinity };
+
+    // Check for click near existing fiducial design position
+    for (const f of fiducials) {
+      if (!f.design) continue;
+      const d = Math.hypot(f.design.x - mm.x, f.design.y - mm.y);
+      if (d < best.d) { best = { id: f.id, d }; }
+    }
+
+    // If clicked close to existing one (2mm tolerance), pick it
+    if (best.d <= 2) targetId = best.id;
+    // Otherwise if a specific fiducial ID is armed in the dropdown, place it there
+    else if (fidActiveId) targetId = fidActiveId;
+
+    console.log('Fiducial click processed. Best match:', best.id, 'Target:', targetId);
+
+    if (targetId) {
+      // Update the design position for the target fiducial
+      setFiducials(prev => prev.map(f => f.id === targetId ? { ...f, design: mm } : f));
+      setDragFid(targetId);
+    }
+  };
+
+  // Effect to handle global mouse move/up for dragging
   useEffect(() => {
-    const svgEl = getSvgEl(); if (!svgEl || !fidPickMode) return;
+    if (!fidPickMode) return;
 
-    const onDown = (e) => {
-      const mm = getEventMm(e); if (!mm) return;
-      let targetId = null;
-      let best = { id: null, d: Infinity };
-      for (const f of fiducials) {
-        if (!f.design) continue;
-        const d = Math.hypot(f.design.x - mm.x, f.design.y - mm.y);
-        if (d < best.d) { best = { id: f.id, d }; }
-      }
-      if (best.d <= 2) targetId = best.id;
-      else if (fidActiveId) targetId = fidActiveId;
-
-      if (targetId) {
-        setFiducials(prev => prev.map(f => f.id === targetId ? { ...f, design: mm } : f));
-        setDragFid(targetId);
-      }
-    };
     const onMove = (e) => {
       if (!dragFid) return;
       const mm = getEventMm(e); if (!mm) return;
       setFiducials(prev => prev.map(f => f.id === dragFid ? { ...f, design: mm } : f));
     };
+
     const onUp = () => setDragFid(null);
 
-    svgEl.addEventListener("mousedown", onDown);
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
+
     return () => {
-      svgEl.removeEventListener("mousedown", onDown);
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [fidPickMode, fidActiveId, dragFid, fiducials, getSvgEl]);
+  }, [fidPickMode, dragFid, fiducials, getSvgEl]);
 
   useEffect(() => {
     const svgEl = document.querySelector(".viewer .canvas svg");
@@ -1228,16 +1272,23 @@ export default function App() {
 
 
   const handleCanvasClick = useCallback((evt) => {
+    console.log('handleCanvasClick fired. PickMode:', fidPickMode);
     if (fidPickMode) return;
-
-    // Debug coordinate conversion
-    const svgEl = getSvgEl();
-    if (svgEl) {
-      debugCoordinateConversion(evt, svgEl, null);
-    }
 
     const mm = getEventMm(evt);
     if (!mm) return;
+
+    // Bounds check: Ignore clicks outside the defined SVG area
+    const boundsSvg = getSvgEl();
+    const geom = getSvgGeom();
+    if (geom) {
+      const widthMm = geom.vbW * geom.mmPerUnit;
+      const heightMm = geom.vbH * geom.mmPerUnit;
+      if (mm.x < 0 || mm.x > widthMm || mm.y < 0 || mm.y > heightMm) {
+        console.log('Click outside board bounds ignored:', mm);
+        return;
+      }
+    }
 
     const hit = isClickInsidePad(mm);
 
@@ -1254,29 +1305,25 @@ export default function App() {
     let padCenter;
 
     if (origin) {
-      // Apply coordinate transformation and vertical center adjustment
-      const padHeight = hit.pos.height || 1.0;
-      const trueCenterY = hit.pos.y + (padHeight / 2);
+      // Apply coordinate transformation
       padCenter = {
-        x: hit.pos.x - origin.x,
-        y: trueCenterY + origin.y,
+        x: hit.pos.x, // Store absolute coordinate for correct overlay rendering
+        y: hit.pos.y, // Store absolute coordinate
         centerValid: hit.pos.centerValid,
         centerMethod: hit.pos.centerMethod,
         originalPad: pads[hit.pad] // Store reference to original pad
       };
-      console.log('🔄 Coordinate transformation applied:', {
+      console.log('🔄 Coordinate selection:', {
         originalPad: { x: hit.pos.x, y: hit.pos.y },
         origin: { x: origin.x, y: origin.y },
-        transformedPad: padCenter,
-        calculation: `x: ${hit.pos.x} - ${origin.x} = ${padCenter.x}, y: ${hit.pos.y} + ${origin.y} = ${padCenter.y}`
+        selectedMm: padCenter,
+        note: 'Storing absolute coordinates for overlay. Distances calculated in UI.'
       });
     } else {
-      // No origin available, use original coordinates with vertical center adjustment
-      const padHeight = hit.pos.height || 1.0;
-      const trueCenterY = hit.pos.y + (padHeight / 2);
+      // No origin available, use original coordinates
       padCenter = {
         x: hit.pos.x,
-        y: trueCenterY,
+        y: hit.pos.y, // hit.pos.y is already center
         centerValid: hit.pos.centerValid,
         centerMethod: hit.pos.centerMethod,
         originalPad: pads[hit.pad] // Store reference to original pad
@@ -1462,6 +1509,19 @@ export default function App() {
     };
   }, [fiducials]);
 
+  // Component navigation items
+  const componentNavItems = [
+    { id: 'SerialPanel', label: 'Serial Panel' },
+    { id: 'Viewer', label: 'Viewer' },
+    { id: 'FiducialPanel', label: 'Fiducial Panel' },
+    { id: 'CameraPanel', label: 'Camera Panel' },
+    { id: 'AutomatedDispensingPanel', label: 'Automated Dispensing Panel' },
+    { id: 'BatchPanel', label: 'Batch Panel' },
+    { id: 'LivePreview', label: 'Live Preview' },
+    { id: 'PressurePanel', label: 'Pressure Panel' },
+    { id: 'SpeedPanel', label: 'Speed Panel' },
+  ]
+
   return (
     <div className="wrap" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
       <aside className="sidebar">
@@ -1470,12 +1530,11 @@ export default function App() {
             <label className="btn">
               Open Gerbers / ZIP
               <input type="file" multiple onChange={pickFiles}
-                accept=".zip,.gbr,.grb,.gtl,.gbl,.gts,.gbs,.gto,.gbo,.gtp,.gbp,.gbc,.gm1,.drl,.txt,.nc" />
+                accept=".zip,.gbr,.grb,.gtl,.gbl,.gts,.gbs,.gto,.gbo,.gtp,.gbp,.gbc,.gm1,.drl,.txt,.nc,.gko" />
             </label>
             {/* <button className="btn secondary" onClick={exportAllSvgsZip} disabled={layers.length === 0}>Download SVGs (ZIP)</button> */}
           </div>
         </div>
-
         <div className="section Board-section">
           <h3 style={{ color: '#007bff', padding: '8px 12px', borderBottom: '2px solid #007bff' }}>Board View</h3>
           <div className="flex-row">
@@ -1485,9 +1544,6 @@ export default function App() {
           </div>
           <LayerList layers={layers} layerData={layerData} onToggle={toggleLayer} />
         </div>
-
-
-
         <div className="section Components-section">
           <h3 style={{ color: '#007bff', padding: '8px 12px', borderBottom: '2px solid #007bff' }}>Components</h3>
           <div className="flex-row" style={{ marginLeft: 8 }}>
@@ -1647,78 +1703,84 @@ export default function App() {
       </aside>
 
       <main className="main">
+        <nav className="navbar" role="navigation" aria-label="Component navigation">
+          <div className="navbarContainer">
+            {componentNavItems.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={`navItem ${activeComponent === item.id ? 'navItemActive' : ''}`}
+                onClick={() => setActiveComponent(item.id)}
+                aria-pressed={activeComponent === item.id}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </nav>
+
         <div className="section"><h3>Preview</h3></div>
 
-        <Viewer
-          svg={svg}
-          mirrorBottom={mirrorBottom}
-          side={side}
-          onClickSvg={handleCanvasClick}
-        />
-
-        {(referencePoint || selectedOrigin) && selectedMm && (
-          <div className="distance-info">
-            <span className="badge">Path from {referencePoint ? `Fiducial ${referencePoint.id}` : 'Top-Left Origin'}</span>
-            <div className="kvs">
-              <span>ΔX: {(selectedMm.x - (referencePoint || selectedOrigin).x).toFixed(2)} mm</span>
-              <span>ΔY: {(selectedMm.y - (referencePoint || selectedOrigin).y).toFixed(2)} mm</span>
-              <span><strong>2D: {Math.hypot(selectedMm.x - (referencePoint || selectedOrigin).x, selectedMm.y - (referencePoint || selectedOrigin).y).toFixed(2)} mm</strong></span>
-              {generatedPath && <span>3D Path: {generatedPath.totalDistance.toFixed(2)} mm</span>}
-              <span style={{ color: selectedMm.centerValid ? '#28a745' : '#ffc107' }}>Center: ({selectedMm.x.toFixed(3)}, {selectedMm.y.toFixed(3)}) {selectedMm.centerValid ? '✓' : '⚠️'}</span>
-              {selectedMm.centerMethod && <span style={{ fontSize: '0.8em', color: '#666' }}>Method: {selectedMm.centerMethod}</span>}
-            </div>
-            <div className="path-controls" style={{ marginTop: 8 }}>
-              <select value={pathType} onChange={(e) => setPathType(e.target.value)} style={{ fontSize: 12 }}>
-                <option value="direct">Direct Path</option>
-                <option value="safe">Safe Path (Lift)</option>
-                <option value="optimized">Optimized Path</option>
-                <option value="zigzag">Zig-Zag Path</option>
-              </select>
-              <label style={{ marginLeft: 8, fontSize: 12 }}>
-                <input type="checkbox" checked={showPasteDots} onChange={(e) => setShowPasteDots(e.target.checked)} />
-                Show Paste Dots
-              </label>
-              {generatedPath && (
-                <small style={{ marginLeft: 8, color: '#666' }}>
-                  {generatedPath.type} • {generatedPath.segments.length} segments
-                </small>
-              )}
-            </div>
-          </div>
+        {activeComponent === 'SerialPanel' && (
+          <SerialPanel
+            dispensingSequence={dispensingSequence}
+            jobStatistics={jobStatistics}
+            pressureSettings={pressureSettings}
+            speedSettings={speedSettings}
+            referencePoint={referencePoint}
+            selectedOrigin={selectedOrigin}
+            onJobStart={(gcode) => {
+              console.log('Dispensing job started via SerialPanel');
+              maintenanceManager.recordDispense();
+            }}
+            onJobComplete={() => {
+              console.log('Dispensing job completed');
+              alert('Dispensing job completed successfully!');
+            }}
+          />
         )}
 
-        <div className="fiducial-panel">
-          <FiducialPanel
-            fiducials={fiducials}
-            activeId={fidActiveId}
-            setActiveId={setFidActiveId}
-            pickMode={fidPickMode}
-            togglePickMode={() => setFidPickMode(v => !v)}
-            onInputMachine={onInputMachine}
-            onClearOne={onClearOne}
-            onClearAll={onClearAll}
-            onSolve2={onSolve2}
-            onSolve3={onSolve3}
-            transformSummary={transformSummary}
-            applyTransform={applyXf}
-            setApplyTransform={setApplyXf}
-            detectionResult={fiducialDetectionResult}
-            onRedetectFiducials={onRedetectFiducials}
-            onAutoAlign={onAutoAlign}
-            onAutoDetectCamera={onAutoDetectCamera}
-          />
-          {selectedOrigin && selectedMm && xf && applyXf && (
-            <div style={{ padding: 8, background: '#f8f9fa', border: '1px solid #dee2e6', borderRadius: 4, marginTop: 8 }}>
-              <small><strong>Transform Verification:</strong></small>
-              <div style={{ fontSize: '0.8em', fontFamily: 'monospace' }}>
-                Origin: {selectedOrigin.x.toFixed(3)}, {selectedOrigin.y.toFixed(3)} → {verifyTransform(selectedOrigin).x.toFixed(3)}, {verifyTransform(selectedOrigin).y.toFixed(3)}
+        {activeComponent === 'Viewer' && (
+          <>
+            <Viewer
+              svg={svg}
+              mirrorBottom={mirrorBottom}
+              side={side}
+              onClickSvg={handleCanvasClick}
+              onMouseDown={handleFiducialMouseDown}
+            />
+            {(referencePoint || selectedOrigin) && selectedMm && (
+              <div className="distance-info">
+                <span className="badge">Path from {referencePoint ? `Fiducial ${referencePoint.id}` : 'Top-Left Origin'}</span>
+                <div className="kvs">
+                  <span>ΔX: {(selectedMm.x - (referencePoint || selectedOrigin).x).toFixed(2)} mm</span>
+                  <span>ΔY: {(selectedMm.y - (referencePoint || selectedOrigin).y).toFixed(2)} mm</span>
+                  <span><strong>2D: {Math.hypot(selectedMm.x - (referencePoint || selectedOrigin).x, selectedMm.y - (referencePoint || selectedOrigin).y).toFixed(2)} mm</strong></span>
+                  {generatedPath && <span>3D Path: {generatedPath.totalDistance.toFixed(2)} mm</span>}
+                  <span style={{ color: selectedMm.centerValid ? '#28a745' : '#ffc107' }}>Center: ({selectedMm.x.toFixed(3)}, {selectedMm.y.toFixed(3)}) {selectedMm.centerValid ? '✓' : '⚠️'}</span>
+                  {selectedMm.centerMethod && <span style={{ fontSize: '0.8em', color: '#666' }}>Method: {selectedMm.centerMethod}</span>}
+                </div>
+                <div className="path-controls" style={{ marginTop: 8 }}>
+                  {/* <select value={pathType} onChange={(e) => setPathType(e.target.value)} style={{ fontSize: 12 }}>
+                    <option value="direct">Direct Path</option>
+                    <option value="safe">Safe Path (Lift)</option>
+                    <option value="optimized">Optimized Path</option>
+                    <option value="zigzag">Zig-Zag Path</option>
+                  </select> */}
+                  <label style={{ marginLeft: 8, fontSize: 12 }}>
+                    <input type="checkbox" checked={showPasteDots} onChange={(e) => setShowPasteDots(e.target.checked)} />
+                    Show Paste Dots
+                  </label>
+                  {/* {generatedPath && (
+                    <small style={{ marginLeft: 8, color: '#666' }}>
+                      {generatedPath.type} • {generatedPath.segments.length} segments
+                    </small>
+                  )} */}
+                </div>
               </div>
-              <div style={{ fontSize: '0.8em', fontFamily: 'monospace' }}>
-                Target: {selectedMm.x.toFixed(3)}, {selectedMm.y.toFixed(3)} → {verifyTransform(selectedMm).x.toFixed(3)}, {verifyTransform(selectedMm).y.toFixed(3)}
-              </div>
-            </div>
-          )}
-        </div>
+            )}
+          </>
+        )}
 
         {maintenanceAlert && (
           <div className="maintenance-alert" style={{
@@ -1740,23 +1802,59 @@ export default function App() {
           </div>
         )}
 
-        <div className="panels">
-          <BatchPanel
-            batchProcessor={batchProcessor}
-            currentBatch={currentBatch}
-            onBatchSelect={handleBatchSelect}
-            onStartBatch={handleStartBatch}
-            onPauseBatch={handlePauseBatch}
-            onAddBoard={handleAddCurrentBoard}
-            onDeleteBatch={handleDeleteBatch}
+        {activeComponent === 'FiducialPanel' && (
+          <div className="fiducial-panel">
+            <FiducialPanel
+              fiducials={fiducials}
+              activeId={fidActiveId}
+              setActiveId={setFidActiveId}
+              pickMode={fidPickMode}
+              togglePickMode={() => setFidPickMode(v => !v)}
+              onInputMachine={onInputMachine}
+              onClearOne={onClearOne}
+              onClearAll={onClearAll}
+              onSolve2={onSolve2}
+              onSolve3={onSolve3}
+              transformSummary={transformSummary}
+              applyTransform={applyXf}
+              setApplyTransform={setApplyXf}
+              detectionResult={fiducialDetectionResult}
+              onRedetectFiducials={onRedetectFiducials}
+              onAutoAlign={onAutoAlign}
+              onAutoDetectCamera={onAutoDetectCamera}
+            />
+            {selectedOrigin && selectedMm && xf && applyXf && (
+              <div style={{ padding: 8, background: '#f8f9fa', border: '1px solid #dee2e6', borderRadius: 4, marginTop: 8 }}>
+                <small><strong>Transform Verification:</strong></small>
+                <div style={{ fontSize: '0.8em', fontFamily: 'monospace' }}>
+                  Origin: {selectedOrigin.x.toFixed(3)}, {selectedOrigin.y.toFixed(3)} → {verifyTransform(selectedOrigin).x.toFixed(3)}, {verifyTransform(selectedOrigin).y.toFixed(3)}
+                </div>
+                <div style={{ fontSize: '0.8em', fontFamily: 'monospace' }}>
+                  Target: {selectedMm.x.toFixed(3)}, {selectedMm.y.toFixed(3)} → {verifyTransform(selectedMm).x.toFixed(3)}, {verifyTransform(selectedMm).y.toFixed(3)}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeComponent === 'CameraPanel' && (
+          <CameraPanel
+            fiducials={fiducials}
+            xf={xf}
+            applyXf={applyXf}
+            selectedDesign={selectedMm}
+            toolOffset={toolOffset}
+            setToolOffset={(setToolOffset)}
+            nozzleDia={nozzleDia}
+            setNozzleDia={setNozzleDia}
+            padDetector={padDetector}
+            qualityController={qualityController}
+            fiducialVisionDetector={fiducialVisionDetector}
+            layerData={layerData}
           />
-          <LivePreview
-            dispensingSequence={dispensingSequence}
-            isJobRunning={livePreview.isActive}
-            currentPadIndex={livePreview.currentPadIndex}
-            machinePosition={livePreview.machinePosition}
-            onUpdateOverlay={updateOverlay}
-          />
+        )}
+
+        {activeComponent === 'AutomatedDispensingPanel' && (
           <AutomatedDispensingPanel
             dispensingSequencer={dispensingSequencer}
             dispensingSequence={dispensingSequence}
@@ -1779,43 +1877,73 @@ export default function App() {
             currentBatch={currentBatch}
             onStartBatch={handleStartBatch}
             layerData={layerData}
-          />
-          <CameraPanel
-            fiducials={fiducials}
             xf={xf}
             applyXf={applyXf}
-            selectedDesign={selectedMm}
-            toolOffset={toolOffset}
-            setToolOffset={(setToolOffset)}
-            nozzleDia={nozzleDia}
-            setNozzleDia={setNozzleDia}
-            padDetector={padDetector}
-            qualityController={qualityController}
-            fiducialVisionDetector={fiducialVisionDetector}
-            layerData={layerData}
           />
-          {/* <OpenCVFiducialPanel
-            onFiducialsDetected={handleOpenCVDetection}
-            cameraStream={cameraStream}
-          /> */}
-          <PressurePanel
-            pressureController={pressureController}
-            pressureSettings={pressureSettings}
-            setPressureSettings={setPressureSettings}
-            selectedPad={selectedMm ? pads.find(p => Math.abs(p.x - selectedMm.x) < 0.1 && Math.abs(p.y - selectedMm.y) < 0.1) : null}
-          />
-          <SpeedPanel
-            speedProfileManager={speedProfileManager}
-            speedSettings={speedSettings}
-            referencePoint={referencePoint}
-            selectedOrigin={selectedOrigin}
-            setSpeedSettings={setSpeedSettings}
-            selectedPad={selectedMm ? pads.find(p => Math.abs(p.x - selectedMm.x) < 0.1 && Math.abs(p.y - selectedMm.y) < 0.1) : null}
-            pressureSettings={pressureSettings}
-            pads={pads}
-          />
+        )}
 
-          {/* <LinearMovePanel
+        {activeComponent === 'BatchPanel' && (
+          <BatchPanel
+            batchProcessor={batchProcessor}
+            currentBatch={currentBatch}
+            onBatchSelect={handleBatchSelect}
+            onStartBatch={handleStartBatch}
+            onPauseBatch={handlePauseBatch}
+            onAddBoard={handleAddCurrentBoard}
+            onDeleteBatch={handleDeleteBatch}
+          />
+        )}
+
+        {/* {activeComponent === 'ComponentList' && (
+          <ComponentList
+            components={padDistances}
+            onFocus={(pad) => {
+              // Calculate TRUE CENTER of the pad
+              const padHeight = pad.height || 1.0;
+              const trueCenterY = pad.y + (padHeight / 2);
+
+              // Use transformed CENTER coordinates
+              const origin = selectedOrigin;
+              let displayCoords;
+
+              if (pad.transformedX !== undefined && pad.transformedY !== undefined) {
+                // Use pre-calculated transformed CENTER coordinates
+                displayCoords = {
+                  x: pad.transformedX,
+                  y: pad.transformedY,
+                  centerValid: pad.centerValid,
+                  centerMethod: pad.centerMethod,
+                  originalPad: pad
+                };
+              } else if (origin) {
+                // Calculate transformation using TRUE CENTER on the fly
+                displayCoords = {
+                  x: pad.x - origin.x,
+                  y: trueCenterY + origin.y,  // Use trueCenterY
+                  centerValid: pad.centerValid,
+                  centerMethod: pad.centerMethod,
+                  originalPad: pad
+                };
+              } else {
+                // No transformation needed, use CENTER
+                displayCoords = {
+                  x: pad.x,
+                  y: trueCenterY,  // Use trueCenterY
+                  centerValid: pad.centerValid,
+                  centerMethod: pad.centerMethod,
+                  originalPad: pad
+                };
+              }
+              setSelectedMm(displayCoords);
+            }}
+          />
+        )} */}
+
+        {/* {activeComponent === 'LayerList' && (
+          <LayerList layers={layers} layerData={layerData} onToggle={toggleLayer} />
+        )}
+        {activeComponent === 'LinearMovePanel' && (
+          <LinearMovePanel
             homeDesign={selectedOrigin ? { x: selectedOrigin.x, y: selectedOrigin.y } : null}
             focusDesign={selectedMm}
             xf={xf}
@@ -1830,31 +1958,48 @@ export default function App() {
             speedSettings={speedSettings}
             referencePoint={referencePoint}
             selectedOrigin={selectedOrigin}
-            dispensingSequencer={dispensingSequencer}
+          />
+        )} */}
+
+        {activeComponent === 'LivePreview' && (
+          <LivePreview
             dispensingSequence={dispensingSequence}
-            safeSequence={safeSequence}
-            jobStatistics={jobStatistics}
-            boardOutline={boardOutline}
-            safePathPlanner={safePathPlanner}
-            useSafePathPlanning={useSafePathPlanning}
-          /> */}
-          <SerialPanel 
-            dispensingSequence={dispensingSequence}
-            jobStatistics={jobStatistics}
+            isJobRunning={livePreview.isActive}
+            currentPadIndex={livePreview.currentPadIndex}
+            machinePosition={livePreview.machinePosition}
+            onUpdateOverlay={updateOverlay}
+          />
+        )}
+
+        {/* {activeComponent === 'MotionPanel' && (
+          <MotionPanel onSendLines={async (lines) => {
+            if (window.serial && window.serial.writeLine) {
+              for (const line of lines) await window.serial.writeLine(line);
+            }
+          }} />
+        )} */}
+
+        {activeComponent === 'PressurePanel' && (
+          <PressurePanel
+            pressureController={pressureController}
             pressureSettings={pressureSettings}
+            setPressureSettings={setPressureSettings}
+            selectedPad={selectedMm ? pads.find(p => Math.abs(p.x - selectedMm.x) < 0.1 && Math.abs(p.y - selectedMm.y) < 0.1) : null}
+          />
+        )}
+
+        {activeComponent === 'SpeedPanel' && (
+          <SpeedPanel
+            speedProfileManager={speedProfileManager}
             speedSettings={speedSettings}
             referencePoint={referencePoint}
             selectedOrigin={selectedOrigin}
-            onJobStart={(gcode) => {
-              console.log('Dispensing job started via SerialPanel');
-              maintenanceManager.recordDispense();
-            }}
-            onJobComplete={() => {
-              console.log('Dispensing job completed');
-              alert('Dispensing job completed successfully!');
-            }}
+            setSpeedSettings={setSpeedSettings}
+            selectedPad={selectedMm ? pads.find(p => Math.abs(p.x - selectedMm.x) < 0.1 && Math.abs(p.y - selectedMm.y) < 0.1) : null}
+            pressureSettings={pressureSettings}
+            pads={pads}
           />
-        </div>
+        )}
       </main>
     </div>
   );
