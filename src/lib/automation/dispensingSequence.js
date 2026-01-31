@@ -11,25 +11,44 @@ export class DispensingSequencer {
     this.dispensingSpeed = 600; // mm/min
   }
 
-  // ... (calculateOptimalSequence remains unchanged)
-
   calculateOptimalSequence(referencePoint, pads) {
     if (!pads || pads.length === 0) return [];
 
-    // Return pads in their original order (Linear Sequence)
-    // calculating distance from previous point for statistics only
+    // Clone pads to avoid mutating original array
+    const unvisited = [...pads];
+    const sequence = [];
     let currentPoint = referencePoint;
 
-    return pads.map((pad, index) => {
-      const dist = this.calculateDistance(currentPoint, pad);
-      const processedPad = {
-        ...pad,
-        distanceFromPrevious: dist,
-        sequenceOrder: index + 1
-      };
-      currentPoint = pad;
-      return processedPad;
-    });
+    // Nearest Neighbor Greedy Algorithm
+    while (unvisited.length > 0) {
+      let nearestIdx = -1;
+      let minDistance = Infinity;
+
+      for (let i = 0; i < unvisited.length; i++) {
+        const dist = this.calculateDistance(currentPoint, unvisited[i]);
+        if (dist < minDistance) {
+          minDistance = dist;
+          nearestIdx = i;
+        }
+      }
+
+      if (nearestIdx !== -1) {
+        const nearestPad = unvisited[nearestIdx];
+
+        sequence.push({
+          ...nearestPad,
+          distanceFromPrevious: minDistance,
+          sequenceOrder: sequence.length + 1
+        });
+
+        currentPoint = nearestPad;
+        unvisited.splice(nearestIdx, 1);
+      } else {
+        break; // Should not happen
+      }
+    }
+
+    return sequence;
   }
 
   /**

@@ -31,11 +31,28 @@ export function fitSimilarity(designPts, machinePts) {
   const scale = Math.sqrt(A * A + B * B) / (denom || 1e-9);
 
   const a = scale * cos, b = -scale * sin;
-  const c = scale * sin, d =  scale * cos;
+  const c = scale * sin, d = scale * cos;
   const tx = cm.x - (a * cd.x + b * cd.y);
   const ty = cm.y - (c * cd.x + d * cd.y);
 
   return { type: "similarity", a, b, c, d, tx, ty, scale, theta };
+  return { type: "similarity", a, b, c, d, tx, ty, scale, theta };
+}
+
+export function fitTranslation(designPts, machinePts) {
+  const n = designPts.length;
+  if (n < 1) throw new Error("Need at least 1 pair for translation fit.");
+
+  // Calculate average offset
+  let sumTx = 0, sumTy = 0;
+  for (let i = 0; i < n; i++) {
+    sumTx += machinePts[i].x - designPts[i].x;
+    sumTy += machinePts[i].y - designPts[i].y;
+  }
+  const tx = sumTx / n;
+  const ty = sumTy / n;
+
+  return { type: "translation", a: 1, b: 0, c: 0, d: 1, tx, ty };
 }
 
 export function fitAffine(designPts, machinePts) {
@@ -73,7 +90,7 @@ export function rmsError(T, designPts, machinePts) {
 export function invert(T) {
   const { a, b, c, d, tx, ty } = T;
   const det = a * d - b * c || 1e-12;
-  const ia =  d / det, ib = -b / det, ic = -c / det, id = a / det;
+  const ia = d / det, ib = -b / det, ic = -c / det, id = a / det;
   const itx = -(ia * tx + ib * ty), ity = -(ic * tx + id * ty);
   return { type: T.type, a: ia, b: ib, c: ic, d: id, tx: itx, ty: ity };
 }

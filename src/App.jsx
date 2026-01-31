@@ -23,7 +23,7 @@ import { analyzeFiducialsInLayers } from "./lib/gerber/fiducialDetection.js";
 import { detectPcbOrigins } from "./lib/gerber/originDetection.js";
 import { FiducialVisionDetector } from "./lib/vision/fiducialVision.js";
 import { zipTextFiles, downloadBlob } from "./lib/zip/zipUtils.js";
-import { fitSimilarity, fitAffine, applyTransform, rmsError } from "./lib/utils/transform2d.js";
+import { fitSimilarity, fitAffine, fitTranslation, applyTransform, rmsError } from "./lib/utils/transform2d.js";
 import { CollisionDetector } from "./lib/collision/collisionDetection.js";
 import { PadDetector } from "./lib/vision/padDetection.js";
 import { QualityController } from "./lib/quality/qualityControl.js";
@@ -150,6 +150,15 @@ export default function App() {
     machinePosition: null,
     completedPads: []
   });
+
+  // Zoom State
+  const [zoomMode, setZoomMode] = useState(false);
+  const [isZoomed, setIsZoomed] = useState(false);
+  const [zoomViewBox, setZoomViewBox] = useState(null);
+
+  // Multi-Selection State
+  const [multiSelectMode, setMultiSelectMode] = useState(false);
+  const [selectedPadIndices, setSelectedPadIndices] = useState([]); // Stores ordered indices of selected pads
 
   // useEffect(() => {
   //   // Initialize OpenCV on app load
@@ -327,8 +336,6 @@ export default function App() {
     });
   }, [maintenanceManager]);
 
-
-
   const [nozzleDia, setNozzleDia] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem("nozzleDia") || "0.6");
@@ -456,7 +463,7 @@ export default function App() {
       const autoFiducials = detectedFiducials.map((fid, idx) => ({
         id: fid.id,
         design: { x: fid.x, y: fid.y },
-        machine: null,
+        machine: { x: fid.x, y: fid.y }, // Initialize machine coords to match design
         color: colors[idx % colors.length],
         confidence: fid.confidence
       }));
@@ -739,10 +746,74 @@ export default function App() {
       console.log('Drawing activeRef:', activeRef, 'coordinates:', { x: activeRef.x, y: activeRef.y });
       const uh = mmToCurrentUnits({ x: activeRef.x, y: activeRef.y });
       const isOrigin = activeRef === selectedOrigin;
-      const color = isOrigin ? "#0a0" : "#ff6600";
-      const label = isOrigin ? "TOP-LEFT ORIGIN" : `REF: ${activeRef.id || 'FIDUCIAL'}`;
-      drawCircle(gm, uh.x, uh.y, uh.r, isOrigin ? "rgba(0,180,0,0.25)" : "rgba(255,102,0,0.25)", color);
+      const color = isOrigin ? "rgba(196, 42, 193, 1)" : (activeRef.color || "#2ea8ff");
+      const label = isOrigin ? "ORIGIN" : `${activeRef.id || 'FIDUCIAL'}`;
+      const size = uh.r * 1.5;
+      const l1 = document.createElementNS(NS, "line");
+      l1.setAttribute("x1", uh.x - size); l1.setAttribute("y1", uh.y);
+      l1.setAttribute("x2", uh.x + size); l1.setAttribute("y2", uh.y);
+      l1.setAttribute("stroke", color); l1.setAttribute("stroke-width", uh.r * 0.2);
+      gm.appendChild(l1);
+
+      const l2 = document.createElementNS(NS, "line");
+      l2.setAttribute("x1", uh.x); l2.setAttribute("y1", uh.y - size);
+      l2.setAttribute("x2", uh.x); l2.setAttribute("y2", uh.y + size);
+      l2.setAttribute("stroke", color); l2.setAttribute("stroke-width", uh.r * 0.2);
+      gm.appendChild(l2);
+
+      drawCircle(gm, uh.x, uh.y, uh.r, isOrigin ? "rgba(0,180,0,0.25)" : hexToRgba(color, 0.25), color);
       drawText(gm, uh.x + uh.r * 1.6, uh.y - uh.r * 0.8, label, uh.r * 1.0, color);
+    }
+
+    // Draw multi-selected pads
+    if (selectedPadIndices.length > 0) {
+      // Draw path lines between selected pads (Origin -> Pad 1 -> Pad 2...)
+      if (multiSelectMode) {
+        const startPoint = referencePoint || selectedOrigin || { x: 0, y: 0 };
+        let prevU = mmToCurrentUnits(startPoint);
+
+        selectedPadIndices.forEach(idx => {
+          const pad = pads[idx];
+          if (!pad) return;
+          const u = mmToCurrentUnits({ x: pad.x, y: pad.y });
+          if (!u || !prevU) return;
+
+          const line = document.createElementNS(NS, "line");
+          line.setAttribute("x1", prevU.x); line.setAttribute("y1", prevU.y);
+          line.setAttribute("x2", u.x); line.setAttribute("y2", u.y);
+          line.setAttribute("stroke", "#ffeb3b"); // Yellow
+          line.setAttribute("stroke-width", u.r * 0.15);
+          line.setAttribute("stroke-dasharray", "5,3");
+          gm.appendChild(line);
+
+          prevU = u;
+        });
+      }
+
+      selectedPadIndices.forEach(idx => {
+        const pad = pads[idx];
+        if (!pad) return;
+
+        const pt = { x: pad.x, y: pad.y };
+        const u = mmToCurrentUnits(pt);
+        if (!inView(u)) return;
+
+        // Draw orange selection marker
+        const r = u.r * (Math.max(pad.width || 1, pad.height || 1) * 0.6); // Scale to pad size
+
+        // Selection box/circle
+        const sel = document.createElementNS(NS, "circle");
+        sel.setAttribute("cx", u.x); sel.setAttribute("cy", u.y);
+        sel.setAttribute("r", r * 1.1);
+        sel.setAttribute("fill", "none");
+        sel.setAttribute("stroke", "#FFA500"); // Orange
+        sel.setAttribute("stroke-width", u.r * 0.3);
+        sel.setAttribute("stroke-dasharray", "4,2"); // Dashed look
+        gm.appendChild(sel);
+
+        // Label index
+        drawText(gm, u.x + r, u.y - r, `#${idx + 1}`, r * 0.5, "#FFA500");
+      });
     }
 
     if (selectedMm) {
@@ -949,6 +1020,9 @@ export default function App() {
     const gf = ensureGroup("overlay-fids");
     fiducials.forEach(f => {
       if (!f.design) return;
+      // Skip duplicate drawing if this fiducial is the active reference
+      if (activeRef && f.id === activeRef.id) return;
+
       const u = mmToCurrentUnits(f.design);
       if (u.x >= geom.minX && u.x <= (geom.minX + geom.vbW) &&
         u.y >= geom.minY && u.y <= (geom.minY + geom.vbH)) {
@@ -958,7 +1032,8 @@ export default function App() {
     });
 
     // Draw selected origin point - ONLY if no specific reference point is set
-    if (selectedOrigin && !referencePoint) {
+    // Redundant block: Active reference logic above already handles origin drawing
+    /* if (selectedOrigin && !referencePoint) {
       console.log('Drawing origin overlay:', selectedOrigin);
       const go = ensureGroup("overlay-origin");
       const uo = mmToCurrentUnits({ x: selectedOrigin.x, y: selectedOrigin.y });
@@ -983,7 +1058,7 @@ export default function App() {
       console.log('Origin marker drawn at:', uo.x, uo.y);
     } else {
       console.log('No selectedOrigin to draw');
-    }
+    } */
 
     if (xf) {
       const grect = ensureGroup("overlay-ghost");
@@ -1046,7 +1121,7 @@ export default function App() {
         const dy = transformedPadCenter.y - refPoint.y;
         const dist = Math.hypot(dx, dy);
 
-        console.log(`Pad ${pad.id} CENTER: Original(${pad.x.toFixed(2)}, ${pad.y.toFixed(2)}) + height/2(${(padHeight / 2).toFixed(2)}) → Center(${pad.x.toFixed(2)}, ${trueCenterY.toFixed(2)}) → Transformed(${transformedPadCenter.x.toFixed(2)}, ${transformedPadCenter.y.toFixed(2)}) → Distance: ${dist.toFixed(2)}mm`);
+        // console.log(`Pad ${pad.id} CENTER: Original(${pad.x.toFixed(2)}, ${pad.y.toFixed(2)}) + height/2(${(padHeight / 2).toFixed(2)}) → Center(${pad.x.toFixed(2)}, ${trueCenterY.toFixed(2)}) → Transformed(${transformedPadCenter.x.toFixed(2)}, ${transformedPadCenter.y.toFixed(2)}) → Distance: ${dist.toFixed(2)}mm`);
 
         return {
           ...pad,
@@ -1082,10 +1157,16 @@ export default function App() {
   // Generate dispensing sequence when reference point or pads change
   useEffect(() => {
     const refPoint = referencePoint || selectedOrigin;
-    if (refPoint && pads.length > 0) {
+
+    // Choose which pads to sequence: Multi-selection or All
+    const padsToUse = selectedPadIndices.size > 0
+      ? pads.filter((_, i) => selectedPadIndices.has(i))
+      : pads;
+
+    if (refPoint && padsToUse.length > 0) {
       if (useSafePathPlanning) {
         // Use safe path planning with collision avoidance
-        const safeSeq = safePathPlanner.calculateSafeSequence(refPoint, pads, boardOutline, componentHeights);
+        const safeSeq = safePathPlanner.calculateSafeSequence(refPoint, padsToUse, boardOutline, componentHeights);
         setSafeSequence(safeSeq);
         setDispensingSequence(safeSeq);
 
@@ -1093,14 +1174,14 @@ export default function App() {
           totalPads: safeSeq.length,
           totalDistance: safeSeq.reduce((sum, pad) => sum + (pad.pathDistance || 0), 0).toFixed(2),
           estimatedTime: Math.ceil(safeSeq.length * 3 + safeSeq.reduce((sum, pad) => sum + (pad.pathDistance || 0), 0) / 50),
-          averageDistance: (safeSeq.reduce((sum, pad) => sum + (pad.pathDistance || 0), 0) / safeSeq.length).toFixed(2),
+          averageDistance: safeSeq.length > 0 ? (safeSeq.reduce((sum, pad) => sum + (pad.pathDistance || 0), 0) / safeSeq.length).toFixed(2) : "0.00",
           safePathsUsed: safeSeq.filter(p => !p.requiresHighClearance).length,
           highClearancePaths: safeSeq.filter(p => p.requiresHighClearance).length
         };
         setJobStatistics(stats);
       } else {
         // Use simple nearest neighbor
-        const sequence = dispensingSequencer.calculateOptimalSequence(refPoint, pads);
+        const sequence = dispensingSequencer.calculateOptimalSequence(refPoint, padsToUse);
         setDispensingSequence(sequence);
         setSafeSequence([]);
 
@@ -1112,7 +1193,7 @@ export default function App() {
       setSafeSequence([]);
       setJobStatistics(null);
     }
-  }, [referencePoint, selectedOrigin, pads, dispensingSequencer, safePathPlanner, useSafePathPlanning, boardOutline, componentHeights]);
+  }, [referencePoint, selectedOrigin, pads, selectedPadIndices, dispensingSequencer, safePathPlanner, useSafePathPlanning, boardOutline, componentHeights]);
 
   const getEventMm = (evt) => {
     const svgEl = getSvgEl(); if (!svgEl) return null;
@@ -1216,8 +1297,8 @@ export default function App() {
     console.log('Fiducial click processed. Best match:', best.id, 'Target:', targetId);
 
     if (targetId) {
-      // Update the design position for the target fiducial
-      setFiducials(prev => prev.map(f => f.id === targetId ? { ...f, design: mm } : f));
+      // Update the design position for the target fiducial AND initialize machine position to match
+      setFiducials(prev => prev.map(f => f.id === targetId ? { ...f, design: mm, machine: { x: mm.x, y: mm.y } } : f));
       setDragFid(targetId);
     }
   };
@@ -1271,7 +1352,48 @@ export default function App() {
 
 
 
+  // Zoom handlers
+  const onToggleZoom = useCallback(() => {
+    setZoomMode(prev => !prev);
+    if (isZoomed) {
+      // If turning off zoom mode while zoomed, zoom out
+      setIsZoomed(false);
+      setZoomViewBox(null);
+    }
+  }, [isZoomed]);
+
+  const onZoomOut = useCallback(() => {
+    setIsZoomed(false);
+    setZoomViewBox(null);
+  }, []);
+
   const handleCanvasClick = useCallback((evt) => {
+    // Handle Zoom Click
+    if (zoomMode && !isZoomed) {
+      const svgEl = getSvgEl();
+      if (!svgEl) return;
+      const geom = getSvgGeom();
+      if (!geom) return;
+
+      const pt = svgEl.createSVGPoint();
+      pt.x = evt.clientX; pt.y = evt.clientY;
+      const ctm = svgEl.getScreenCTM();
+      if (!ctm) return;
+      const local = pt.matrixTransform(ctm.inverse());
+
+      // 4x Zoom
+      const zoomFactor = 4;
+      const newW = geom.vbW / zoomFactor;
+      const newH = geom.vbH / zoomFactor;
+      const newX = local.x - newW / 2;
+      const newY = local.y - newH / 2;
+
+      setZoomViewBox(`${newX} ${newY} ${newW} ${newH}`);
+      setIsZoomed(true);
+      setZoomMode(false); // Exit zoom "picking" mode
+      return;
+    }
+
     console.log('handleCanvasClick fired. PickMode:', fidPickMode);
     if (fidPickMode) return;
 
@@ -1294,11 +1416,37 @@ export default function App() {
 
     // Only process clicks inside actual pad boundaries
     if (!hit) {
-      // Clear selection when clicking outside pads
-      setSelectedMm(null);
+      // Clear selection when clicking outside pads (only in single mode)
+      if (!multiSelectMode) {
+        setSelectedMm(null);
+        setSelectedPadIndices([]);
+      }
       return;
     }
 
+    if (multiSelectMode) {
+      // Toggle selection in multi-select mode (Ordered List)
+      setSelectedPadIndices(prev => {
+        if (prev.includes(hit.pad)) {
+          return prev.filter(i => i !== hit.pad); // Remove (deselect)
+        } else {
+          return [...prev, hit.pad]; // Append (keep order)
+        }
+      });
+      // Optionally update selectedMm
+      setSelectedMm({
+        x: hit.pos.x,
+        y: hit.pos.y,
+        centerValid: hit.pos.centerValid,
+        centerMethod: hit.pos.centerMethod,
+        originalPad: pads[hit.pad]
+      });
+      return;
+    }
+
+    // Single Selection Mode Logic
+    // Clear previous multi-selection
+    setSelectedPadIndices([hit.pad]);
 
     // Transform pad coordinates relative to origin
     const origin = selectedOrigin;
@@ -1365,6 +1513,7 @@ export default function App() {
     }
   }, [
     fidPickMode,
+    multiSelectMode,
     selectedOrigin,
     pads,
     getEventMm
@@ -1402,7 +1551,7 @@ export default function App() {
       const autoFiducials = detectedFiducials.map((fid, idx) => ({
         id: fid.id,
         design: { x: fid.x, y: fid.y },
-        machine: null,
+        machine: { x: fid.x, y: fid.y }, // Initialize machine coords to match design
         color: colors[idx % colors.length],
         confidence: fid.confidence
       }));
@@ -1446,7 +1595,10 @@ export default function App() {
 
     // Auto-solve transformation if we have enough fiducials
     const validFiducials = alignedFiducials.filter(f => f.design && f.machine);
-    if (validFiducials.length >= 2) {
+    if (validFiducials.length === 1) {
+      const T = fitTranslation(validFiducials.map(f => f.design), validFiducials.map(f => f.machine));
+      setXf(T);
+    } else if (validFiducials.length >= 2) {
       const T = fitSimilarity(validFiducials.map(f => f.design), validFiducials.map(f => f.machine));
       setXf(T);
     }
@@ -1498,7 +1650,10 @@ export default function App() {
 
       // Auto-solve if we have enough data
       const validFiducials = updatedFiducials.filter(f => f.design && f.machine);
-      if (validFiducials.length >= 2) {
+      if (validFiducials.length === 1) {
+        const T = fitTranslation(validFiducials.map(f => f.design), validFiducials.map(f => f.machine));
+        setXf(T);
+      } else if (validFiducials.length >= 2) {
         const T = fitSimilarity(validFiducials.map(f => f.design), validFiducials.map(f => f.machine));
         setXf(T);
       }
@@ -1576,48 +1731,18 @@ export default function App() {
           <ComponentList
             components={padDistances}
             onFocus={(pad) => {
-              // Calculate TRUE CENTER of the pad
-              const padHeight = pad.height || 1.0;
-              const trueCenterY = pad.y + (padHeight / 2);
-
-              // Use transformed CENTER coordinates
-              const origin = selectedOrigin;
-              let displayCoords;
-
-              if (pad.transformedX !== undefined && pad.transformedY !== undefined) {
-                // Use pre-calculated transformed CENTER coordinates
-                displayCoords = {
-                  x: pad.transformedX,
-                  y: pad.transformedY,
-                  centerValid: pad.centerValid,
-                  centerMethod: pad.centerMethod,
-                  originalPad: pad
-                };
-              } else if (origin) {
-                // Calculate transformation using TRUE CENTER on the fly
-                displayCoords = {
-                  x: pad.x - origin.x,
-                  y: trueCenterY + origin.y,  // Use trueCenterY
-                  centerValid: pad.centerValid,
-                  centerMethod: pad.centerMethod,
-                  originalPad: pad
-                };
-              } else {
-                // No transformation needed, use CENTER
-                displayCoords = {
-                  x: pad.x,
-                  y: trueCenterY,  // Use trueCenterY
-                  centerValid: pad.centerValid,
-                  centerMethod: pad.centerMethod,
-                  originalPad: pad
-                };
-              }
+              // Use Absolute CENTER coordinates directly (consistent with handleCanvasClick)
+              const displayCoords = {
+                x: pad.x,
+                y: pad.y,
+                centerValid: pad.centerValid,
+                centerMethod: pad.centerMethod,
+                originalPad: pad
+              };
 
               console.log('ComponentList Focus to CENTER:', {
-                original: { x: pad.x, y: pad.y },
-                center: { x: pad.x, y: trueCenterY },
-                transformed: displayCoords,
-                distance: pad.distance
+                pad: { x: pad.x, y: pad.y },
+                displayCoords
               });
 
               setSelectedMm(displayCoords);
@@ -1748,6 +1873,22 @@ export default function App() {
               side={side}
               onClickSvg={handleCanvasClick}
               onMouseDown={handleFiducialMouseDown}
+              zoomEnabled={zoomMode}
+              isZoomed={isZoomed}
+              multiSelectMode={multiSelectMode}
+              onToggleMultiSelect={() => setMultiSelectMode(prev => !prev)}
+              selectedCount={selectedPadIndices.length}
+              onOptimize={() => {
+                if (selectedPadIndices.length < 2) return;
+                const refPoint = referencePoint || selectedOrigin || { x: 0, y: 0 };
+                const currentPads = selectedPadIndices.map(i => pads[i]);
+                const sortedPads = dispensingSequencer.calculateOptimalSequence(refPoint, currentPads);
+                // Map back to indices (use findIndex in case of object cloning, but exact ref should work if sequencer preserves it)
+                // Actually calculateOptimalSequence often clones or returns new array. 
+                // But normally it keeps refs. If not, we match by logic (id or x/y).
+                const sortedIndices = sortedPads.map(p => pads.findIndex(orig => orig === p || (orig.x === p.x && orig.y === p.y)));
+                setSelectedPadIndices(sortedIndices);
+              }}
             />
             {(referencePoint || selectedOrigin) && selectedMm && (
               <div className="distance-info">
