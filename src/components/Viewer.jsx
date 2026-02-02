@@ -6,12 +6,7 @@ export default function Viewer({
   mirrorBottom,
   side,
   onClickSvg,
-  zoomEnabled,
-  isZoomed,
-  onToggleZoom,
-  onZoomOut,
   onMouseDown,
-  zoomViewBox,
   multiSelectMode,
   onToggleMultiSelect,
   selectedCount,
@@ -26,24 +21,10 @@ export default function Viewer({
 
       const svgElement = canvas.querySelector("svg");
       if (svgElement) {
-        // Store original viewBox if not already stored or if SVG changed
-        if (!svgElement.hasAttribute('data-original-viewbox')) {
-          svgElement.setAttribute('data-original-viewbox', svgElement.getAttribute('viewBox') || '');
-        }
-
         svgElement.setAttribute("preserveAspectRatio", "xMidYMid meet");
         svgElement.style.width = "100%";
         svgElement.style.height = "100%";
         svgElement.style.objectFit = "contain";
-
-        // Apply Zoom
-        if (isZoomed && zoomViewBox) {
-          svgElement.setAttribute('viewBox', zoomViewBox);
-        } else {
-          // Restore original if exists
-          const orig = svgElement.getAttribute('data-original-viewbox');
-          if (orig) svgElement.setAttribute('viewBox', orig);
-        }
 
         // Apply mirror transformation if needed
         if (mirrorBottom && side === "bottom") {
@@ -53,7 +34,7 @@ export default function Viewer({
         }
       }
     }
-  }, [svg, mirrorBottom, side, isZoomed, zoomViewBox]);
+  }, [svg, mirrorBottom, side]);
 
   const handleCanvasClick = (evt) => {
     if (onClickSvg) {
@@ -62,25 +43,8 @@ export default function Viewer({
   };
 
   return (
-    <div className={`viewer ${zoomEnabled ? "zoom-enabled" : ""} ${isZoomed ? "zoomed" : ""}`}>
+    <>
       <div className="viewer-toolbar">
-        {/* {!isZoomed ? (
-          <button
-            className={`zoom-btn ${zoomEnabled ? "on" : ""}`}
-            onClick={onToggleZoom}
-            title={zoomEnabled ? "Exit zoom mode" : "Enter zoom mode"}
-          >
-            {zoomEnabled ? "🔍 ON" : "🔍 OFF"}
-          </button>
-        ) : (
-          <button
-            className="zoom-btn"
-            onClick={onZoomOut}
-            title="Zoom out to full view"
-          >
-            ⬅ Zoom Out
-          </button>
-        )} */}
         <button
           className={`zoom-btn ${multiSelectMode ? "on" : ""}`}
           onClick={onToggleMultiSelect}
@@ -100,16 +64,14 @@ export default function Viewer({
           </button>
         )}
       </div>
-
-      <div
-        ref={canvasRef}
-        className={`canvas ${zoomEnabled && !isZoomed ? "zoom-mode" : ""}`}
-        onClick={handleCanvasClick}
-        onMouseDown={onMouseDown}
-        style={{
-          cursor: zoomEnabled && !isZoomed ? "zoom-in" : "default"
-        }}
-      />
-    </div>
+      <div className="viewer">
+        <div
+          ref={canvasRef}
+          className="canvas"
+          onClick={handleCanvasClick}
+          onMouseDown={onMouseDown}
+        />
+      </div>
+    </>
   );
 }

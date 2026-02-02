@@ -7,10 +7,10 @@ export function detectPcbOrigins(layers) {
   // Only find bottom-left corner from board outline
   const outlineOrigins = findOutlineOrigins(layers);
   
-  // Filter to only top-left corner with 90% confidence
-  const topLeftOrigin = outlineOrigins.find(o => o.subtype === 'top_left');
+  // Filter to only bottom-left corner with 90% confidence
+  const bottomLeftOrigin = outlineOrigins.find(o => o.subtype === 'bottom_left');
   
-  return topLeftOrigin ? [topLeftOrigin] : [];
+  return bottomLeftOrigin ? [bottomLeftOrigin] : [];
 }
 
 /**
@@ -35,9 +35,9 @@ function findOutlineOrigins(layers) {
         x: bounds.minX,
         y: bounds.minY, // Use minY for top in SVG coordinates
         type: 'outline_corner',
-        subtype: 'top_left',
+        subtype: 'bottom_left',
         confidence: 0.9,
-        description: 'Top-left corner of PCB outline'
+        description: 'Bottom-left corner of PCB outline'
       });
     }
   }

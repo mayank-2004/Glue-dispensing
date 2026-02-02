@@ -35,7 +35,7 @@ export function extractPadsMm(gerberText) {
       }
       
       macros[macroName] = { width, height, shape: 'MACRO' };
-      console.log(`✅ Parsed macro ${macroName}:`, macros[macroName]);
+      // console.log(`✅ Parsed macro ${macroName}:`, macros[macroName]);
     }
     
     // Parse standard aperture definitions
@@ -66,7 +66,7 @@ export function extractPadsMm(gerberText) {
       }
       
       apertures[dCode] = aperture;
-      console.log(`✅ Parsed aperture D${dCode}:`, aperture, 'from:', block);
+      // console.log(`✅ Parsed aperture D${dCode}:`, aperture, 'from:', block);
     }
   }
 
@@ -107,7 +107,7 @@ export function extractPadsMm(gerberText) {
       // Update current aperture when D-code changes
       if (currentD >= 10 && apertures[currentD]) {
         currentAperture = apertures[currentD];
-        console.log(`Switched to aperture D${currentD}:`, currentAperture);
+        // console.log(`Switched to aperture D${currentD}:`, currentAperture);
       }
     }
 
@@ -119,7 +119,7 @@ export function extractPadsMm(gerberText) {
         // Use current active aperture or fallback
         let aperture = currentAperture || { width: 1.0, height: 1.0, shape: 'R' };
         
-        console.log(`Flash at (${x}, ${y}) with aperture:`, aperture);
+        // console.log(`Flash at (${x}, ${y}) with aperture:`, aperture);
         
         pads.push({ 
           x, 

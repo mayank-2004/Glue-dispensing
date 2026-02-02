@@ -151,10 +151,7 @@ export default function App() {
     completedPads: []
   });
 
-  // Zoom State
-  const [zoomMode, setZoomMode] = useState(false);
-  const [isZoomed, setIsZoomed] = useState(false);
-  const [zoomViewBox, setZoomViewBox] = useState(null);
+
 
   // Multi-Selection State
   const [multiSelectMode, setMultiSelectMode] = useState(false);
@@ -1159,8 +1156,9 @@ export default function App() {
     const refPoint = referencePoint || selectedOrigin;
 
     // Choose which pads to sequence: Multi-selection or All
-    const padsToUse = selectedPadIndices.size > 0
-      ? pads.filter((_, i) => selectedPadIndices.has(i))
+    // If indices are selected, use them in their specific order (important for optimization)
+    const padsToUse = selectedPadIndices.length > 0
+      ? selectedPadIndices.map(i => pads[i]).filter(Boolean)
       : pads;
 
     if (refPoint && padsToUse.length > 0) {
@@ -1353,46 +1351,11 @@ export default function App() {
 
 
   // Zoom handlers
-  const onToggleZoom = useCallback(() => {
-    setZoomMode(prev => !prev);
-    if (isZoomed) {
-      // If turning off zoom mode while zoomed, zoom out
-      setIsZoomed(false);
-      setZoomViewBox(null);
-    }
-  }, [isZoomed]);
 
-  const onZoomOut = useCallback(() => {
-    setIsZoomed(false);
-    setZoomViewBox(null);
-  }, []);
 
   const handleCanvasClick = useCallback((evt) => {
-    // Handle Zoom Click
-    if (zoomMode && !isZoomed) {
-      const svgEl = getSvgEl();
-      if (!svgEl) return;
-      const geom = getSvgGeom();
-      if (!geom) return;
+    // Handle Zoom Click code removed
 
-      const pt = svgEl.createSVGPoint();
-      pt.x = evt.clientX; pt.y = evt.clientY;
-      const ctm = svgEl.getScreenCTM();
-      if (!ctm) return;
-      const local = pt.matrixTransform(ctm.inverse());
-
-      // 4x Zoom
-      const zoomFactor = 4;
-      const newW = geom.vbW / zoomFactor;
-      const newH = geom.vbH / zoomFactor;
-      const newX = local.x - newW / 2;
-      const newY = local.y - newH / 2;
-
-      setZoomViewBox(`${newX} ${newY} ${newW} ${newH}`);
-      setIsZoomed(true);
-      setZoomMode(false); // Exit zoom "picking" mode
-      return;
-    }
 
     console.log('handleCanvasClick fired. PickMode:', fidPickMode);
     if (fidPickMode) return;
@@ -1873,8 +1836,7 @@ export default function App() {
               side={side}
               onClickSvg={handleCanvasClick}
               onMouseDown={handleFiducialMouseDown}
-              zoomEnabled={zoomMode}
-              isZoomed={isZoomed}
+
               multiSelectMode={multiSelectMode}
               onToggleMultiSelect={() => setMultiSelectMode(prev => !prev)}
               selectedCount={selectedPadIndices.length}
@@ -1883,9 +1845,6 @@ export default function App() {
                 const refPoint = referencePoint || selectedOrigin || { x: 0, y: 0 };
                 const currentPads = selectedPadIndices.map(i => pads[i]);
                 const sortedPads = dispensingSequencer.calculateOptimalSequence(refPoint, currentPads);
-                // Map back to indices (use findIndex in case of object cloning, but exact ref should work if sequencer preserves it)
-                // Actually calculateOptimalSequence often clones or returns new array. 
-                // But normally it keeps refs. If not, we match by logic (id or x/y).
                 const sortedIndices = sortedPads.map(p => pads.findIndex(orig => orig === p || (orig.x === p.x && orig.y === p.y)));
                 setSelectedPadIndices(sortedIndices);
               }}

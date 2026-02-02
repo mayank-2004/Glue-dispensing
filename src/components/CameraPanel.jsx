@@ -162,17 +162,58 @@ export default function CameraPanel({
     if (!showOverlay) return;
 
     // Draw vision detection result
-    if (visionEnabled && visionResult && visionResult.detected) {
-      const detectedPx = projectPx(visionResult.position);
-      if (detectedPx) {
-        ctx.beginPath();
-        ctx.arc(detectedPx.u, detectedPx.v, 8, 0, Math.PI * 2);
-        ctx.strokeStyle = '#00ff00';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        ctx.fillStyle = '#00ff00';
-        ctx.font = '12px Arial';
-        ctx.fillText(`Detected (${visionResult.confidence.toFixed(2)})`, detectedPx.u + 10, detectedPx.v - 10);
+    if (visionResult && visionResult.detected) {
+      // Draw Blobs
+      if (visionResult.fiducials) {
+        visionResult.fiducials.forEach(fid => {
+          const px = fid.pixelPosition;
+          const r = fid.radius || 5;
+
+          // Draw detected circle
+          ctx.beginPath();
+          ctx.arc(px.x, px.y, r, 0, Math.PI * 2);
+          ctx.strokeStyle = '#00ff00';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+
+          // Draw Isolation Zone (4mm)
+          // We need pxPerMm to draw this accurately in overlay. 
+          // We'll estimate it from the detected fiducial if we know its size, or just use the passed option if we had it.
+          // For now, let's draw a visual ring relative to the blob size.
+          // Assuming max blob is 3mm. 4mm is 1.33x the diameter (approx).
+          const isoR = r + (4 * 20); // Fallback visualization if scale unknown, or usage of known scale
+
+          // Better: Calculate it properly if we can.
+          // Assuming standard 20px/mm for visualization fallback
+          const scale = pxPerMmAt({ x: 0, y: 0 }) || 20;
+          const isoRadius = r + (4 * scale);
+
+          ctx.beginPath();
+          ctx.arc(px.x, px.y, isoRadius, 0, Math.PI * 2);
+          ctx.strokeStyle = 'cyan';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          ctx.fillStyle = '#00ff00';
+          ctx.font = '12px Arial';
+          ctx.fillText(`Fid (${fid.confidence.toFixed(2)})`, px.x + r + 5, px.y);
+        });
+      }
+      // Legacy single result support
+      else if (visionResult.position) {
+        const detectedPx = projectPx(visionResult.position);
+        if (detectedPx) {
+          ctx.beginPath();
+          ctx.arc(detectedPx.u, detectedPx.v, 8, 0, Math.PI * 2);
+          ctx.strokeStyle = '#00ff00';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          ctx.fillStyle = '#00ff00';
+          ctx.font = '12px Arial';
+          ctx.fillText(`Detected (${visionResult.confidence.toFixed(2)})`, detectedPx.u + 10, detectedPx.v - 10);
+        }
       }
     }
 
@@ -284,6 +325,21 @@ export default function CameraPanel({
     }
   };
 
+  // Helper to get scale (px/mm)
+  const getScale = () => {
+    // 1. Try from Homography at center
+    if (H) {
+      const center = { x: 100, y: 100 }; // Arbitrary world point
+      const p1 = projectPx(center);
+      const p2 = projectPx({ x: center.x + 1, y: center.y });
+      if (p1 && p2) {
+        return Math.hypot(p2.u - p1.u, p2.v - p1.v);
+      }
+    }
+    // 2. Fallback or Manual Input (todo)
+    return 20; // Default fallback (approx 20px/mm)
+  };
+
   // Automated fiducial detection using camera
   const detectFiducialsWithCamera = async () => {
     if (!videoRef.current || !streamOn) {
@@ -294,31 +350,40 @@ export default function CameraPanel({
     setAutoDetecting(true);
     try {
       fiducialDetector.setHomography(H);
-      const result = await fiducialDetector.detectFiducialsInFrame(videoRef.current, fiducials);
-      
+
+      const pxPerMm = getScale();
+      console.log('Detecting with scale:', pxPerMm, 'px/mm');
+
+      const result = await fiducialDetector.detectFiducialsInFrame(videoRef.current, fiducials, { pxPerMm });
+
       if (result.success && result.fiducials.length > 0) {
         console.log('Auto-detected fiducials:', result.fiducials);
-        
-        // Update fiducial positions with detected coordinates
+        setVisionResult({
+          detected: true,
+          fiducials: result.fiducials,
+          confidence: result.fiducials[0].confidence
+        }); // Show debug overlay
+
+        // Update fiducial positions with detected coordinates in PARENT
         const updatedFiducials = result.fiducials.map((detected, idx) => {
-          const existing = fiducials[idx] || { id: `F${idx + 1}`, color: `#${Math.floor(Math.random()*16777215).toString(16)}` };
+          const existing = fiducials[idx] || { id: `F${idx + 1}`, color: `#${Math.floor(Math.random() * 16777215).toString(16)}`};
           return {
             ...existing,
-            machine: detected.machinePosition,
+            machine: detected.machinePosition || null, // Might be null if no H
             pixelPosition: detected.pixelPosition,
             confidence: detected.confidence,
             autoDetected: true
           };
         });
-        
+
         // Trigger callback to update parent state
         if (window.updateFiducialsFromCamera) {
           window.updateFiducialsFromCamera(updatedFiducials);
         }
-        
-        alert(`Successfully detected ${result.fiducials.length} fiducials!`);
+
+        // alert(`Successfully detected ${result.fiducials.length} fiducials!`);
       } else {
-        alert('No fiducials detected. Ensure fiducials are visible and camera is properly positioned.');
+        alert('No fiducials found matching constraints (Max 3mm dia, 4mm isolation).');
       }
     } catch (error) {
       console.error('Camera fiducial detection failed:', error);
@@ -357,7 +422,7 @@ export default function CameraPanel({
       },
       2000 // Check every 2 seconds
     );
-    
+
     setDetectionInterval(intervalId);
   };
 
@@ -424,18 +489,18 @@ export default function CameraPanel({
             </button>
           )}
         </div>
-        
+
         <div className="fiducial-detection-section">
           <h4>Automated Fiducial Detection</h4>
           <div className="flex-row" style={{ gap: 8 }}>
-            <button 
-              className="btn" 
-              onClick={detectFiducialsWithCamera} 
+            <button
+              className="btn"
+              onClick={detectFiducialsWithCamera}
               disabled={!streamOn || autoDetecting}
             >
               {autoDetecting ? 'Detecting...' : '📷 Detect Fiducials'}
             </button>
-            <button 
+            <button
               className={`btn ${detectionInterval ? 'secondary' : ''}`}
               onClick={startContinuousDetection}
               disabled={!streamOn}
