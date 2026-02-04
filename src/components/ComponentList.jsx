@@ -12,13 +12,13 @@ export default function ComponentList({ components, onFocus }) {
               <div className="comp-meta">
                 <span className="comp-name">
                   {c.id || `Comp #${i + 1}`}
-                  {c.source && (
+                  {/* {c.source && (
                     <small style={{ marginLeft: 4, color: '#666' }}>
                       ({c.source === 'combined' ? '📍+🎯' : 
                         c.source === 'soldermask' ? '📍' : 
                         c.source === 'solderpaste' ? '🎯' : c.source})
                     </small>
-                  )}
+                  )} */}
                 </span>
                 {c.distance !== undefined && (
                   <span className="comp-distance">{c.distance.toFixed(2)} mm</span>

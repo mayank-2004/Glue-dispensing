@@ -70,7 +70,7 @@ function processPads(points) {
     return {
       x: centerInfo.x,
       y: centerInfo.y,
-      id: `P${idx + 1}`,
+      id: pad.componentIdentifier || `P${idx + 1}`,
       width: centerInfo.width || pad.width || 1,
       height: centerInfo.height || pad.height || 1,
       centerValid: centerInfo.valid,
@@ -150,8 +150,6 @@ export default function App() {
     machinePosition: null,
     completedPads: []
   });
-
-
 
   // Multi-Selection State
   const [multiSelectMode, setMultiSelectMode] = useState(false);
@@ -499,12 +497,18 @@ export default function App() {
   }
 
   async function rebuild(nextLayers = layers, s = side) {
+    const enabledCount = nextLayers.filter(l => l.enabled).length;
+    console.log(`Rebuilding SVG. Total layers: ${nextLayers.length}, Enabled: ${enabledCount}, Side: ${s}`);
     const ssvg = await stackupToSvg(nextLayers, s);
+    console.log('SVG rebuilt. Length:', ssvg?.length);
     setSvg(ssvg);
   }
 
   const toggleLayer = async (idx) => {
+    const layer = layers[idx];
+    console.log(`Toggling layer index ${idx}. Type: ${layer.type}, Side: ${layer.side}. Currently enabled: ${layer.enabled}`);
     const next = layers.map((l, i) => (i === idx ? { ...l, enabled: !l.enabled } : l));
+    console.log(`New state for index ${idx}: ${next[idx].enabled}. Rebuilding for view-side: ${side}`);
     setLayers(next); await rebuild(next, side);
   };
   const changeSide = async (s) => {
@@ -1691,10 +1695,10 @@ export default function App() {
               })}
             </select>
           </div>
+          {console.log("padDistances", padDistances)}
           <ComponentList
             components={padDistances}
             onFocus={(pad) => {
-              // Use Absolute CENTER coordinates directly (consistent with handleCanvasClick)
               const displayCoords = {
                 x: pad.x,
                 y: pad.y,

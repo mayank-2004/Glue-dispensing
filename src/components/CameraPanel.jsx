@@ -366,7 +366,7 @@ export default function CameraPanel({
 
         // Update fiducial positions with detected coordinates in PARENT
         const updatedFiducials = result.fiducials.map((detected, idx) => {
-          const existing = fiducials[idx] || { id: `F${idx + 1}`, color: `#${Math.floor(Math.random() * 16777215).toString(16)}`};
+          const existing = fiducials[idx] || { id: `F${idx + 1}`, color: `#${Math.floor(Math.random() * 16777215).toString(16)}` };
           return {
             ...existing,
             machine: detected.machinePosition || null, // Might be null if no H

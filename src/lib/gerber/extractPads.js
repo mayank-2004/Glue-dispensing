@@ -2,7 +2,9 @@ const IN2MM = 25.4;
 
 export function extractPadsMm(gerberText) {
   const paramBlocks = [];
-  gerberText.replace(/%[^%]*%/g, (m) => { paramBlocks.push(m); return ''; });
+  // Strip standard parameters but KEEP attributes (TO, TA, TD) for processing in stream
+  // We use a negative lookahead to exclude TO, TA, TD from being stripped
+  gerberText.replace(/%(?!(?:TO|TA|TD))[^%]*%/g, (m) => { paramBlocks.push(m); return ''; });
 
   let units = 'mm';
   let zeroSupp = 'L';
@@ -10,13 +12,13 @@ export function extractPadsMm(gerberText) {
   const apertures = {};
 
   const macros = {}; // Store aperture macros
-  
+
   for (const block of paramBlocks) {
     const mo = block.match(/%MO(IN|MM)\*%/i);
     if (mo) units = mo[1].toLowerCase() === 'in' ? 'in' : 'mm';
     const fs = block.match(/%FS([LT])([AI])X(\d)(\d)Y(\d)(\d)\*%/i);
-    if (fs) { zeroSupp = fs[1].toUpperCase(); xInt=+fs[3]; xDec=+fs[4]; yInt=+fs[5]; yDec=+fs[6]; }
-    
+    if (fs) { zeroSupp = fs[1].toUpperCase(); xInt = +fs[3]; xDec = +fs[4]; yInt = +fs[5]; yDec = +fs[6]; }
+
     // Parse aperture macros (like OUTLINE2, OUTLINE5)
     const macro = block.match(/%AM([A-Z0-9]+)\*([\s\S]*?)\*%/i);
     if (macro) {
@@ -25,7 +27,7 @@ export function extractPadsMm(gerberText) {
       // Extract approximate dimensions from macro content
       const coords = macroContent.match(/([+-]?\d*\.?\d+)/g) || [];
       const numbers = coords.map(parseFloat).filter(n => !isNaN(n) && n !== 0);
-      
+
       let width = 1.5, height = 1.7; // Default sizes
       if (numbers.length >= 4) {
         const xCoords = numbers.filter((_, i) => i % 2 === 0);
@@ -33,20 +35,20 @@ export function extractPadsMm(gerberText) {
         width = Math.max(...xCoords) - Math.min(...xCoords);
         height = Math.max(...yCoords) - Math.min(...yCoords);
       }
-      
+
       macros[macroName] = { width, height, shape: 'MACRO' };
       // console.log(`✅ Parsed macro ${macroName}:`, macros[macroName]);
     }
-    
+
     // Parse standard aperture definitions
     let ad = block.match(/%ADD(\d+)([CR]),([\.\d]+)(?:X([\d\.]+))?\*%/i);
     if (!ad) ad = block.match(/%ADD(\d+)([CR])([\.\d]+)(?:X([\d\.]+))?\*%/i);
     if (!ad) ad = block.match(/%ADD(\d+)([A-Z0-9]+)\*%/i); // Macro reference
-    
+
     if (ad) {
       const dCode = parseInt(ad[1]);
       const shapeOrMacro = ad[2].toUpperCase();
-      
+
       let aperture;
       if (macros[shapeOrMacro]) {
         // Use macro dimensions
@@ -64,13 +66,15 @@ export function extractPadsMm(gerberText) {
         // Unknown macro, use reasonable defaults
         aperture = { width: 1.5, height: 1.7, shape: 'MACRO' };
       }
-      
+
       apertures[dCode] = aperture;
       // console.log(`✅ Parsed aperture D${dCode}:`, aperture, 'from:', block);
     }
   }
 
-  const opsText = gerberText.replace(/%[^%]*%/g, '');
+  // Remove the stripped parameters, but keep TO/TA/TD which were skipped by the regex
+  // Also remove the % delimiters from the remaining attributes for cleaner tokenizing
+  const opsText = gerberText.replace(/%(?!(?:TO|TA|TD))[^%]*%/g, '').replace(/%/g, '');
   const tokens = opsText.split('*').map(s => s.trim()).filter(Boolean);
 
   const parseCoord = (val, i, d, z = zeroSupp) => {
@@ -80,7 +84,7 @@ export function extractPadsMm(gerberText) {
     if (val.startsWith('-')) { sign = -1; val = val.slice(1); }
     const total = i + d;
     let s = z === 'L' ? val.padStart(total, '0') : val.padEnd(total, '0');
-    return sign * parseFloat(`${s.slice(0,i)}.${s.slice(i)}`);
+    return sign * parseFloat(`${s.slice(0, i)}.${s.slice(i)}`);
   };
 
   const parseXY = (t, last) => {
@@ -93,6 +97,7 @@ export function extractPadsMm(gerberText) {
   };
 
   let curX = 0, curY = 0, currentD = null, currentAperture = null;
+  let currentRefDes = null; // State for Object Attribute RefDes
   const pads = [];
 
   console.log('Available apertures:', apertures);
@@ -100,6 +105,24 @@ export function extractPadsMm(gerberText) {
   for (const raw of tokens) {
     const t = raw.replace(/\s+/g, '');
     if (!t || /^G0?4/i.test(t)) continue;
+
+    // Attribute Parsing (TO/TA/TD)
+    // Format: TO.C,R1 or TA.P,RefDes,R1
+    if (t.startsWith('TO.C')) {
+      // Object Attribute .C (Component)
+      const parts = t.split(',');
+      if (parts.length >= 2) {
+        currentRefDes = parts[1];
+        // console.log('Found Component RefDes:', currentRefDes);
+      }
+      continue;
+    }
+    if (t.startsWith('TD')) {
+      // Delete Attribute - Reset state
+      // console.log('TD command: Resetting RefDes from', currentRefDes);
+      currentRefDes = null;
+      continue;
+    }
 
     const md = t.match(/D0?(\d+)$/i);
     if (md) {
@@ -113,33 +136,40 @@ export function extractPadsMm(gerberText) {
 
     if (/[XY]/i.test(t)) {
       const { x, y } = parseXY(t, { x: curX, y: curY });
-      if (currentD === 2 || currentD == null) { curX=x; curY=y; continue; }
-      if (currentD === 1) { curX=x; curY=y; continue; }
+      if (currentD === 2 || currentD == null) { curX = x; curY = y; continue; }
+      if (currentD === 1) { curX = x; curY = y; continue; }
       if (currentD === 3) { // FLASH
         // Use current active aperture or fallback
         let aperture = currentAperture || { width: 1.0, height: 1.0, shape: 'R' };
-        
-        // console.log(`Flash at (${x}, ${y}) with aperture:`, aperture);
-        
-        pads.push({ 
-          x, 
-          y, 
-          width: aperture.width, 
+
+        // console.log(`Flash at (${x}, ${y}) with aperture:`, aperture, 'RefDes:', currentRefDes);
+
+        pads.push({
+          x,
+          y,
+          width: aperture.width,
           height: aperture.height,
-          shape: aperture.shape
+          shape: aperture.shape,
+          componentIdentifier: currentRefDes // Attach found RefDes
         });
-        curX=x; curY=y; continue;
+        curX = x; curY = y; continue;
       }
     }
   }
 
+  // console.log('Total pads extracted:', pads.length);
+  // const namedPads = pads.filter(p => p.componentIdentifier);
+  // console.log('Pads with component names:', namedPads.length);
+  // if (namedPads.length > 0) console.log('Sample names:', namedPads.slice(0, 5).map(p => p.componentIdentifier));
+
   if (units === 'in') {
-    return pads.map(p => ({ 
-      x: p.x * IN2MM, 
+    return pads.map(p => ({
+      x: p.x * IN2MM,
       y: p.y * IN2MM,
       width: p.width * IN2MM,
       height: p.height * IN2MM,
-      shape: p.shape
+      shape: p.shape,
+      componentIdentifier: p.componentIdentifier
     }));
   }
   return pads;

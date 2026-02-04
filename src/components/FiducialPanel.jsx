@@ -2,18 +2,18 @@ import React from "react";
 import "./FiducialPanel.css";
 
 export default function FiducialPanel({
-  fiducials,           
-  activeId,            
+  fiducials,
+  activeId,
   setActiveId,
-  pickMode,          
+  pickMode,
   togglePickMode,
-  onInputMachine,      
-  onClearOne,          
+  onInputMachine,
+  onClearOne,
   onClearAll,
-  onSolve2,            
-  onSolve3,            
-  transformSummary,    
-  applyTransform,      
+  onSolve2,
+  onSolve3,
+  transformSummary,
+  applyTransform,
   setApplyTransform,
   detectionResult,
   onRedetectFiducials,
@@ -26,14 +26,14 @@ export default function FiducialPanel({
   return (
     <div className="section">
       <h3>Fiducials & Alignment</h3>
-      
+
       {detectionResult !== null && (
         <div className={`info ${detectionResult.length === 0 ? 'warning' : 'success'}`} style={{ marginBottom: 12 }}>
           {detectionResult.length > 0 ? (
             <div>
               <strong>✓ Auto-detected {detectionResult.length} fiducial{detectionResult.length > 1 ? 's' : ''}</strong>
               <div style={{ fontSize: '0.9em', marginTop: 4 }}>
-                {detectionResult.map(fid => 
+                {detectionResult.map(fid =>
                   `${fid.id}: ${fid.x.toFixed(2)}, ${fid.y.toFixed(2)}mm (${Math.round(fid.confidence * 100)}%)`
                 ).join(' • ')}
               </div>
@@ -53,7 +53,7 @@ export default function FiducialPanel({
         <button className={`btn ${pickMode ? "" : "secondary"}`} onClick={togglePickMode}>
           {pickMode ? "Pick/Drag fiducials: ON" : "Pick/Drag fiducials"}
         </button>
-        <select value={activeId ?? ""} onChange={(e)=>setActiveId(e.target.value || null)}>
+        <select value={activeId ?? ""} onChange={(e) => setActiveId(e.target.value || null)}>
           <option value="">(select F to arm)</option>
           {fiducials.map(f => <option key={f.id} value={f.id}>{f.id}</option>)}
         </select>
@@ -72,20 +72,20 @@ export default function FiducialPanel({
           </button>
         )}
         <label className="flex-row" style={{ gap: 6, marginLeft: "auto" }}>
-          <input type="checkbox" checked={applyTransform} onChange={(e)=>setApplyTransform(e.target.checked)} />
+          <input type="checkbox" checked={applyTransform} onChange={(e) => setApplyTransform(e.target.checked)} />
           Apply transform to outputs
         </label>
       </div>
 
       <table className="kv small">
         <thead>
-          <tr><th>F</th><th>Design (mm)</th><th>Machine (mm)</th><th/></tr>
+          <tr><th>F</th><th>Design (mm)</th><th>Machine (mm)</th><th /></tr>
         </thead>
         <tbody>
           {fiducials.map(f => (
             <tr key={f.id}>
               <td>
-                <span style={{ display: "inline-block", width: 10, height: 10, background: f.color, borderRadius: 4, marginRight: 6 }}/>
+                <span style={{ display: "inline-block", width: 10, height: 10, background: f.color, borderRadius: 4, marginRight: 6 }} />
                 <strong>{f.id}</strong>{activeId === f.id ? " (armed)" : ""}
                 {f.confidence && <span style={{ fontSize: '0.8em', color: '#666' }}> ({Math.round(f.confidence * 100)}%)</span>}
               </td>
@@ -95,12 +95,12 @@ export default function FiducialPanel({
               <td>
                 <div className="flex-row" style={{ gap: 6 }}>
                   <input className="in sm" placeholder="Mx"
-                         value={f.machine?.x ?? ""} onChange={(e)=>onInputMachine(f.id, {x:parseFloat(e.target.value), y:f.machine?.y})}/>
+                    value={f.machine?.x ?? ""} onChange={(e) => onInputMachine(f.id, { x: parseFloat(e.target.value), y: f.machine?.y })} />
                   <input className="in sm" placeholder="My"
-                         value={f.machine?.y ?? ""} onChange={(e)=>onInputMachine(f.id, {x:f.machine?.x, y:parseFloat(e.target.value)})}/>
+                    value={f.machine?.y ?? ""} onChange={(e) => onInputMachine(f.id, { x: f.machine?.x, y: parseFloat(e.target.value) })} />
                 </div>
               </td>
-              <td><button className="btn secondary" onClick={()=>onClearOne(f.id)}>Clear</button></td>
+              <td><button className="btn secondary" onClick={() => onClearOne(f.id)}>Clear</button></td>
             </tr>
           ))}
         </tbody>
@@ -120,6 +120,7 @@ export default function FiducialPanel({
           {"rms" in transformSummary && <div>RMS error: {transformSummary.rms.toFixed(3)} mm</div>}
         </div>
       )}
+
     </div>
   );
 }

@@ -8,7 +8,8 @@ export default function SerialPanel({
   pressureSettings = {},
   speedSettings = {},
   onJobStart = null,
-  onJobComplete = null
+  onJobComplete = null,
+  onMachinePositionUpdate = null
 }) {
   const [ports, setPorts] = useState([]);
   const [path, setPath] = useState('');
@@ -37,6 +38,16 @@ export default function SerialPanel({
   useEffect(() => {
     window.serial.onData((line) => {
       setConsoleLines((prev) => [...prev, line].slice(-500));
+
+      // Parse Machine Position (Idle|MPos:0.000,0.000,0.000|...)
+      const match = line.match(/(?:MPos|WPos):([\d.-]+),([\d.-]+),([\d.-]+)/);
+      if (match && onMachinePositionUpdate) {
+        onMachinePositionUpdate({
+          x: parseFloat(match[1]),
+          y: parseFloat(match[2]),
+          z: parseFloat(match[3])
+        });
+      }
     });
   }, []);
 

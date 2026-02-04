@@ -1,13 +1,17 @@
 export function identifyLayers(files) {
-  const mapping = window.whatsThatGerber(files.map(f => f.name));
-  return files.map(f => {
-    const meta = mapping[f.name] || {};
+  // Extract basenames to handle paths in ZIPs (e.g. "folder/file.gbr" -> "file.gbr")
+  const basenames = files.map(f => f.name.replace(/^.*[\\\/]/, ''));
+  const mapping = window.whatsThatGerber(basenames);
+
+  return files.map((f, i) => {
+    const basename = basenames[i];
+    const meta = mapping[basename] || {};
     return {
-      filename: f.name,
+      filename: f.name, // Keep original full path for display/uniqueness
       text: f.text,
-      side: meta.side ?? null,     
-      type: meta.type ?? null,     
+      side: meta.side ?? null,
+      type: meta.type ?? null,
       enabled: meta.type ? true : false
     };
-  }).filter(l => l.type); 
+  }).filter(l => l.type);
 }
