@@ -3,7 +3,13 @@ export async function stackupToSvg(layers, side = 'top') {
   // We treat them as part of the current stackup regardless of their physical location
   const renderSide = side;
 
-  const enabled = layers.filter(l => l.enabled).map(l => {
+  const enabled = layers.filter(l => {
+    if (!l.enabled) return false;
+    // Include shared layers (drill, outline, etc)
+    if (l.type === 'drill' || l.type === 'outline') return true;
+    // Include layers matching the requested side
+    return l.side === side;
+  }).map(l => {
     const base = {
       filename: l.filename.replace(/^.*[\\\/]/, ''),
       gerber: l.text,

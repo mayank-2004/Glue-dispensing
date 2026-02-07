@@ -10,13 +10,23 @@ export class NozzleMaintenanceManager {
       autoReminders: true
     });
     this.reminderCallback = null;
+    this.toolOffset = this.loadFromStorage('toolOffset', { dx: 0, dy: 0 });
+  }
+
+  getToolOffset() {
+    return this.toolOffset;
+  }
+
+  setToolOffset(offset) {
+    this.toolOffset = { ...this.toolOffset, ...offset };
+    this.saveToStorage('toolOffset', this.toolOffset);
   }
 
   // Record a dispense operation
   recordDispense() {
     this.dispenseCount++;
     this.saveToStorage('nozzleDispenseCount', this.dispenseCount);
-    
+
     if (this.shouldRemindCleaning()) {
       this.triggerCleaningReminder();
     }
@@ -25,18 +35,18 @@ export class NozzleMaintenanceManager {
   // Check if cleaning reminder should be shown
   shouldRemindCleaning() {
     if (!this.settings.autoReminders) return false;
-    
+
     const hoursSinceLastCleaning = (Date.now() - this.lastCleaningTime) / (1000 * 60 * 60);
     const dispensesExceeded = this.dispenseCount >= this.settings.maxDispensesBeforeCleaning;
     const timeExceeded = hoursSinceLastCleaning >= this.settings.maxHoursBeforeCleaning;
-    
+
     return dispensesExceeded || timeExceeded;
   }
 
   // Trigger cleaning reminder
   triggerCleaningReminder() {
     const reason = this.getCleaningReason();
-    
+
     if (this.reminderCallback) {
       this.reminderCallback({
         type: 'cleaning_reminder',
@@ -53,7 +63,7 @@ export class NozzleMaintenanceManager {
     const hoursSinceLastCleaning = (Date.now() - this.lastCleaningTime) / (1000 * 60 * 60);
     const dispensesExceeded = this.dispenseCount >= this.settings.maxDispensesBeforeCleaning;
     const timeExceeded = hoursSinceLastCleaning >= this.settings.maxHoursBeforeCleaning;
-    
+
     if (dispensesExceeded && timeExceeded) {
       return 'both_limits_exceeded';
     } else if (dispensesExceeded) {
@@ -61,7 +71,7 @@ export class NozzleMaintenanceManager {
     } else if (timeExceeded) {
       return 'time_limit_exceeded';
     }
-    
+
     return 'unknown';
   }
 
@@ -69,10 +79,10 @@ export class NozzleMaintenanceManager {
   markCleaned() {
     this.dispenseCount = 0;
     this.lastCleaningTime = Date.now();
-    
+
     this.saveToStorage('nozzleDispenseCount', this.dispenseCount);
     this.saveToStorage('lastNozzleCleaning', this.lastCleaningTime);
-    
+
     if (this.reminderCallback) {
       this.reminderCallback({
         type: 'cleaning_completed',
@@ -86,7 +96,7 @@ export class NozzleMaintenanceManager {
     const hoursSinceLastCleaning = (Date.now() - this.lastCleaningTime) / (1000 * 60 * 60);
     const dispensesRemaining = Math.max(0, this.settings.maxDispensesBeforeCleaning - this.dispenseCount);
     const hoursRemaining = Math.max(0, this.settings.maxHoursBeforeCleaning - hoursSinceLastCleaning);
-    
+
     return {
       dispenseCount: this.dispenseCount,
       dispensesRemaining,
@@ -120,22 +130,22 @@ export class NozzleMaintenanceManager {
     } = settings;
 
     const gcode = [];
-    
+
     gcode.push('; --- Nozzle Cleaning Sequence ---');
     gcode.push('G21 ; Set units to millimeters');
     gcode.push('G90 ; Absolute positioning');
-    
+
     // Move to cleaning position
     gcode.push(`G0 Z${cleaningPosition.z + 5}`);
     gcode.push(`G0 X${cleaningPosition.x} Y${cleaningPosition.y}`);
     gcode.push(`G1 Z${cleaningPosition.z} F300`);
-    
+
     // Purge material
     gcode.push(`; Purge ${purgeAmount}mm of material`);
     gcode.push('M106 S255 ; Turn on purge valve');
     gcode.push(`G4 P${purgeAmount * 1000 / (purgeSpeed / 60)} ; Purge time`);
     gcode.push('M107 ; Turn off purge valve');
-    
+
     // Wipe pattern
     if (wipePattern === 'linear') {
       gcode.push(`; Linear wipe pattern`);
@@ -148,11 +158,11 @@ export class NozzleMaintenanceManager {
       gcode.push(`G2 X${cleaningPosition.x + radius} Y${cleaningPosition.y} I${radius} J0 F${purgeSpeed}`);
       gcode.push(`G2 X${cleaningPosition.x} Y${cleaningPosition.y} I${-radius} J0`);
     }
-    
+
     // Return to safe position
     gcode.push(`G0 Z${cleaningPosition.z + 5}`);
     gcode.push('; --- End Cleaning Sequence ---');
-    
+
     return gcode.join('\n');
   }
 
@@ -180,7 +190,7 @@ export class NozzleMaintenanceManager {
   reset() {
     this.dispenseCount = 0;
     this.lastCleaningTime = Date.now();
-    
+
     this.saveToStorage('nozzleDispenseCount', this.dispenseCount);
     this.saveToStorage('lastNozzleCleaning', this.lastCleaningTime);
   }

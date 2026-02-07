@@ -8,8 +8,9 @@ contextBridge.exposeInMainWorld('serial', {
     sendGcode: (text) => ipcRenderer.invoke('serial:sendGcode', text),
     writeMany: (lines, delayMs = 3) => ipcRenderer.invoke('serial:writeMany', { lines, delayMs }),
     onData: (handler) => {
-        ipcRenderer.removeAllListeners('serial:data');
-        ipcRenderer.on('serial:data', (_evt, line) => handler(line));
-        return () => ipcRenderer.removeListener('serial:data');
+        // Allow multiple listeners
+        const subscription = (_evt, line) => handler(line);
+        ipcRenderer.on('serial:data', subscription);
+        return () => ipcRenderer.removeListener('serial:data', subscription);
     }
 });

@@ -138,7 +138,7 @@ export class FiducialVisionDetector {
     }
 
     // Second Pass: Accumulate Moments
-    // m00=area, m10=x, m01=y, m20=x^2, m02=y^2, m11=xy
+    // m00=area, m10=x, m01=y, m20=x^2, m02=y^2, m11=xy 
     const blobsMap = new Map();
 
     for (let y = 0; y < height; y++) {

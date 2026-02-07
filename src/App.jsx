@@ -7,15 +7,12 @@ import Viewer from "./components/Viewer.jsx";
 import CameraPanel from "./components/CameraPanel.jsx";
 import SerialPanel from "./components/SerialPanel.jsx";
 import ComponentList from "./components/ComponentList.jsx";
-// import LinearMovePanel from "./components/LinearMovePanel.jsx";
-// import OpenCVFiducialPanel from "./components/OpenCVFiducialPanel.jsx";
+import JogPanel from "./components/JogPanel.jsx"; // Added JogPanel
 import FiducialPanel from "./components/FiducialPanel.jsx";
 import PressurePanel from "./components/PressurePanel.jsx";
 import SpeedPanel from "./components/SpeedPanel.jsx";
 import AutomatedDispensingPanel from "./components/AutomatedDispensingPanel.jsx";
-// import MotionPanel from "./components/MotionPanel.jsx";
 import LivePreview from "./components/LivePreview.jsx";
-// import { loadOpenCV } from './lib/vision/opencvLoader.js';
 import { identifyLayers } from "./lib/gerber/identifyLayers.js";
 import { stackupToSvg } from "./lib/gerber/stackupToSvg.js";
 import { extractPadsMm } from "./lib/gerber/extractPads.js";
@@ -101,6 +98,13 @@ export default function App() {
   const [generatedPath, setGeneratedPath] = useState(null);
   const [pathType, setPathType] = useState('direct');
 
+  // Serial State lifted from SerialPanel
+  const [isSerialConnected, setIsSerialConnected] = useState(false);
+
+  // Connection Handlers
+  const handleSerialConnect = (status) => setIsSerialConnected(status);
+  const handleSerialDisconnect = () => setIsSerialConnected(false);
+
   // const [opencvReady, setOpencvReady] = useState(false);
   // const [cameraStream, setCameraStream] = useState(null);
 
@@ -118,13 +122,12 @@ export default function App() {
   const [referenceType, setReferenceType] = useState('origin');
   const [xf, setXf] = useState(null);
   const [applyXf, setApplyXf] = useState(false);
-  const [activeComponent, setActiveComponent] = useState('Viewer')
+  const [activeComponent, setActiveComponent] = useState('SerialPanel')
 
   // New feature states
   const [collisionDetector] = useState(() => new CollisionDetector());
   const [padDetector] = useState(() => new PadDetector());
   const [qualityController] = useState(() => new QualityController());
-
   const [maintenanceManager] = useState(() => new NozzleMaintenanceManager());
   const [fiducialVisionDetector] = useState(() => new FiducialVisionDetector());
   const [pressureController] = useState(() => new PressureController());
@@ -154,6 +157,82 @@ export default function App() {
   // Multi-Selection State
   const [multiSelectMode, setMultiSelectMode] = useState(false);
   const [selectedPadIndices, setSelectedPadIndices] = useState([]); // Stores ordered indices of selected pads
+
+  // Panel Alignment State
+  const [alignment, setAlignment] = useState({ p1: null, p2: null, transform: null });
+
+  const handleAlignmentCapture = useCallback((refIndex) => {
+    // Get current machine position from livePreview (assuming it tracks latest MPos)
+    const currentMPos = livePreview.machinePosition;
+    if (!currentMPos) {
+      alert("No machine position available. Connect machine first.");
+      return;
+    }
+
+    setAlignment(prev => {
+      const next = { ...prev };
+      if (refIndex === 1) next.p1 = { ...currentMPos };
+      if (refIndex === 2) next.p2 = { ...currentMPos };
+
+      // If both are set, compute transform
+      // We assume Ref1 is (0,0) and Ref2 is (Width, Height) of the bounding box
+      // If no board outline, we estimate from pads
+      if (next.p1 && next.p2) {
+        // Calculate theoretical dimensions
+        // For simplicity, we assume the user picks Bottom-Left (Min) and Top-Right (Max)
+        // We need the design size.
+        let width = 100, height = 100; // Default
+
+        // Try to get from board outline
+        if (boardOutline) {
+          width = boardOutline.width;
+          height = boardOutline.height;
+        } else if (pads.length > 0) {
+          const xs = pads.map(p => p.x);
+          const ys = pads.map(p => p.y);
+          width = Math.max(...xs) - Math.min(...xs);
+          height = Math.max(...ys) - Math.min(...ys);
+        }
+
+        // Ref1 (BL) -> (0,0) or (MinX, MinY)
+        // Ref2 (TR) -> (Width, Height) or (MaxX, MaxY)
+        // Construct correspondence points
+        const designPts = [
+          { x: 0, y: 0 },
+          { x: width, y: height }
+        ];
+        const machinePts = [
+          next.p1,
+          next.p2
+        ];
+
+        try {
+          const T = fitSimilarity(designPts, machinePts);
+          console.log("Panel Alignment Computed:", T);
+          next.transform = T;
+          setXf(T);
+          setApplyXf(true);
+        } catch (err) {
+          console.error("Alignment failed:", err);
+          next.transform = null;
+          setXf(null);
+          setApplyXf(false);
+        }
+      }
+      return next;
+    });
+  }, [livePreview.machinePosition, boardOutline, pads]);
+
+  const handleMachinePositionUpdate = useCallback((newPos) => {
+    setLivePreview(prev => ({
+      ...prev,
+      machinePosition: newPos
+    }));
+  }, []);
+
+  const handleFiducialsUpdate = useCallback((newFids) => {
+    setFiducials(newFids);
+  }, []);
 
   // useEffect(() => {
   //   // Initialize OpenCV on app load
@@ -620,7 +699,12 @@ export default function App() {
     // Helper to convert mm to current viewBox units with consistent coordinate system
     const mmToCurrentUnits = (ptMm) => {
       // X: Absolute coordinate conversion
-      const xUnits = ptMm.x / geom.mmPerUnit;
+      let xUnits = ptMm.x / geom.mmPerUnit;
+
+      // If bottom side, flip X to match the mirrored SVG generated by pcb-stackup
+      if (side === 'bottom') {
+        xUnits = (2 * geom.minX + geom.vbW) - xUnits;
+      }
 
       // Y: FLIP relative to Board Bounds
       // localY = (MinY + MaxY) - GerberY_units
@@ -632,11 +716,12 @@ export default function App() {
         r: 1 / geom.mmPerUnit
       };
 
-      console.log('mmToCurrentUnits conversion:', {
+      /* console.log('mmToCurrentUnits conversion:', {
         input: ptMm,
         output: result,
-        geom: { minX: geom.minX, minY: geom.minY, mmPerUnit: geom.mmPerUnit }
-      });
+        geom: { minX: geom.minX, minY: geom.minY, mmPerUnit: geom.mmPerUnit },
+        side
+      }); */
       return result;
     };
 
@@ -1080,7 +1165,7 @@ export default function App() {
     } else {
       ensureGroup("overlay-ghost");
     }
-  }, [selectedMm, fiducials, xf, selectedOrigin, generatedPath, pads, getSvgEl, getSvgGeom, livePreview, dispensingSequence, showPasteDots, nozzleDia]);
+  }, [selectedMm, fiducials, xf, selectedOrigin, generatedPath, pads, getSvgEl, getSvgGeom, livePreview, dispensingSequence, showPasteDots, nozzleDia, side]);
 
   const hexToRgba = (hex, a = 0.3) => {
     const h = hex.replace("#", "");
@@ -1635,6 +1720,7 @@ export default function App() {
   const componentNavItems = [
     { id: 'SerialPanel', label: 'Serial Panel' },
     { id: 'Viewer', label: 'Viewer' },
+    { id: 'JogPanel', label: 'Jog Control' },
     { id: 'FiducialPanel', label: 'Fiducial Panel' },
     { id: 'CameraPanel', label: 'Camera Panel' },
     { id: 'AutomatedDispensingPanel', label: 'Automated Dispensing Panel' },
@@ -1680,6 +1766,13 @@ export default function App() {
                   const padData = extractPadsMm(selectedLayer.text).map(padCenter);
                   setPads(processPads(padData));
                   console.log('Solderpaste layer loaded:', padData.length, 'pads');
+
+                  // Auto-switch view side
+                  if (selectedLayer.side === 'top') {
+                    changeSide('top');
+                  } else if (selectedLayer.side === 'bottom') {
+                    changeSide('bottom');
+                  }
                 } else {
                   setPads([]);
                 }
@@ -1695,7 +1788,6 @@ export default function App() {
               })}
             </select>
           </div>
-          {console.log("padDistances", padDistances)}
           <ComponentList
             components={padDistances}
             onFocus={(pad) => {
@@ -1811,16 +1903,27 @@ export default function App() {
           </div>
         </nav>
 
-        <div className="section"><h3>Preview</h3></div>
-
-        {activeComponent === 'SerialPanel' && (
+        <div style={{ display: activeComponent === 'SerialPanel' ? 'block' : 'none' }}>
           <SerialPanel
+            isConnected={isSerialConnected}
+            onConnect={() => handleSerialConnect(true)}
+            onDisconnect={() => handleSerialDisconnect()}
             dispensingSequence={dispensingSequence}
             jobStatistics={jobStatistics}
             pressureSettings={pressureSettings}
             speedSettings={speedSettings}
             referencePoint={referencePoint}
             selectedOrigin={selectedOrigin}
+
+            // Alignment Props
+            fiducials={fiducials}
+            onInputMachine={onInputMachine}
+            onAutoAlign={onAutoAlign}
+            onSolve2={onSolve2}
+            onSolve3={onSolve3}
+            xf={xf}
+            applyXf={applyXf}
+
             onJobStart={(gcode) => {
               console.log('Dispensing job started via SerialPanel');
               maintenanceManager.recordDispense();
@@ -1828,6 +1931,21 @@ export default function App() {
             onJobComplete={() => {
               console.log('Dispensing job completed');
               alert('Dispensing job completed successfully!');
+            }}
+            onMachinePositionUpdate={handleMachinePositionUpdate}
+          />
+        </div>
+
+        {activeComponent === 'JogPanel' && (
+          <JogPanel
+            isConnected={isSerialConnected}
+            machinePosition={livePreview.machinePosition}
+            onSendGcode={async (lines) => {
+              if (window.serial && window.serial.writeLine) {
+                for (const line of lines) await window.serial.writeLine(line);
+              } else {
+                alert("Serial not connected.");
+              }
             }}
           />
         )}
@@ -1840,7 +1958,6 @@ export default function App() {
               side={side}
               onClickSvg={handleCanvasClick}
               onMouseDown={handleFiducialMouseDown}
-
               multiSelectMode={multiSelectMode}
               onToggleMultiSelect={() => setMultiSelectMode(prev => !prev)}
               selectedCount={selectedPadIndices.length}
@@ -1855,14 +1972,14 @@ export default function App() {
             />
             {(referencePoint || selectedOrigin) && selectedMm && (
               <div className="distance-info">
-                <span className="badge">Path from {referencePoint ? `Fiducial ${referencePoint.id}` : 'Top-Left Origin'}</span>
+                <span className="badge">Path from {referencePoint ? `Fiducial ${referencePoint.id}` : 'Bottom-Left Origin'}</span>
                 <div className="kvs">
-                  <span>ΔX: {(selectedMm.x - (referencePoint || selectedOrigin).x).toFixed(2)} mm</span>
-                  <span>ΔY: {(selectedMm.y - (referencePoint || selectedOrigin).y).toFixed(2)} mm</span>
-                  <span><strong>2D: {Math.hypot(selectedMm.x - (referencePoint || selectedOrigin).x, selectedMm.y - (referencePoint || selectedOrigin).y).toFixed(2)} mm</strong></span>
-                  {generatedPath && <span>3D Path: {generatedPath.totalDistance.toFixed(2)} mm</span>}
+                  <span>ΔX: {(selectedMm.x - (referencePoint || selectedOrigin).x).toFixed(2)} mm </span>
+                  <span>ΔY: {(selectedMm.y - (referencePoint || selectedOrigin).y).toFixed(2)} mm </span>
+                  <span><strong>2D: {Math.hypot(selectedMm.x - (referencePoint || selectedOrigin).x, selectedMm.y - (referencePoint || selectedOrigin).y).toFixed(2)} mm </strong></span>
+                  {generatedPath && <span>3D Path: {generatedPath.totalDistance.toFixed(2)} mm </span>}
                   <span style={{ color: selectedMm.centerValid ? '#28a745' : '#ffc107' }}>Center: ({selectedMm.x.toFixed(3)}, {selectedMm.y.toFixed(3)}) {selectedMm.centerValid ? '✓' : '⚠️'}</span>
-                  {selectedMm.centerMethod && <span style={{ fontSize: '0.8em', color: '#666' }}>Method: {selectedMm.centerMethod}</span>}
+                  {selectedMm.centerMethod && <span style={{ fontSize: '0.8em', color: '#666' }}> Method: {selectedMm.centerMethod}</span>}
                 </div>
                 <div className="path-controls" style={{ marginTop: 8 }}>
                   {/* <select value={pathType} onChange={(e) => setPathType(e.target.value)} style={{ fontSize: 12 }}>
@@ -1926,6 +2043,9 @@ export default function App() {
               onRedetectFiducials={onRedetectFiducials}
               onAutoAlign={onAutoAlign}
               onAutoDetectCamera={onAutoDetectCamera}
+              // Alignment Props
+              alignmentInfo={alignment}
+              onCaptureAlignment={handleAlignmentCapture}
             />
             {selectedOrigin && selectedMm && xf && applyXf && (
               <div style={{ padding: 8, background: '#f8f9fa', border: '1px solid #dee2e6', borderRadius: 4, marginTop: 8 }}>
@@ -1946,15 +2066,19 @@ export default function App() {
             fiducials={fiducials}
             xf={xf}
             applyXf={applyXf}
-            selectedDesign={selectedMm}
-            toolOffset={toolOffset}
-            setToolOffset={(setToolOffset)}
-            nozzleDia={nozzleDia}
-            setNozzleDia={setNozzleDia}
+            selectedDesign={selectedOrigin ? selectedOrigin : (selectedMm ? { x: selectedMm.x, y: selectedMm.y } : null)}
+            toolOffset={maintenanceManager.getToolOffset()}
+            setToolOffset={(o) => maintenanceManager.setToolOffset(o)}
+            nozzleDia={0.6}
+            setNozzleDia={(d) => { /* update nozzle dia */ }}
             padDetector={padDetector}
             qualityController={qualityController}
+            onCaptureAlignment={handleAlignmentCapture}
+            alignmentInfo={alignment}
+            machinePosition={livePreview.machinePosition}
             fiducialVisionDetector={fiducialVisionDetector}
             layerData={layerData}
+            onUpdateFiducials={handleFiducialsUpdate}
           />
         )}
 
@@ -1981,8 +2105,16 @@ export default function App() {
             currentBatch={currentBatch}
             onStartBatch={handleStartBatch}
             layerData={layerData}
+
+            // Alignment Props
+            fiducials={fiducials}
+            onInputMachine={onInputMachine}
+            onAutoAlign={onAutoAlign}
+            onSolve2={onSolve2}
+            onSolve3={onSolve3}
             xf={xf}
             applyXf={applyXf}
+            isConnected={isSerialConnected}
           />
         )}
 

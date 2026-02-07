@@ -1,4 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { header, home, moveAbs, dispensePoint, jogRel } from "../lib/motion/gcode.js";
+import { applyTransform } from "../lib/utils/transform2d.js";
 
 export default function AutomatedDispensingPanel({
   dispensingSequencer,
@@ -12,347 +14,378 @@ export default function AutomatedDispensingPanel({
   boardOutline,
   useSafePathPlanning,
   setUseSafePathPlanning,
-  componentHeights,
-  setComponentHeights,
   safePathPlanner,
   onStartJob,
   onDownloadGCode,
   batchProcessor,
   currentBatch,
   onStartBatch,
+
+  // Alignment Props
+  fiducials = [],
+  onInputMachine,
+  onAutoAlign,
+  onSolve2,
+  onSolve3,
   xf,
-  applyXf
+  applyXf,
+  isConnected = false
 }) {
   const [isJobRunning, setIsJobRunning] = useState(false);
-  const [currentPadIndex, setCurrentPadIndex] = useState(0);
   const [jobMode, setJobMode] = useState('single'); // 'single' or 'batch'
 
+  // Advanced Flow State
+  const [jobStage, setJobStage] = useState('idle'); // idle, homing, loading, registering, dispensing, finished
+  const [machineStatus, setMachineStatus] = useState('idle');
+  const [jobProgress, setJobProgress] = useState({ current: 0, total: 0 });
+  const [regIndex, setRegIndex] = useState(0);
+  const [currentPos, setCurrentPos] = useState({ x: 0, y: 0, z: 0 });
+  const [jogStep, setJogStep] = useState(1);
+
   const refPoint = referencePoint || selectedOrigin;
+  const activeSequence = useSafePathPlanning ? safeSequence : dispensingSequence;
 
-  const handleStartAutomatedJob = () => {
-    if (!refPoint || dispensingSequence.length === 0) return;
+  // Refs for async access
+  const xfRef = useRef(xf);
+  const fiducialsRef = useRef(fiducials);
 
-    setIsJobRunning(true);
-    setCurrentPadIndex(0);
+  // Queue for synchronous sending
+  const ackQueue = useRef([]);
 
-    // Generate G-code based on path planning mode
-    const gcode = useSafePathPlanning && safeSequence.length > 0 ?
-      safePathPlanner.generateSafeGCode(refPoint, safeSequence, { pressureSettings, speedSettings, xf, applyXf }) :
-      dispensingSequencer.generateDispensingGCode(refPoint, dispensingSequence, { pressureSettings, speedSettings, xf, applyXf });
+  useEffect(() => { xfRef.current = xf; }, [xf]);
+  useEffect(() => { fiducialsRef.current = fiducials; }, [fiducials]);
 
-    if (onStartJob) {
-      onStartJob(gcode, dispensingSequence);
+  // Position & ACK listener
+  useEffect(() => {
+    const handleData = (line) => {
+      // 1. Parse Position
+      const match = line.match(/X:([-\d.]+)\s+Y:([-\d.]+)\s+Z:([-\d.]+)/);
+      if (match) {
+        setCurrentPos({
+          x: parseFloat(match[1]),
+          y: parseFloat(match[2]),
+          z: parseFloat(match[3])
+        });
+      }
+
+      // 2. Handle ACKs (Marlin/GRBL sends 'ok')
+      // Handles standard 'ok' responses to keep sync
+      if (line.trim().startsWith('ok')) {
+        const resolver = ackQueue.current.shift();
+        if (resolver) resolver(true);
+      }
+    };
+    if (window.serial && window.serial.onData) window.serial.onData(handleData);
+  }, []);
+
+  // Reliable Sender
+  const sendGcodeWait = async (cmd) => {
+    // Create a promise that waits for 'ok'
+    const ackPromise = new Promise(resolve => {
+      ackQueue.current.push(resolve);
+    });
+
+    try {
+      // Send command
+      await window.serial.writeLine(cmd);
+      // Wait for ACK
+      await ackPromise;
+      return true;
+    } catch (e) {
+      console.error("Send failed:", e);
+      // If write failed, remove the waiter
+      ackQueue.current.pop();
+      throw e;
     }
   };
 
+  // --- Flow Logic ---
+
+  const startJobFlow = async () => {
+    if (!activeSequence.length) return alert("No dispensing sequence available.");
+    if (!window.serial || !window.serial.writeLine) return alert("Serial API not available.");
+
+    setJobStage('homing');
+    setMachineStatus('busy');
+    setIsJobRunning(true);
+
+    try {
+      // Send G28 and wait for OK. 
+      // Note: Homing takes time, but 'ok' might come immediately or after completion depending on firmware config.
+      // Usually G28 blocks until done on many firmwares, but not all.
+      await sendGcodeWait('G28');
+
+      // M400 guarantees previous moves finished.
+      await sendGcodeWait('M400');
+
+      setJobStage('loading');
+    } catch (e) {
+      alert("Homing/Connection failed: " + e.message);
+      setJobStage('idle');
+      setMachineStatus('idle');
+      setIsJobRunning(false);
+    }
+  };
+
+  const proceedToRegistration = async () => {
+    const validFids = fiducialsRef.current.filter(f => f.design);
+    if (validFids.length === 0) {
+      if (!confirm("No design fiducials found. Skip registration and dispense immediately?")) {
+        setJobStage('idle'); setIsJobRunning(false); return;
+      }
+      setJobStage('dispensing');
+      runDispenseLoop();
+      return;
+    }
+    setRegIndex(0);
+    setJobStage('registering');
+    moveToFiducial(validFids[0]);
+  };
+
+  const moveToFiducial = async (fid) => {
+    await sendGcodeWait('G90');
+    await sendGcodeWait('G1 Z5 F1000');
+    await sendGcodeWait(`G1 X${fid.design.x.toFixed(3)} Y${fid.design.y.toFixed(3)} F3000`);
+    await sendGcodeWait('G1 Z1 F1000');
+    await sendGcodeWait('M400'); // Ensure stop
+  };
+
+  const confirmFiducial = async () => {
+    const validFids = fiducialsRef.current.filter(f => f.design);
+    const fid = validFids[regIndex];
+
+    if (onInputMachine) onInputMachine(fid.id, { x: currentPos.x, y: currentPos.y });
+
+    const nextIdx = regIndex + 1;
+    if (nextIdx < validFids.length) {
+      setRegIndex(nextIdx);
+      moveToFiducial(validFids[nextIdx]);
+    } else {
+      if (validFids.length >= 2 && onSolve2) {
+        if (validFids.length >= 3 && onSolve3) onSolve3(); else onSolve2();
+        setTimeout(() => {
+          setJobStage('dispensing');
+          runDispenseLoop();
+        }, 500);
+      } else {
+        setJobStage('dispensing');
+        runDispenseLoop();
+      }
+    }
+  };
+
+  const runDispenseLoop = async () => {
+    setMachineStatus('busy');
+    try {
+      const transform = (applyXf && xfRef.current) ? xfRef.current : null;
+      console.log("Starting dispense. XF:", transform);
+
+      await sendGcodeWait('G21');
+      await sendGcodeWait('G90');
+      await sendGcodeWait('G1 Z6 F3000');
+
+      const seq = activeSequence;
+      setJobProgress({ current: 0, total: seq.length });
+
+      for (let i = 0; i < seq.length; i++) {
+        if (!isJobRunning) throw new Error("Job Aborted");
+
+        setJobProgress({ current: i + 1, total: seq.length });
+        let p = seq[i];
+
+        if (transform) {
+          const tp = applyTransform(transform, p);
+          p = { ...p, x: tp.x, y: tp.y };
+        }
+
+        const pressure = pressureSettings.customPressure || 25;
+        const dwell = pressureSettings.customDwellTime || 120;
+
+        const cmds = dispensePoint({
+          x: p.x, y: p.y,
+          zWork: 0.1, zSafe: 6,
+          feedXY: speedSettings.travelSpeed || 3000,
+          feedZ: speedSettings.dispenseSpeed || 500,
+          pressure: pressure,
+          dwellMs: dwell
+        });
+
+        for (const c of cmds) await sendGcodeWait(c);
+      }
+
+      // Park
+      await sendGcodeWait('G1 Z10 F3000');
+      await sendGcodeWait('G1 X0 Y0 F5000');
+      await sendGcodeWait('M400');
+
+      alert("Job Complete!");
+      setJobStage('finished');
+      setMachineStatus('idle');
+      setIsJobRunning(false);
+
+    } catch (e) {
+      console.error(e);
+      if (e.message !== "Job Aborted") alert("Error: " + e.message);
+      setJobStage('idle');
+      setMachineStatus('idle');
+      setIsJobRunning(false);
+    }
+  };
+
+  const cancelJob = async () => {
+    setIsJobRunning(false);
+    // Emergency: Send M42/G1 without wait to ensure it goes out ASAP
+    try {
+      await window.serial.writeLine('M42 P4 S0');
+      await window.serial.writeLine('G1 Z10 F3000');
+    } catch (e) { }
+    setJobStage('idle');
+    setMachineStatus('idle');
+    ackQueue.current = []; // Clear queue
+  };
+
+  const jog = async (axis, dir) => {
+    const dist = dir * jogStep;
+    const cmds = jogRel(axis === 'X' ? { dx: dist, feed: 2000 } : { dy: dist, feed: 2000 });
+    for (const c of cmds) await sendGcodeWait(c);
+  };
+  const jogZ = async (dir) => {
+    const cmds = jogRel({ dz: dir * 0.5, feed: 500 });
+    for (const c of cmds) await sendGcodeWait(c);
+  };
+
   const handleDownloadGCode = () => {
-    if (!refPoint || dispensingSequence.length === 0) return;
-
-    const gcode = useSafePathPlanning && safeSequence.length > 0 ?
-      safePathPlanner.generateSafeGCode(refPoint, safeSequence, { pressureSettings, speedSettings, xf, applyXf }) :
-      dispensingSequencer.generateDispensingGCode(refPoint, dispensingSequence, { pressureSettings, speedSettings, xf, applyXf });
-
-    const filename = useSafePathPlanning ? 'safe_dispensing_job.gcode' : 'dispensing_job.gcode';
-
+    if (!activeSequence.length) return;
+    const gcode = dispensingSequencer.generateDispensingGCode(refPoint, activeSequence, { pressureSettings, speedSettings, xf: xfRef.current, applyXf });
     const blob = new Blob([gcode], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = filename;
+    a.download = 'dispensing_job.gcode';
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  const handleStopJob = () => {
-    setIsJobRunning(false);
-    setCurrentPadIndex(0);
-  };
-
   return (
-    <div className="linear-panel">
+    <div className="panel automated-panel">
       <h3>🤖 Automated Dispensing</h3>
 
-      {/* Path Planning Mode */}
+      {/* Settings Summary */}
       <div className="box">
-        <h4>Path Planning Mode</h4>
-        <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <input
-            type="checkbox"
-            checked={useSafePathPlanning}
-            onChange={(e) => setUseSafePathPlanning(e.target.checked)}
-          />
-          <span>Enable Safe Path Planning (Collision Avoidance)</span>
+        <h4>Settings</h4>
+        <label>
+          <input type="checkbox" checked={useSafePathPlanning} onChange={e => setUseSafePathPlanning(e.target.checked)} />
+          Safe Path Planning
         </label>
-        <small style={{ color: '#666', marginTop: '4px', display: 'block' }}>
-          {useSafePathPlanning ?
-            'Uses 3D path planning with safe Z-heights to avoid component collisions' :
-            'Uses simple nearest neighbor algorithm (faster but no collision avoidance)'
-          }
-        </small>
       </div>
 
-      {/* Job Statistics */}
-      {jobStatistics && (
-        <div className="box">
-          <h4>Job Overview</h4>
-          <div className="grid2">
-            <div>
-              <strong>Total Pads:</strong> {jobStatistics.totalPads}
-            </div>
-            <div>
-              <strong>Total Distance:</strong> {jobStatistics.totalDistance} mm
-            </div>
-            <div>
-              <strong>Estimated Time:</strong> {jobStatistics.estimatedTime} min
-            </div>
-            <div>
-              <strong>Avg Distance:</strong> {jobStatistics.averageDistance} mm
-            </div>
-            {useSafePathPlanning && jobStatistics.safePathsUsed !== undefined && (
-              <>
-                <div>
-                  <strong>Safe Paths:</strong> {jobStatistics.safePathsUsed}
-                </div>
-                <div>
-                  <strong>High Clearance:</strong> {jobStatistics.highClearancePaths}
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Board Information */}
+      {/* Board Info */}
       {boardOutline && (
         <div className="box">
-          <h4>Board Dimensions</h4>
           <div className="grid2">
-            <div>
-              <strong>Width:</strong> {boardOutline.width.toFixed(2)} mm
-            </div>
-            <div>
-              <strong>Height:</strong> {boardOutline.height.toFixed(2)} mm
-            </div>
-            <div>
-              <strong>Center:</strong> ({boardOutline.centerX.toFixed(2)}, {boardOutline.centerY.toFixed(2)})
-            </div>
-            <div>
-              <strong>Area:</strong> {(boardOutline.width * boardOutline.height).toFixed(1)} mm²
-            </div>
+            <span>Board: {boardOutline.width.toFixed(1)} x {boardOutline.height.toFixed(1)} mm</span>
+            <span>Pads: {activeSequence.length}</span>
           </div>
         </div>
       )}
 
-      {/* Reference Point Status */}
-      <div className="box">
-        <h4>Reference Point</h4>
-        {refPoint ? (
-          <div>
-            <strong>{referencePoint ? `Fiducial ${referencePoint.id}` : 'Top-Left Origin'}:</strong>
-            <br />
-            Position: ({refPoint.x.toFixed(3)}, {refPoint.y.toFixed(3)}) mm
+      {!refPoint && <div className="warning">⚠️ No Reference Point Selected</div>}
+
+      {/* Flow UI */}
+      <div className="flow-container" style={{ marginTop: 20 }}>
+        {/* Status Header */}
+        <div className="flow-header" style={{ marginBottom: 16 }}>
+          <div className="stage-indicator" style={{ background: jobStage !== 'idle' ? '#e3f2fd' : '#eee', padding: 8, borderRadius: 4 }}>
+            <strong>Status:</strong> {jobStage.toUpperCase()}
+            {machineStatus === 'busy' && ' (Busy)'}
           </div>
-        ) : (
-          <div style={{ color: '#dc3545' }}>
-            ⚠️ No reference point selected. Please select an origin or fiducial.
+          <div className="pos-readout" style={{ fontSize: 12, marginTop: 4, fontFamily: 'monospace' }}>
+            Pos: {currentPos.x.toFixed(3)}, {currentPos.y.toFixed(3)}, {currentPos.z.toFixed(3)}
+          </div>
+        </div>
+
+        {/* STAGE: IDLE */}
+        {jobStage === 'idle' && (
+          <div className="stage-box">
+            <button className="btn primary lg full-width"
+              onClick={startJobFlow}
+              disabled={!refPoint || !activeSequence.length || !isConnected}>
+              {isConnected ? '▶ Start Automated Job' : '⚠️ Connect Machine First'}
+            </button>
+            <button className="btn secondary full-width" onClick={handleDownloadGCode} style={{ marginTop: 8 }}>
+              💾 Download G-Code
+            </button>
+            {jobMode === 'batch' && <p>Batch mode not supported in new flow yet</p>}
           </div>
         )}
-      </div>
 
-      {/* Dispensing Sequence Preview */}
-      {dispensingSequence.length > 0 && (
-        <div className="box">
-          <h4>Dispensing Sequence ({dispensingSequence.length} pads)</h4>
-          <div style={{ maxHeight: '200px', overflowY: 'auto', fontSize: '12px' }}>
-            {dispensingSequence.slice(0, 10).map((pad, index) => (
-              <div key={index} style={{
-                padding: '4px 8px',
-                backgroundColor: currentPadIndex === index && isJobRunning ? '#e3f2fd' : 'transparent',
-                borderLeft: currentPadIndex === index && isJobRunning ? '3px solid #2196f3' : 'none'
-              }}>
-                <strong>{index + 1}.</strong> {pad.id || `Pad ${index + 1}`}
-                ({pad.x.toFixed(2)}, {pad.y.toFixed(2)})
-                - {(pad.pathDistance || pad.distanceFromPrevious || 0).toFixed(1)}mm
-                {useSafePathPlanning && pad.requiresHighClearance && (
-                  <span style={{ color: '#ff6600', marginLeft: '4px' }}>⚠️ High clearance</span>
-                )}
-                {useSafePathPlanning && pad.safePath && (
-                  <span style={{ color: '#666', marginLeft: '4px' }}>({pad.safePath.pathType})</span>
-                )}
-              </div>
-            ))}
-            {dispensingSequence.length > 10 && (
-              <div style={{ padding: '4px 8px', fontStyle: 'italic', color: '#666' }}>
-                ... and {dispensingSequence.length - 10} more pads
-              </div>
-            )}
+        {/* STAGE: HOMING */}
+        {jobStage === 'homing' && (
+          <div className="stage-box">
+            <h4>Homing Machine...</h4>
+            <div className="spinner"></div>
           </div>
-        </div>
-      )}
-
-      {/* Job Mode Selection */}
-      <div className="box">
-        <h4>Job Mode</h4>
-        <div className="flex-row" style={{ gap: 16 }}>
-          <label>
-            <input
-              type="radio"
-              name="jobMode"
-              value="single"
-              checked={jobMode === 'single'}
-              onChange={(e) => setJobMode(e.target.value)}
-            />
-            Single Board
-          </label>
-          <label>
-            <input
-              type="radio"
-              name="jobMode"
-              value="batch"
-              checked={jobMode === 'batch'}
-              onChange={(e) => setJobMode(e.target.value)}
-            />
-            Batch Processing
-          </label>
-        </div>
-      </div>
-
-      {/* Batch Status */}
-      {jobMode === 'batch' && currentBatch && (
-        <div className="box">
-          <h4>Current Batch: {currentBatch.name}</h4>
-          <div className="grid2">
-            <div>
-              <strong>Total Boards:</strong> {currentBatch.totalBoards}
-            </div>
-            <div>
-              <strong>Completed:</strong> {currentBatch.completedBoards}
-            </div>
-            <div>
-              <strong>Failed:</strong> {currentBatch.failedBoards}
-            </div>
-            <div>
-              <strong>Status:</strong>
-              <span style={{
-                color: currentBatch.status === 'completed' ? '#28a745' :
-                  currentBatch.status === 'running' ? '#007bff' :
-                    currentBatch.status === 'failed' ? '#dc3545' : '#6c757d'
-              }}>
-                {currentBatch.status.toUpperCase()}
-              </span>
-            </div>
-          </div>
-          {currentBatch.status === 'running' && (
-            <div style={{ marginTop: 8 }}>
-              <div style={{
-                width: '100%',
-                height: '6px',
-                backgroundColor: '#e9ecef',
-                borderRadius: '3px',
-                overflow: 'hidden'
-              }}>
-                <div style={{
-                  width: `${(currentBatch.completedBoards / currentBatch.totalBoards) * 100}%`,
-                  height: '100%',
-                  backgroundColor: '#007bff',
-                  transition: 'width 0.3s ease'
-                }} />
-              </div>
-              <small style={{ color: '#666', marginTop: '4px', display: 'block' }}>
-                Processing Board {currentBatch.currentBoardIndex + 1} of {currentBatch.totalBoards}
-              </small>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Job Controls */}
-      <div className="controls">
-        {jobMode === 'single' ? (
-          <button
-            className="btn"
-            onClick={handleStartAutomatedJob}
-            disabled={!refPoint || dispensingSequence.length === 0 || isJobRunning}
-          >
-            {isJobRunning ? '🔄 Job Running...' :
-              useSafePathPlanning ? '🛡️ Start Safe Dispensing Job' : '▶️ Start Automated Job'}
-          </button>
-        ) : (
-          <button
-            className="btn"
-            onClick={() => currentBatch && onStartBatch && onStartBatch(currentBatch.id)}
-            disabled={!currentBatch || currentBatch.status === 'running' || currentBatch.boards.length === 0}
-          >
-            {currentBatch?.status === 'running' ? '🔄 Batch Running...' : '🚀 Start Batch Job'}
-          </button>
         )}
 
-        {isJobRunning && (
-          <button className="btn secondary" onClick={handleStopJob}>
-            ⏹️ Stop Job
-          </button>
+        {/* STAGE: LOADING */}
+        {jobStage === 'loading' && (
+          <div className="stage-box">
+            <h4>Load PCB</h4>
+            <p>Secure the PCB on the bed.</p>
+            <button className="btn primary lg full-width" onClick={proceedToRegistration}>Next: Registration</button>
+          </div>
         )}
 
-        <button
-          className="btn secondary"
-          onClick={handleDownloadGCode}
-          disabled={!refPoint || dispensingSequence.length === 0}
-        >
-          💾 Download {useSafePathPlanning ? 'Safe ' : ''}G-Code
-        </button>
+        {/* STAGE: REGISTERING */}
+        {jobStage === 'registering' && (
+          <div className="stage-box">
+            <h4>Align Fiducial {regIndex + 1}</h4>
+            <p>Fiducial ID: <strong>{fiducialsRef.current.filter(f => f.design)[regIndex]?.id}</strong></p>
+
+            {/* Jog Controls */}
+            <div className="jog-controls-mini" style={{ display: 'grid', justifyItems: 'center', gap: 5, margin: '10px 0' }}>
+              <button onClick={() => jog('Y', 1)} className="btn">Y+</button>
+              <div className="flex-row">
+                <button onClick={() => jog('X', -1)} className="btn">X-</button>
+                <button onClick={() => jog('X', 1)} className="btn">X+</button>
+              </div>
+              <button onClick={() => jog('Y', -1)} className="btn">Y-</button>
+              <div className="flex-row" style={{ marginTop: 5 }}>
+                <button onClick={() => jogZ(1)} className="btn sm">Z Up</button>
+                <button onClick={() => jogZ(-1)} className="btn sm">Z Down</button>
+              </div>
+            </div>
+            <div className="step-sel">
+              Step:
+              {[0.1, 1, 5].map(s => (
+                <button key={s} onClick={() => setJogStep(s)} className={`btn sm ${jogStep === s ? 'primary' : 'secondary'}`} style={{ margin: 2 }}>{s}</button>
+              ))}
+            </div>
+
+            <button className="btn primary full-width" onClick={confirmFiducial} style={{ marginTop: 10 }}>✅ Confirm Aligned</button>
+          </div>
+        )}
+
+        {/* STAGE: DISPENSING */}
+        {jobStage === 'dispensing' && (
+          <div className="stage-box">
+            <h4>Dispensing...</h4>
+            <progress value={jobProgress.current} max={jobProgress.total} style={{ width: '100%' }}></progress>
+            <p>{jobProgress.current} / {jobProgress.total}</p>
+            <button className="btn danger full-width" onClick={cancelJob}>STOP</button>
+          </div>
+        )}
+
+        {/* STAGE: FINISHED */}
+        {jobStage === 'finished' && (
+          <div className="stage-box">
+            <h4>Job Complete!</h4>
+            <button className="btn full-width" onClick={() => setJobStage('idle')}>Done</button>
+          </div>
+        )}
+
       </div>
 
-      {/* Job Progress */}
-      {isJobRunning && (
-        <div className="box">
-          <h4>Job Progress</h4>
-          <div style={{ marginBottom: '8px' }}>
-            <strong>Current Pad:</strong> {currentPadIndex + 1} of {dispensingSequence.length}
-          </div>
-          <div style={{
-            width: '100%',
-            height: '8px',
-            backgroundColor: '#e9ecef',
-            borderRadius: '4px',
-            overflow: 'hidden'
-          }}>
-            <div style={{
-              width: `${((currentPadIndex + 1) / dispensingSequence.length) * 100}%`,
-              height: '100%',
-              backgroundColor: '#28a745',
-              transition: 'width 0.3s ease'
-            }} />
-          </div>
-          <small style={{ color: '#666', marginTop: '4px', display: 'block' }}>
-            {Math.round(((currentPadIndex + 1) / dispensingSequence.length) * 100)}% Complete
-          </small>
-        </div>
-      )}
-
-      {/* Warnings */}
-      {jobMode === 'single' && !refPoint && (
-        <div className="collision-warning">
-          <strong>⚠️ Setup Required:</strong> Please select a reference point (origin or fiducial) before starting automated dispensing.
-        </div>
-      )}
-
-      {jobMode === 'batch' && !currentBatch && (
-        <div className="collision-warning">
-          <strong>⚠️ No Batch Selected:</strong> Please create and select a batch from the Batch Panel before starting batch processing.
-        </div>
-      )}
-
-      {jobMode === 'batch' && currentBatch && currentBatch.boards.length === 0 && (
-        <div className="collision-warning">
-          <strong>⚠️ Empty Batch:</strong> Please add boards to the batch before starting batch processing.
-        </div>
-      )}
-
-      {dispensingSequence.length === 0 && refPoint && (
-        <div className="collision-warning">
-          <strong>⚠️ No Pads:</strong> No pads available for dispensing. Please load a dispensing layer.
-        </div>
-      )}
     </div>
   );
 }

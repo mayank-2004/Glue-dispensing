@@ -15,12 +15,19 @@ export default function CameraPanel({
   // visionEnabled = false,
   // qualityEnabled = false,
   padDetector,
-  qualityController
+  qualityController,
+  onCaptureAlignment, // function(index: 1|2)
+  alignmentInfo,      // { p1: {x,y}, p2: {x,y}, status: '...' }
+  machinePosition,    // Current machine coordinates {x,y,z}
+  onUpdateFiducials   // function(newFiducials)
 }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const rafRef = useRef(0);
+  const machinePositionRef = useRef(machinePosition);
   const [streamOn, setStreamOn] = useState(false);
+
+  useEffect(() => { machinePositionRef.current = machinePosition; }, [machinePosition]);
 
   const [pairs, setPairs] = useState(() => {
     try { return JSON.parse(localStorage.getItem("camPairs") || "[]"); } catch { return []; }
@@ -377,8 +384,8 @@ export default function CameraPanel({
         });
 
         // Trigger callback to update parent state
-        if (window.updateFiducialsFromCamera) {
-          window.updateFiducialsFromCamera(updatedFiducials);
+        if (onUpdateFiducials) {
+          onUpdateFiducials(updatedFiducials);
         }
 
         // alert(`Successfully detected ${result.fiducials.length} fiducials!`);
@@ -411,19 +418,107 @@ export default function CameraPanel({
       videoRef.current,
       (result) => {
         if (result.success && result.fiducials.length > 0) {
-          console.log('Continuous detection result:', result.fiducials.length, 'fiducials');
-          // Update overlay with detected fiducials
+          // Accumulation Logic
+          const currentMPos = machinePositionRef.current;
+          if (!currentMPos) {
+            // Just show visual feedback if no MPos involved
+            setVisionResult({
+              detected: true,
+              fiducials: result.fiducials,
+              confidence: result.fiducials[0].confidence
+            });
+            return;
+          }
+
+          // 1. Calculate World Positions for new potential fiducials
+          // We assume center of image is currentMPos.
+          const videoWidth = videoRef.current.videoWidth || 640;
+          const videoHeight = videoRef.current.videoHeight || 480;
+          const centerX = videoWidth / 2;
+          const centerY = videoHeight / 2;
+
+          const pxPerMm = getScale(); // Approximate
+
+          const incomingCandidates = result.fiducials.map(f => {
+            const dxPx = f.pixelPosition.x - centerX;
+            const dyPx = f.pixelPosition.y - centerY;
+            // Camera coordinate system might be flipped vs machine. Assuming standard alignment for now.
+            // Usually camera +Y is Down (Pixel), Machine +Y is Back (Physical). 
+            // Need to check calibration, but for crude accumulation:
+            const dxMm = dxPx / pxPerMm;
+            const dyMm = -dyPx / pxPerMm; // Pixel Y is down, Machine Y is usually Up? TBD.
+
+            return {
+              ...f,
+              estimatedWorld: {
+                x: currentMPos.x + dxMm,
+                y: currentMPos.y + dyMm
+              }
+            };
+          });
+
+          // 2. Filter against already STORED fiducials (in props.fiducials)
+          // to find NEW ones.
+          const existingStored = fiducials.filter(f => f.machine);
+          const newUnique = [];
+
+          incomingCandidates.forEach(cand => {
+            // Check distance to any existing stored fiducial
+            const isDuplicate = existingStored.some(stored => {
+              const dist = Math.hypot(stored.machine.x - cand.estimatedWorld.x, stored.machine.y - cand.estimatedWorld.y);
+              return dist < 10; // 10mm tolerance for "same fiducial"
+            });
+
+            if (!isDuplicate) {
+              newUnique.push(cand);
+            }
+          });
+
+          // 3. Store valid new unique fiducials into next empty slots
+          let updatedList = [...fiducials];
+          let changed = false;
+
+          newUnique.forEach(cand => {
+            // Find first empty slot (no machine pos)
+            const emptyIdx = updatedList.findIndex(f => !f.machine);
+            if (emptyIdx !== -1) {
+              // Fill it
+              updatedList[emptyIdx] = {
+                ...updatedList[emptyIdx],
+                machine: cand.estimatedWorld,
+                autoDetected: true,
+                confidence: cand.confidence
+              };
+              changed = true;
+              // Add to existingStored locally so we don't add same one to multiple slots in one loop
+              existingStored.push({ machine: cand.estimatedWorld });
+            }
+          });
+
+
+          if (changed && onUpdateFiducials) {
+            console.log("Accumulated new fiducials:", updatedList);
+            onUpdateFiducials(updatedList);
+          }
+
+          // Visual Feedback: Show current frame results
           setVisionResult({
             detected: true,
             fiducials: result.fiducials,
-            confidence: result.fiducials.reduce((sum, f) => sum + f.confidence, 0) / result.fiducials.length
+            confidence: result.fiducials.length > 0 ? result.fiducials[0].confidence : 0
           });
         }
       },
-      2000 // Check every 2 seconds
+      1000 // Check every 1 second
     );
 
     setDetectionInterval(intervalId);
+  };
+
+  const clearAccumulatedFiducials = () => {
+    // Clear machine coordinates from all fiducials
+    const cleared = fiducials.map(f => ({ ...f, machine: null, autoDetected: false }));
+    if (onUpdateFiducials) onUpdateFiducials(cleared);
   };
 
   const analyzeQuality = async () => {
@@ -506,6 +601,9 @@ export default function CameraPanel({
               disabled={!streamOn}
             >
               {detectionInterval ? 'Stop Monitor' : '🔄 Monitor Fiducials'}
+            </button>
+            <button className="btn sm secondary" onClick={clearAccumulatedFiducials} disabled={!fiducials.some(f => f.machine)}>
+              Clear
             </button>
           </div>
           <small style={{ fontSize: '12px', color: '#6c757d' }}>

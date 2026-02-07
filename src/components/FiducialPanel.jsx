@@ -18,13 +18,83 @@ export default function FiducialPanel({
   detectionResult,
   onRedetectFiducials,
   onAutoAlign,
-  onAutoDetectCamera
+
+  onAutoDetectCamera,
+  alignmentInfo,
+  onCaptureAlignment
 }) {
   const ready2 = fiducials.filter(f => f.design && f.machine).length >= 2;
   const ready3 = fiducials.filter(f => f.design && f.machine).length >= 3;
 
   return (
     <div className="section">
+
+      {/* Panel Size Calculation (Moved to Top) */}
+      {(() => {
+        const machineFids = fiducials.filter(f => f.machine && typeof f.machine.x === 'number' && typeof f.machine.y === 'number');
+
+        let content;
+        if (machineFids.length < 2) {
+          content = (
+            <div style={{ fontSize: '0.9em', color: '#666', fontStyle: 'italic' }}>
+              Waiting for at least 2 detected fiducials to calculate size...
+            </div>
+          );
+        } else {
+          const xs = machineFids.map(f => f.machine.x);
+          const ys = machineFids.map(f => f.machine.y);
+          const minX = Math.min(...xs);
+          const maxX = Math.max(...xs);
+          const minY = Math.min(...ys);
+          const maxY = Math.max(...ys);
+
+          const width = maxX - minX;
+          const height = maxY - minY;
+          const diag = Math.hypot(width, height);
+
+          content = (
+            <div>
+              <div className="flex-row" style={{ justifyContent: 'space-between', marginTop: 4 }}>
+                <span>Width: <strong>{width.toFixed(2)} mm</strong></span>
+                <span>Height: <strong>{height.toFixed(2)} mm</strong></span>
+                <span>Diag: <strong>{diag.toFixed(2)} mm</strong></span>
+              </div>
+            </div>
+          );
+        }
+
+        return (
+          <div className="info" style={{ marginBottom: 16, background: '#e3f2fd', border: '1px solid #90caf9' }}>
+            <strong>Detected Panel Size</strong>
+            {content}
+          </div>
+        );
+      })()}
+
+      {/* Alignment Capture Controls */}
+      {alignmentInfo && onCaptureAlignment && (
+        <div className="box alignment-section" style={{ marginBottom: 16, borderTop: '1px solid #dee2e6', paddingTop: 8 }}>
+          <legend style={{ fontSize: '0.9em', fontWeight: 'bold', marginBottom: 6 }}>Panel Alignment (Ref 1 & 2)</legend>
+          <div className="flex-row" style={{ gap: 8, alignItems: 'center', marginBottom: 6 }}>
+            <button className={`btn sm ${alignmentInfo?.p1 ? 'secondary' : ''}`} onClick={() => onCaptureAlignment(1)}>
+              {alignmentInfo?.p1 ? '✓ Ref 1 (BL)' : 'Set Ref 1 (BL)'}
+            </button>
+            <button className={`btn sm ${alignmentInfo?.p2 ? 'secondary' : ''}`} onClick={() => onCaptureAlignment(2)}>
+              {alignmentInfo?.p2 ? '✓ Ref 2 (TR)' : 'Set Ref 2 (TR)'}
+            </button>
+          </div>
+          <div style={{ fontSize: '0.8em', color: '#666' }}>
+            <div>Ref 1: {alignmentInfo.p1 ? `${alignmentInfo.p1.x.toFixed(1)}, ${alignmentInfo.p1.y.toFixed(1)}` : '-'}</div>
+            <div>Ref 2: {alignmentInfo.p2 ? `${alignmentInfo.p2.x.toFixed(1)}, ${alignmentInfo.p2.y.toFixed(1)}` : '-'}</div>
+            {alignmentInfo.transform && (
+              <div style={{ color: '#28a745', marginTop: 4, fontWeight: 'bold' }}>
+                Aligned! θ: {(alignmentInfo.transform.theta * 180 / Math.PI).toFixed(2)}°
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       <h3>Fiducials & Alignment</h3>
 
       {detectionResult !== null && (
@@ -120,6 +190,8 @@ export default function FiducialPanel({
           {"rms" in transformSummary && <div>RMS error: {transformSummary.rms.toFixed(3)} mm</div>}
         </div>
       )}
+
+
 
     </div>
   );

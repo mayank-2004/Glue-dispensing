@@ -10,7 +10,7 @@ export const defaultAxisMap = {
 
 export const defaultFeeds = {
   travel: { X: 9000, Y: 9000, Z: 600, R: 1800 }, // mm/min
-  work:   { X: 1500, Y: 1500, Z: 300, R: 600  },
+  work: { X: 1500, Y: 1500, Z: 300, R: 600 },
 };
 
 export function header({ units = "mm", absolute = true } = {}) {
@@ -72,5 +72,38 @@ export function dwell(ms = 50) {
 
 function fmt(n) {
   // Keep 3 decimals max to avoid long floats
-  return Number(n).toFixed(3).replace(/\.?0+$/,"");
+  return Number(n).toFixed(3).replace(/\.?0+$/, "");
+}
+
+export function dispensePoint({
+  x, y,
+  zWork = 0.5,
+  zSafe = 5,
+  feedXY = 1500,
+  feedZ = 500,
+  pressure = 0,
+  dwellMs = 0,
+  valvePin = 4,
+  axisMap = defaultAxisMap
+}) {
+  const cmds = [];
+  // Move to location at safe height
+  cmds.push(...moveAbs({ x, y, z: zSafe, feed: feedXY }, axisMap));
+
+  // Move down to work height
+  cmds.push(...moveAbs({ z: zWork, feed: feedZ }, axisMap));
+
+  // Pressure ON
+  if (pressure > 0) cmds.push(`M42 P${valvePin} S${Math.round(pressure)}`);
+
+  // Dwell
+  if (dwellMs > 0) cmds.push(...dwell(dwellMs));
+
+  // Pressure OFF
+  if (pressure > 0) cmds.push(`M42 P${valvePin} S0`);
+
+  // Retract to safe height
+  cmds.push(...moveAbs({ z: zSafe, feed: feedZ }, axisMap));
+
+  return cmds;
 }

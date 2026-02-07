@@ -1,0 +1,88 @@
+.jog-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    max-width: 500px;
+}
+
+.jog-controls-container {
+    display: flex;
+    gap: 24px;
+    align-items: flex-start;
+}
+
+.jog-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(3, 1fr);
+    gap: 8px;
+    width: 180px;
+    height: 180px;
+}
+
+.jog-cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.jog-btn {
+    width: 100%;
+    height: 100%;
+    font-weight: bold;
+    font-size: 1.2em;
+    border-radius: 8px;
+    padding: 0;
+}
+
+.center-home {
+    background: #333;
+    border-radius: 50%;
+    color: #666;
+    font-size: 24px;
+}
+
+.jog-settings {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    flex: 1;
+}
+
+.jog-settings label {
+    display: flex;
+    flex-direction: column;
+    font-size: 0.9em;
+    color: #ccc;
+}
+
+.jog-settings input,
+.jog-settings select {
+    margin-top: 4px;
+    padding: 6px;
+    background: #222;
+    border: 1px solid #444;
+    color: white;
+    border-radius: 4px;
+}
+
+.safe-z-section {
+    border-top: 1px solid #444;
+    padding-top: 12px;
+    margin-top: 8px;
+}
+
+.status-display {
+    background: #1a1a1a;
+    padding: 10px;
+    border-radius: 6px;
+    font-family: monospace;
+    text-align: center;
+    border: 1px solid #333;
+    color: #00ff00;
+}
+
+.keyboard-hint {
+    text-align: center;
+    color: #666;
+}
