@@ -1,0 +1,85 @@
+.automated-panel{
+    margin-top: 20px;
+}
+
+.panel-data{
+    margin-left: 10px;
+}
+
+.automated-panel .flow-container {
+    margin-top: 20px;
+}
+
+.automated-panel .flow-header {
+    margin-bottom: 16px;
+}
+
+.automated-panel .stage-indicator {
+    padding: 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border-secondary);
+}
+
+.automated-panel .stage-indicator.idle {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-secondary);
+}
+
+.automated-panel .stage-indicator.active {
+    background: rgba(59, 130, 246, 0.2);
+    color: var(--accent-text);
+}
+
+.automated-panel .pos-readout {
+    font-size: 12px;
+    margin-top: 4px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-secondary);
+}
+
+.automated-panel .jog-controls-mini {
+    display: grid;
+    justify-items: center;
+    gap: 5px;
+    margin: 10px 0;
+}
+
+.automated-panel .flex-row {
+    display: flex;
+    gap: 5px;
+}
+
+.automated-panel .step-sel {
+    margin-top: 10px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.9em;
+}
+
+.automated-panel .step-sel .btn {
+    margin: 2px;
+}
+
+.automated-panel .stage-box {
+    margin-bottom: 16px;
+}
+
+.automated-panel progress {
+    /* Basic progress bar styling */
+    appearance: none;
+    height: 10px;
+    border-radius: 5px;
+    overflow: hidden;
+}
+
+.automated-panel progress::-webkit-progress-bar {
+    background-color: var(--bg-input);
+    border-radius: 5px;
+}
+
+.automated-panel progress::-webkit-progress-value {
+    background-color: var(--accent-primary);
+    border-radius: 5px;
+    transition: width 0.3s ease;
+}

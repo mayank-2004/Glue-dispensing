@@ -1,42 +1,69 @@
-.speed-controls {
+.speed-panel .control-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.speed-panel .info-box {
+  margin-top: 8px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
   border: 1px solid var(--border-primary);
-  border-radius: 8px;
-  padding: 16px;
-  background: var(--bg-tertiary);
 }
 
-.profile-stats {
-  background: rgba(30, 41, 59, 0.5);
-  border: 1px solid var(--border-secondary);
-  border-radius: 6px;
-  padding: 12px;
+.speed-panel .profile-details {
   font-size: 0.9em;
-  color: var(--text-secondary);
+  margin-top: 4px;
 }
 
-.profiles-detail {
-  border-top: 1px solid var(--border-secondary);
+.speed-panel .viscosity-note {
+  color: var(--accent-primary);
+  font-size: 0.8em;
+}
+
+.speed-panel .speed-controls {
+  margin-top: 12px;
   padding-top: 12px;
+  border-top: 1px solid var(--border-primary);
+}
+
+.speed-panel .multiplier-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.speed-panel .multiplier-display {
+  min-width: 40px;
+  text-align: center;
+  font-family: var(--font-mono);
+}
+
+.speed-panel .profile-stats {
+  margin-top: 12px;
+  font-size: 0.9em;
+}
+
+.speed-panel .profiles-list {
   margin-top: 12px;
 }
 
-.profile-item {
-  transition: background-color 0.2s ease;
+.speed-panel .profile-item {
   padding: 8px;
-  border-radius: 6px;
-  border: 1px solid transparent;
+  margin-bottom: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
 }
 
-.profile-item:hover {
-  background-color: var(--bg-button-hover) !important;
-  border-color: var(--border-secondary);
+.speed-panel .profile-item-desc {
+  font-size: 0.8em;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
 }
 
-.info {
-  background: rgba(59, 130, 246, 0.1);
-  border: 1px solid rgba(59, 130, 246, 0.2);
-  border-radius: 6px;
-  padding: 12px;
-  font-size: 0.9em;
-  color: var(--accent-text);
+.speed-panel .profile-item-specs {
+  font-size: 0.8em;
+  font-family: var(--font-mono);
 }

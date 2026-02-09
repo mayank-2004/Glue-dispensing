@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { header, home, moveAbs, dispensePoint, jogRel } from "../lib/motion/gcode.js";
 import { applyTransform } from "../lib/utils/transform2d.js";
+import "./AutomatedDispensingPanel.css";
 
 export default function AutomatedDispensingPanel({
   dispensingSequencer,
@@ -270,130 +271,123 @@ export default function AutomatedDispensingPanel({
 
   return (
     <div className="panel automated-panel">
-      <h3>🤖 Automated Dispensing</h3>
-
-      {/* Settings Summary */}
-      <div className="box">
-        <h4>Settings</h4>
-        <label>
-          <input type="checkbox" checked={useSafePathPlanning} onChange={e => setUseSafePathPlanning(e.target.checked)} />
-          Safe Path Planning
-        </label>
-      </div>
-
-      {/* Board Info */}
-      {boardOutline && (
+      <h3 style={{ marginLeft: '10px' }}>🤖 Automated Dispensing</h3>
+      <div className='panel-data'>
         <div className="box">
-          <div className="grid2">
-            <span>Board: {boardOutline.width.toFixed(1)} x {boardOutline.height.toFixed(1)} mm</span>
-            <span>Pads: {activeSequence.length}</span>
-          </div>
-        </div>
-      )}
-
-      {!refPoint && <div className="warning">⚠️ No Reference Point Selected</div>}
-
-      {/* Flow UI */}
-      <div className="flow-container" style={{ marginTop: 20 }}>
-        {/* Status Header */}
-        <div className="flow-header" style={{ marginBottom: 16 }}>
-          <div className="stage-indicator" style={{
-            background: jobStage !== 'idle' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255, 255, 255, 0.1)',
-            padding: 8,
-            borderRadius: 4,
-            border: '1px solid var(--border-secondary)',
-            color: jobStage !== 'idle' ? 'var(--accent-text)' : 'var(--text-secondary)'
-          }}>
-            <strong>Status:</strong> {jobStage.toUpperCase()}
-            {machineStatus === 'busy' && ' (Busy)'}
-          </div>
-          <div className="pos-readout" style={{ fontSize: 12, marginTop: 4, fontFamily: 'monospace', color: 'var(--text-secondary)' }}>
-            Pos: {currentPos.x.toFixed(3)}, {currentPos.y.toFixed(3)}, {currentPos.z.toFixed(3)}
-          </div>
+          <h4>Settings</h4>
+          <label>
+            <input type="checkbox" checked={useSafePathPlanning} onChange={e => setUseSafePathPlanning(e.target.checked)} />
+            Safe Path Planning
+          </label>
         </div>
 
-        {/* STAGE: IDLE */}
-        {jobStage === 'idle' && (
-          <div className="stage-box">
-            <button className="btn primary lg full-width"
-              onClick={startJobFlow}
-              disabled={!refPoint || !activeSequence.length || !isConnected}>
-              {isConnected ? '▶ Start Automated Job' : '⚠️ Connect Machine First'}
-            </button>
-            <button className="btn secondary full-width" onClick={handleDownloadGCode} style={{ marginTop: 8 }}>
-              💾 Download G-Code
-            </button>
-            {jobMode === 'batch' && <p>Batch mode not supported in new flow yet</p>}
-          </div>
-        )}
-
-        {/* STAGE: HOMING */}
-        {jobStage === 'homing' && (
-          <div className="stage-box">
-            <h4>Homing Machine...</h4>
-            <div className="spinner"></div>
-          </div>
-        )}
-
-        {/* STAGE: LOADING */}
-        {jobStage === 'loading' && (
-          <div className="stage-box">
-            <h4>Load PCB</h4>
-            <p>Secure the PCB on the bed.</p>
-            <button className="btn primary lg full-width" onClick={proceedToRegistration}>Next: Registration</button>
-          </div>
-        )}
-
-        {/* STAGE: REGISTERING */}
-        {jobStage === 'registering' && (
-          <div className="stage-box">
-            <h4>Align Fiducial {regIndex + 1}</h4>
-            <p>Fiducial ID: <strong>{fiducialsRef.current.filter(f => f.design)[regIndex]?.id}</strong></p>
-
-            {/* Jog Controls */}
-            <div className="jog-controls-mini" style={{ display: 'grid', justifyItems: 'center', gap: 5, margin: '10px 0' }}>
-              <button onClick={() => jog('Y', 1)} className="btn">Y+</button>
-              <div className="flex-row">
-                <button onClick={() => jog('X', -1)} className="btn">X-</button>
-                <button onClick={() => jog('X', 1)} className="btn">X+</button>
-              </div>
-              <button onClick={() => jog('Y', -1)} className="btn">Y-</button>
-              <div className="flex-row" style={{ marginTop: 5 }}>
-                <button onClick={() => jogZ(1)} className="btn sm">Z Up</button>
-                <button onClick={() => jogZ(-1)} className="btn sm">Z Down</button>
-              </div>
+        {/* Board Info */}
+        {boardOutline && (
+          <div className="box">
+            <div className="grid2">
+              <span>Board: {boardOutline.width.toFixed(1)} x {boardOutline.height.toFixed(1)} mm</span>
+              <span>Pads: {activeSequence.length}</span>
             </div>
-            <div className="step-sel">
-              Step:
-              {[0.1, 1, 5].map(s => (
-                <button key={s} onClick={() => setJogStep(s)} className={`btn sm ${jogStep === s ? 'primary' : 'secondary'}`} style={{ margin: 2 }}>{s}</button>
-              ))}
+          </div>
+        )}
+
+        {!refPoint && <div className="warning">⚠️ No Reference Point Selected</div>}
+
+        {/* Flow UI */}
+        <div className="flow-container">
+          {/* Status Header */}
+          <div className="flow-header">
+            <div className={`stage-indicator ${jobStage !== 'idle' ? 'active' : 'idle'}`}>
+              <strong>Status:</strong> {jobStage.toUpperCase()}
+              {machineStatus === 'busy' && ' (Busy)'}
             </div>
-
-            <button className="btn primary full-width" onClick={confirmFiducial} style={{ marginTop: 10 }}>✅ Confirm Aligned</button>
+            <div className="pos-readout">
+              Pos: {currentPos.x.toFixed(3)}, {currentPos.y.toFixed(3)}, {currentPos.z.toFixed(3)}
+            </div>
           </div>
-        )}
 
-        {/* STAGE: DISPENSING */}
-        {jobStage === 'dispensing' && (
-          <div className="stage-box">
-            <h4>Dispensing...</h4>
-            <progress value={jobProgress.current} max={jobProgress.total} style={{ width: '100%' }}></progress>
-            <p>{jobProgress.current} / {jobProgress.total}</p>
-            <button className="btn danger full-width" onClick={cancelJob}>STOP</button>
-          </div>
-        )}
+          {/* STAGE: IDLE */}
+          {jobStage === 'idle' && (
+            <div className="stage-box">
+              <button className="btn primary lg full-width"
+                onClick={startJobFlow}
+                disabled={!refPoint || !activeSequence.length || !isConnected}>
+                {isConnected ? '▶ Start Automated Job' : '⚠️ Connect Machine First'}
+              </button>
+              <button className="btn secondary full-width mt-2" onClick={handleDownloadGCode}>
+                💾 Download G-Code
+              </button>
+              {jobMode === 'batch' && <p>Batch mode not supported in new flow yet</p>}
+            </div>
+          )}
 
-        {/* STAGE: FINISHED */}
-        {jobStage === 'finished' && (
-          <div className="stage-box">
-            <h4>Job Complete!</h4>
-            <button className="btn full-width" onClick={() => setJobStage('idle')}>Done</button>
-          </div>
-        )}
+          {/* STAGE: HOMING */}
+          {jobStage === 'homing' && (
+            <div className="stage-box">
+              <h4>Homing Machine...</h4>
+              <div className="spinner"></div>
+            </div>
+          )}
 
+          {/* STAGE: LOADING */}
+          {jobStage === 'loading' && (
+            <div className="stage-box">
+              <h4>Load PCB</h4>
+              <p>Secure the PCB on the bed.</p>
+              <button className="btn primary lg full-width" onClick={proceedToRegistration}>Next: Registration</button>
+            </div>
+          )}
+
+          {/* STAGE: REGISTERING */}
+          {jobStage === 'registering' && (
+            <div className="stage-box">
+              <h4>Align Fiducial {regIndex + 1}</h4>
+              <p>Fiducial ID: <strong>{fiducialsRef.current.filter(f => f.design)[regIndex]?.id}</strong></p>
+
+              {/* Jog Controls */}
+              <div className="jog-controls-mini">
+                <button onClick={() => jog('Y', 1)} className="btn">Y+</button>
+                <div className="flex-row">
+                  <button onClick={() => jog('X', -1)} className="btn">X-</button>
+                  <button onClick={() => jog('X', 1)} className="btn">X+</button>
+                </div>
+                <button onClick={() => jog('Y', -1)} className="btn">Y-</button>
+                <div className="flex-row mt-1">
+                  <button onClick={() => jogZ(1)} className="btn sm">Z Up</button>
+                  <button onClick={() => jogZ(-1)} className="btn sm">Z Down</button>
+                </div>
+              </div>
+              <div className="step-sel">
+                Step:
+                {[0.1, 1, 5].map(s => (
+                  <button key={s} onClick={() => setJogStep(s)} className={`btn sm ${jogStep === s ? 'primary' : 'secondary'}`}>{s}</button>
+                ))}
+              </div>
+
+              <button className="btn primary full-width mt-2" onClick={confirmFiducial}>✅ Confirm Aligned</button>
+            </div>
+          )}
+
+          {/* STAGE: DISPENSING */}
+          {jobStage === 'dispensing' && (
+            <div className="stage-box">
+              <h4>Dispensing...</h4>
+              <progress value={jobProgress.current} max={jobProgress.total}></progress>
+              <p>{jobProgress.current} / {jobProgress.total}</p>
+              <button className="btn danger full-width" onClick={cancelJob}>STOP</button>
+            </div>
+          )}
+
+          {/* STAGE: FINISHED */}
+          {jobStage === 'finished' && (
+            <div className="stage-box">
+              <h4>Job Complete!</h4>
+              <button className="btn full-width" onClick={() => setJobStage('idle')}>Done</button>
+            </div>
+          )}
+
+        </div>
       </div>
-
     </div>
   );
 }

@@ -59,7 +59,7 @@ export default function JogPanel({
 
     return (
         <div className="panel jog-panel">
-            <h3>Manual Jog Control</h3>
+            <h3 style={{ marginLeft: 10 }}>Manual Jog Control</h3>
 
             <div className="jog-controls-container">
                 {/* XY Jog Grid */}

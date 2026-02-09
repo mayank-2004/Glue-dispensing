@@ -2,13 +2,19 @@
     display: flex;
     flex-direction: column;
     gap: 16px;
-    max-width: 500px;
+    /* max-width: 550px; */
 }
 
 .jog-controls-container {
     display: flex;
     gap: 24px;
-    align-items: flex-start;
+    align-items: center;
+    background: #0a0a0a;
+    padding: 16px;
+    border-radius: 12px;
+    border: 1px solid #333;
+    box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.5);
+    margin: 10px;
 }
 
 .jog-grid {
@@ -16,8 +22,14 @@
     grid-template-columns: repeat(3, 1fr);
     grid-template-rows: repeat(3, 1fr);
     gap: 8px;
-    width: 180px;
-    height: 180px;
+    width: 160px;
+    height: 160px;
+    background: #111;
+    padding: 12px;
+    border-radius: 50%;
+    /* Circle D-Pad */
+    border: 1px solid #333;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
 }
 
 .jog-cell {
@@ -30,27 +42,64 @@
     width: 100%;
     height: 100%;
     font-weight: bold;
-    font-size: 1.2em;
+    font-size: 1.1em;
     border-radius: 8px;
     padding: 0;
-    color: var(--text-primary);
-    background: var(--bg-button);
-    border: 1px solid var(--border-secondary);
+    color: var(--text-secondary);
+    background: #1a1a1a;
+    border: 1px solid #333;
     transition: all 0.1s;
+    box-shadow: 0 4px 0 #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
-.jog-btn:active {
-    background: var(--bg-button-hover);
-    transform: scale(0.95);
-    border-color: var(--border-primary);
+.jog-btn:hover:not(:disabled) {
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
+    background: #222;
+    box-shadow: 0 0 10px rgba(0, 243, 255, 0.2), 0 4px 0 #000;
 }
 
-.center-home {
-    background: rgba(34, 197, 94, 0.2);
+.jog-btn:active:not(:disabled) {
+    transform: translateY(2px);
+    box-shadow: 0 2px 0 #000;
+    background: #000;
+}
+
+.home-btn {
     border-radius: 50%;
-    color: #4ade80;
-    font-size: 24px;
-    border: 1px solid rgba(34, 197, 94, 0.4);
+    width: 44px;
+    height: 44px;
+    font-size: 1.2em;
+    border-color: var(--text-secondary);
+    background: #222;
+}
+
+.home-btn:hover:not(:disabled) {
+    color: var(--accent-success);
+    border-color: var(--accent-success);
+    box-shadow: 0 0 10px rgba(0, 255, 157, 0.3), 0 4px 0 #000;
+}
+
+.z-jog-column {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: center;
+    justify-content: center;
+    background: #111;
+    padding: 12px 12px;
+    border-radius: 20px;
+    border: 1px solid #333;
+    box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.5);
+}
+
+.z-jog-column .jog-btn {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
 }
 
 .jog-settings {
@@ -58,50 +107,57 @@
     flex-direction: column;
     gap: 12px;
     flex: 1;
+    border-left: 1px solid #333;
+    padding-left: 16px;
 }
 
 .jog-settings label {
     display: flex;
     flex-direction: column;
-    font-size: 0.9em;
+    font-size: 0.85em;
     color: var(--text-secondary);
+    font-weight: 600;
 }
 
 .jog-settings input,
 .jog-settings select {
     margin-top: 4px;
     padding: 6px;
-    background: rgba(0, 0, 0, 0.2);
-    border: 1px solid var(--border-secondary);
-    color: var(--text-primary);
+    background: #000;
+    border: 1px solid #333;
+    color: var(--accent-primary);
     border-radius: 4px;
+    font-family: var(--font-mono);
 }
 
 .jog-settings input:focus,
 .jog-settings select:focus {
-    border-color: var(--border-accent);
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 5px rgba(0, 243, 255, 0.2);
 }
 
 .safe-z-section {
-    border-top: 1px solid var(--border-secondary);
+    border-top: 1px solid #333;
     padding-top: 12px;
-    margin-top: 8px;
+    margin-top: 4px;
 }
 
 .status-display {
-    background: #0f172a;
-    padding: 10px;
-    border-radius: 6px;
+    background: #000;
+    padding: 8px;
+    border-radius: 4px;
     font-family: 'JetBrains Mono', monospace;
     text-align: center;
-    border: 1px solid var(--border-secondary);
-    color: #4ade80;
-    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
+    border: 1px solid #333;
+    color: var(--accent-success);
+    font-size: 0.9em;
+    margin-top: 8px;
 }
 
 .keyboard-hint {
     text-align: center;
     color: var(--text-secondary);
-    font-size: 0.8em;
-    opacity: 0.7;
+    font-size: 0.75em;
+    opacity: 0.5;
+    margin-top: 4px;
 }

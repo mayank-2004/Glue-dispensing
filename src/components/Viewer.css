@@ -23,21 +23,26 @@
   background-size: 100px 100px, 100px 100px, 20px 20px, 20px 20px;
   background-position: center center;
   position: relative;
-  overflow: hidden;
+  overflow: auto;
+  /* Allow scrolling when zoomed */
   min-height: 400px;
   padding: 12px;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  /* Remove center alignment to fix overflow clipping */
+  /* align-items: center; */
+  /* justify-content: center; */
   box-shadow: inset 0 0 20px rgba(0, 0, 0, 0.5);
 }
 
 .viewer .canvas svg {
-  width: 100% !important;
-  height: 100% !important;
+  /* Dimensions will be set dynamically via inline style for zoom */
   object-fit: contain;
-  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: width 0.3s ease, height 0.3s ease;
+  /* Smooth zoom transition */
   filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.3));
+  margin: auto;
+  /* Center when smaller, allow scrolling when larger */
+  display: block;
 }
 
 .viewer .canvas.zoom-mode {
@@ -49,6 +54,11 @@
   border-radius: 4px;
 }
 
+.viewer-zoom {
+  display: flex;
+  justify-content: space-evenly;
+}
+
 .viewer .viewer-toolbar {
   position: absolute;
   top: 12px;
@@ -58,55 +68,81 @@
   gap: 8px;
 }
 
-.zoom-btn {
-  background: var(--bg-button);
-  color: var(--text-secondary);
-  border: 1px solid var(--border-secondary);
+.viewer .viewer-toolbar {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(15, 23, 42, 0.6);
+  padding: 4px;
   border-radius: 8px;
-  padding: 8px 12px;
+  border: 1px solid var(--border-primary);
+  backdrop-filter: blur(4px);
+}
+
+.viewer-btn-group {
+  display: flex;
+  align-items: center;
+  background: var(--bg-button);
+  border: 1px solid var(--border-secondary);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.viewer-btn {
+  background: transparent;
+  color: #fff;
+  border: none;
+  padding: 6px 2px;
   cursor: pointer;
   font-weight: 500;
   font-size: 13px;
-  backdrop-filter: blur(8px);
-  box-shadow: var(--shadow-sm);
   transition: all 0.2s ease;
-  user-select: none;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+  height: 32px;
+  border-right: 1px solid var(--border-secondary);
 }
 
-.zoom-btn:hover {
+.viewer-btn:last-child {
+  border-right: none;
+}
+
+.viewer-btn:hover:not(:disabled) {
   background: var(--bg-button-hover);
-  border-color: var(--border-primary);
   color: var(--text-primary);
-  box-shadow: var(--shadow-md);
-  transform: translateY(-1px);
 }
 
-.zoom-btn.on {
-  background: var(--gradient-button-active);
-  color: var(--accent-text);
-  border-color: var(--border-accent);
-  box-shadow: 0 0 12px rgba(59, 130, 246, 0.4);
+.viewer-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
-.zoom-btn.on:hover {
-  background: linear-gradient(135deg, rgba(59, 130, 246, 0.4), rgba(37, 99, 235, 0.3));
-  border-color: var(--border-accent-hover);
-  color: var(--accent-text-hover);
+.viewer-btn.active {
+  background: rgba(234, 179, 8, 0.15);
+  color: #facc15;
 }
 
-.zoom-btn:not(.on) {
-  background: rgba(239, 68, 68, 0.2);
-  color: #fca5a5;
-  border-color: rgba(239, 68, 68, 0.4);
+.viewer-btn.active:hover {
+  background: rgba(234, 179, 8, 0.25);
 }
 
-.zoom-btn:not(.on):hover {
-  background: rgba(239, 68, 68, 0.3);
-  border-color: rgba(239, 68, 68, 0.6);
-  color: #fecaca;
+.viewer-readout {
+  padding: 0 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  height: 32px;
+  display: flex;
+  align-items: center;
+  border-right: 1px solid var(--border-secondary);
+  min-width: 40px;
+  justify-content: center;
 }
 
 .viewer.zoom-enabled {
