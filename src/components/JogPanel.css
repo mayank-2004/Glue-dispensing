@@ -33,13 +33,24 @@
     font-size: 1.2em;
     border-radius: 8px;
     padding: 0;
+    color: var(--text-primary);
+    background: var(--bg-button);
+    border: 1px solid var(--border-secondary);
+    transition: all 0.1s;
+}
+
+.jog-btn:active {
+    background: var(--bg-button-hover);
+    transform: scale(0.95);
+    border-color: var(--border-primary);
 }
 
 .center-home {
-    background: #333;
+    background: rgba(34, 197, 94, 0.2);
     border-radius: 50%;
-    color: #666;
+    color: #4ade80;
     font-size: 24px;
+    border: 1px solid rgba(34, 197, 94, 0.4);
 }
 
 .jog-settings {
@@ -53,36 +64,44 @@
     display: flex;
     flex-direction: column;
     font-size: 0.9em;
-    color: #ccc;
+    color: var(--text-secondary);
 }
 
 .jog-settings input,
 .jog-settings select {
     margin-top: 4px;
     padding: 6px;
-    background: #222;
-    border: 1px solid #444;
-    color: white;
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid var(--border-secondary);
+    color: var(--text-primary);
     border-radius: 4px;
 }
 
+.jog-settings input:focus,
+.jog-settings select:focus {
+    border-color: var(--border-accent);
+}
+
 .safe-z-section {
-    border-top: 1px solid #444;
+    border-top: 1px solid var(--border-secondary);
     padding-top: 12px;
     margin-top: 8px;
 }
 
 .status-display {
-    background: #1a1a1a;
+    background: #0f172a;
     padding: 10px;
     border-radius: 6px;
-    font-family: monospace;
+    font-family: 'JetBrains Mono', monospace;
     text-align: center;
-    border: 1px solid #333;
-    color: #00ff00;
+    border: 1px solid var(--border-secondary);
+    color: #4ade80;
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
 }
 
 .keyboard-hint {
     text-align: center;
-    color: #666;
+    color: var(--text-secondary);
+    font-size: 0.8em;
+    opacity: 0.7;
 }

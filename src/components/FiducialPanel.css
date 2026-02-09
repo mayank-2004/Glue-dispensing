@@ -1,20 +1,23 @@
 .fiducial-panel {
-  background: #f8f9fa;
-  border: 1px solid #dee2e6;
-  border-radius: 8px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  border-radius: 12px;
   padding: 16px;
   margin: 16px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  box-shadow: var(--shadow-md);
   position: relative;
   z-index: 10;
   flex-shrink: 0;
+  backdrop-filter: blur(10px);
 }
 
 .fiducial-panel h3 {
   margin: 0 0 16px 0;
-  color: #495057;
+  color: var(--text-primary);
   font-size: 16px;
   font-weight: 600;
+  border-bottom: 1px solid var(--border-secondary);
+  padding-bottom: 8px;
 }
 
 .info {
@@ -22,44 +25,49 @@
   border-radius: 6px;
   border: 1px solid;
   font-size: 14px;
+  margin-bottom: 8px;
 }
 
 .info.success {
-  background: #d4edda;
-  border-color: #c3e6cb;
-  color: #155724;
+  background: rgba(21, 87, 36, 0.2);
+  border-color: rgba(21, 87, 36, 0.4);
+  color: #4ade80;
 }
 
 .info.warning {
-  background: #fff3cd;
-  border-color: #ffeaa7;
-  color: #856404;
+  background: rgba(133, 100, 4, 0.2);
+  border-color: rgba(133, 100, 4, 0.4);
+  color: #fde047;
 }
 
 .info.error {
-  background: #f8d7da;
-  border-color: #f5c6cb;
-  color: #721c24;
+  background: rgba(114, 28, 36, 0.2);
+  border-color: rgba(114, 28, 36, 0.4);
+  color: #fca5a5;
 }
 
 table.kv {
   width: 100%;
   border-collapse: collapse;
   margin-top: 8px;
+  border: 1px solid var(--border-secondary);
+  border-radius: 6px;
+  overflow: hidden;
 }
 
 table.kv th,
 table.kv td {
   padding: 8px;
   text-align: left;
-  border-bottom: 1px solid #dee2e6;
+  border-bottom: 1px solid var(--border-secondary);
   font-size: 14px;
+  color: var(--text-secondary);
 }
 
 table.kv th {
-  background: #f8f9fa;
+  background: rgba(30, 41, 59, 0.5);
   font-weight: 600;
-  color: #495057;
+  color: var(--text-primary);
 }
 
 table.kv.small th,
@@ -69,15 +77,23 @@ table.kv.small td {
 }
 
 table.kv tr:hover {
-  background: #f8f9fa;
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .in {
   padding: 4px 6px;
-  border: 1px solid #ced4da;
-  border-radius: 3px;
+  border: 1px solid var(--border-secondary);
+  border-radius: 4px;
   font-size: 13px;
   width: 80px;
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--text-primary);
+}
+
+.in:focus {
+  outline: none;
+  border-color: var(--border-accent);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
 }
 
 .in.sm {

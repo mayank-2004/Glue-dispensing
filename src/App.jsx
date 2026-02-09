@@ -7,7 +7,7 @@ import Viewer from "./components/Viewer.jsx";
 import CameraPanel from "./components/CameraPanel.jsx";
 import SerialPanel from "./components/SerialPanel.jsx";
 import ComponentList from "./components/ComponentList.jsx";
-import JogPanel from "./components/JogPanel.jsx"; // Added JogPanel
+import JogPanel from "./components/JogPanel.jsx";
 import FiducialPanel from "./components/FiducialPanel.jsx";
 import PressurePanel from "./components/PressurePanel.jsx";
 import SpeedPanel from "./components/SpeedPanel.jsx";
@@ -37,6 +37,7 @@ import { BatchExecutor } from "./lib/batch/batchExecutor.js";
 import { LayerDataExtractor } from "./lib/gerber/layerDataExtractor.js";
 import { debugCoordinateConversion } from "./lib/debug/coordinateDebug.js";
 import BatchPanel from "./components/BatchPanel.jsx";
+import MaintenanceManager from "./components/MaintenanceManager.jsx";
 
 function calculatePadCenter(p) {
   // For Gerber-extracted pads, x,y coordinates ARE the center (flash coordinates)
@@ -87,7 +88,7 @@ function parseLengthToMm(lenStr = "") {
 export default function App() {
   const [layers, setLayers] = useState([]);
   const [side, setSide] = useState("top");
-  const [mirrorBottom, setMirrorBottom] = useState(true);
+  // const [mirrorBottom, setMirrorBottom] = useState(true); // User requested removal
   const [svg, setSvg] = useState("");
 
   const [pads, setPads] = useState([]);
@@ -404,6 +405,7 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("pcbOriginOffset", JSON.stringify(pcbOriginOffset));
   }, [pcbOriginOffset]);
+
   useEffect(() => {
     maintenanceManager.setReminderCallback((alert) => {
       setMaintenanceAlert(alert);
@@ -494,11 +496,23 @@ export default function App() {
     setLayerData(extractedData);
     console.log('Extracted layer data:', extractedData);
 
-    const pi = ls.findIndex(x => x.type === "solderpaste");
+    // Prioritize Open "Top" Solderpaste layer to match default view
+    let pi = ls.findIndex(x => x.type === "solderpaste" && x.side === "top");
+    if (pi < 0) {
+      // Fallback to any solderpaste layer if top not found
+      pi = ls.findIndex(x => x.type === "solderpaste");
+    }
+
     setPasteIdx(pi >= 0 ? pi : null);
     if (pi >= 0) {
       const padData = extractPadsMm(ls[pi].text).map(padCenter);
       setPads(processPads(padData));
+      // Ensure view side matches the selected paste layer
+      if (ls[pi].side === 'bottom') {
+        setSide('bottom');
+      } else {
+        setSide('top');
+      }
     } else setPads([]);
 
     // Detect fiducials automatically
@@ -1035,7 +1049,35 @@ export default function App() {
       }
     }
 
-    // Draw generated path
+    // Draw dispensing sequence (Straight lines connecting pads)
+    // Only draw if user has explicitly selected pads (avoid showing mess on load)
+    if (dispensingSequence && dispensingSequence.length > 1 && selectedPadIndices.length > 0) {
+      const gs = ensureGroup("overlay-sequence");
+
+      // Draw lines between consecutive pads
+      for (let i = 0; i < dispensingSequence.length - 1; i++) {
+        const p1 = dispensingSequence[i];
+        const p2 = dispensingSequence[i + 1];
+
+        const start = mmToCurrentUnits({ x: p1.x, y: p1.y });
+        const end = mmToCurrentUnits({ x: p2.x, y: p2.y });
+
+        const line = document.createElementNS(NS, "line");
+        line.setAttribute("x1", start.x); line.setAttribute("y1", start.y);
+        line.setAttribute("x2", end.x); line.setAttribute("y2", end.y);
+
+        // Neon Green-Yellow for sequence path
+        line.setAttribute("stroke", "#ccff00");
+        line.setAttribute("stroke-width", start.r * 0.5);
+        line.setAttribute("stroke-opacity", "0.8");
+        // line.setAttribute("stroke-dasharray", "5,3"); // Optional: makes it look like a planned path
+        gs.appendChild(line);
+      }
+    } else {
+      ensureGroup("overlay-sequence"); // Clear if empty
+    }
+
+    // Draw generated path (Single Reference -> Target path)
     if (generatedPath && activeRef && selectedMm) {
       const gp = ensureGroup("overlay-path");
 
@@ -1050,12 +1092,15 @@ export default function App() {
 
         // Different colors for different segment types
         const color = segment.type === 'lift' ? '#00ff00' :
-          segment.type === 'travel' ? '#0080ff' :
-            segment.type === 'lower' ? '#ff8000' : '#ff0';
+          segment.type === 'travel' ? '#00ccff' : // Bright blue
+            segment.type === 'lower' ? '#ff9900' : '#ffff00'; // Neon Yellow for dispense
 
         line.setAttribute("stroke", color);
-        line.setAttribute("stroke-width", start.r * 0.3);
+        line.setAttribute("stroke-width", start.r * 0.6); // Thicker line (was 0.3)
+
         line.setAttribute("stroke-dasharray", segment.type === 'travel' ? "4,2" : "none");
+        line.setAttribute("stroke-linecap", "round");
+        line.setAttribute("opacity", "0.9");
         gp.appendChild(line);
       });
 
@@ -1063,7 +1108,7 @@ export default function App() {
       generatedPath.points.forEach((point, idx) => {
         if (point.type === 'waypoint') {
           const up = mmToCurrentUnits(point);
-          drawCircle(gp, up.x, up.y, up.r * 0.5, "rgba(255,165,0,0.3)", "#ffa500");
+          drawCircle(gp, up.x, up.y, up.r * 0.5, "rgba(255,255,0,0.5)", "#ffff00");
         }
       });
 
@@ -1288,23 +1333,24 @@ export default function App() {
     const pt = svgEl.createSVGPoint(); pt.x = evt.clientX; pt.y = evt.clientY;
     const ctm = svgEl.getScreenCTM(); if (!ctm) return null;
     const local = pt.matrixTransform(ctm.inverse());
-    // X: Absolute coordinate (no subtraction needed if viewBox matches Gerber coords)
-    const mmX = local.x * geom.mmPerUnit;
+
+    // Default X: Absolute coordinate
+    let mmX = local.x * geom.mmPerUnit;
+
+    // Handle X-inversion for Bottom View
+    // Standard "Bottom View" is mirrored horizontally. 
+    // To make Visual Bottom-Left = (0,0), we need to flip the X coordinate relative to board width.
+    if (side === 'bottom') {
+      // local.x goes 0 -> Width (Left to Right visually)
+      // Physical X goes Width -> 0 (Right to Left visually because it's mirrored)
+      // So we want: PhysicalX = (MinX + Width) - LocalX
+      mmX = (geom.minX + geom.vbW - local.x) * geom.mmPerUnit;
+    }
 
     // Y: FLIP relative to Board Bounds (MinY + MaxY - Y)
     // MaxY = minY + vbH
     // GerberY = (minY + (minY + vbH)) - local.y
     const mmY = (2 * geom.minY + geom.vbH - local.y) * geom.mmPerUnit;
-
-    /* console.log('Click conversion:', {
-      clientX: evt.clientX,
-      clientY: evt.clientY,
-      localX: local.x,
-      localY: local.y,
-      mmX,
-      mmY,
-      geom: { minX: geom.minX, minY: geom.minY, mmPerUnit: geom.mmPerUnit }
-    }); */
     return { x: mmX, y: mmY };
   };
 
@@ -1732,29 +1778,40 @@ export default function App() {
 
   return (
     <div className="wrap" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
-      <aside className="sidebar">
-        <div className="header" >
-          <div className="row" style={{ marginBottom: 12 }}>
-            <label className="btn">
-              Open Gerbers / ZIP
-              <input type="file" multiple onChange={pickFiles}
-                accept=".zip,.gbr,.grb,.gtl,.gbl,.gts,.gbs,.gto,.gbo,.gtp,.gbp,.gbc,.gm1,.drl,.txt,.nc,.gko" />
-            </label>
-            {/* <button className="btn secondary" onClick={exportAllSvgsZip} disabled={layers.length === 0}>Download SVGs (ZIP)</button> */}
-          </div>
+      <div className="sidebar">
+        <div className="sidebar-header">
+          <div className="panel-title">FILE CONTROL</div>
         </div>
-        <div className="section Board-section">
-          <h3 style={{ color: '#007bff', padding: '8px 12px', borderBottom: '2px solid #007bff' }}>Board View</h3>
-          <div className="flex-row">
-            <button className="btn secondary" onClick={() => changeSide("top")}>Top</button>
-            <button className="btn secondary" onClick={() => changeSide("bottom")}>Bottom</button>
-            <label><input type="checkbox" checked={mirrorBottom} onChange={(e) => setMirrorBottom(e.target.checked)} /> Mirror bottom</label>
-          </div>
-          <LayerList layers={layers} layerData={layerData} onToggle={toggleLayer} />
+
+        <div className="section">
+          <input
+            type="file"
+            id="fileInput"
+            multiple
+            accept=".zip,.grb,.gbr,.cmp,.sol,.drd,.exc,.txt"
+            onChange={pickFiles}
+            className="d-none"
+          />
+          {/* <div className="row">
+            <button className="btn primary w-100" onClick={() => document.getElementById("fileInput").click()}>
+              📂 Open Gerber / ZIP
+            </button>
+          </div> */}
+          {/* <div className="row" style={{ marginTop: 8 }}>
+            <button className="btn w-100" onClick={exportAllSvgsZip}>
+              Export SVGs
+            </button>
+          </div> */}
         </div>
-        <div className="section Components-section">
-          <h3 style={{ color: '#007bff', padding: '8px 12px', borderBottom: '2px solid #007bff' }}>Components</h3>
-          <div className="flex-row" style={{ marginLeft: 8 }}>
+
+        <div className="section">
+          <h3>View Controls</h3>
+          <div className="row">
+            <button className={`btn ${side === 'top' ? 'active' : ''}`} onClick={() => changeSide("top")}>Top View</button>
+            <button className={`btn ${side === 'bottom' ? 'active' : ''}`} onClick={() => changeSide("bottom")}>Bottom View</button>
+          </div>
+
+          <div style={{ marginTop: 8 }}>
             <select value={pasteIdx ?? ""} onChange={(e) => {
               const idx = e.target.value === "" ? null : +e.target.value;
               setPasteIdx(idx);
@@ -1779,18 +1836,59 @@ export default function App() {
               } else setPads([]);
               setSelectedMm(null);
             }}>
-              <option value="">(select solderpaste layer)</option>
+              <option value="">(Select Paste Layer)</option>
               {layers.map((l, i) => {
                 if (l.type === "solderpaste") {
-                  return <option key={l.filename} value={i}>{l.filename} (solderpaste)</option>;
+                  return <option key={l.filename} value={i}>{l.filename} ({l.side})</option>;
                 }
                 return null;
               })}
             </select>
           </div>
-          <ComponentList
-            components={padDistances}
-            onFocus={(pad) => {
+        </div>
+
+        <div className="section" style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+          <h3>Layers</h3>
+          <LayerList layers={layers} layerData={layerData} onToggle={toggleLayer} />
+        </div>
+
+        <MaintenanceManager manager={maintenanceManager} />
+
+        <ComponentList
+          components={padDistances}
+          onFocus={(pad) => {
+            const displayCoords = {
+              x: pad.x,
+              y: pad.y,
+              centerValid: pad.centerValid,
+              centerMethod: pad.centerMethod,
+              originalPad: pad
+            };
+
+            console.log('ComponentList Focus to CENTER:', {
+              pad: { x: pad.x, y: pad.y },
+              displayCoords
+            });
+
+            setSelectedMm(displayCoords);
+          }}
+          onItemClick={(pad, index) => {
+            if (multiSelectMode) {
+              setSelectedPadIndices(prev => {
+                const newSelection = [...prev];
+                const existingIdx = newSelection.indexOf(index);
+                if (existingIdx >= 0) {
+                  newSelection.splice(existingIdx, 1);
+                } else {
+                  newSelection.push(index);
+                }
+                return newSelection;
+              });
+            } else {
+              // In normal mode, clicking the row also triggering focus can be nice,
+              // but let's keep it distinct for now or alias it.
+              // For now, only multi-select uses row click.
+              // Optional: trigger focus here too if desired.
               const displayCoords = {
                 x: pad.x,
                 y: pad.y,
@@ -1798,163 +1896,176 @@ export default function App() {
                 centerMethod: pad.centerMethod,
                 originalPad: pad
               };
-
-              console.log('ComponentList Focus to CENTER:', {
-                pad: { x: pad.x, y: pad.y },
-                displayCoords
-              });
-
               setSelectedMm(displayCoords);
-            }}
-          />
+            }
+          }}
+          multiSelectMode={multiSelectMode}
+          selectedIndices={selectedPadIndices}
+        />
 
-          <div className="section Origin-section">
-            <h3 style={{ color: '#007bff', padding: '8px 12px', borderBottom: '2px solid #007bff' }}>PCB Origin</h3>
-            {selectedOrigin && (
-              <div style={{ marginBottom: 12 }}>
-                <div style={{ padding: 8, background: '#e3effaff', borderRadius: 4 }}>
-                  <strong>{selectedOrigin.description}</strong><br />
-                  <small>Position: ({selectedOrigin.x.toFixed(2)}, {selectedOrigin.y.toFixed(2)}) mm</small>
-                  <small>Confidence: {(selectedOrigin.confidence * 100).toFixed(0)}%</small>
-                </div>
+        <div className="section Origin-section">
+          <h3 style={{ color: '#007bff', padding: '8px 12px', borderBottom: '2px solid #007bff' }}>PCB Origin</h3>
+          {selectedOrigin && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ padding: 8, background: '#e3effaff', borderRadius: 4 }}>
+                <strong>{selectedOrigin.description}</strong><br />
+                <small>Position: ({selectedOrigin.x.toFixed(2)}, {selectedOrigin.y.toFixed(2)}) mm</small>
+                <small>Confidence: {(selectedOrigin.confidence * 100).toFixed(0)}%</small>
               </div>
-            )}
-            <div className="flex-row" style={{ marginLeft: 8 }}>
-              <label>X (mm) <input type="number" step="0.1" value={pcbOriginOffset?.x || 0}
-                onChange={(e) => setPcbOriginOffset({ x: +e.target.value || 0, y: pcbOriginOffset?.y || 0 })}
-                style={{ width: 80 }} /></label>
-              <label>Y (mm) <input type="number" step="0.1" value={pcbOriginOffset?.y || 0}
-                onChange={(e) => setPcbOriginOffset({ x: pcbOriginOffset?.x || 0, y: +e.target.value || 0 })}
-                style={{ width: 80 }} /></label>
             </div>
-            <div className="flex-row" style={{ gap: 8, marginTop: 8 }}>
-              <button className="btn sm secondary" onClick={onDetectOrigins} disabled={layers.length === 0}>
-                🎯 Detect Origins
-              </button>
-              <button className="btn sm secondary" onClick={() => {
-                // Test origin at top-left corner
-                const testOrigin = { id: 'O1', x: 0, y: 0, confidence: 0.9, description: 'Top-left corner (test)' };
-                setSelectedOrigin(testOrigin);
-                console.log('Set test origin (top-left):', testOrigin);
-                setTimeout(() => updateOverlay(), 100);
-              }}>
-                Test Origin (Top-Left)
-              </button>
-              <button className="btn sm secondary" onClick={() => {
-                setSelectedOrigin(null);
-                setPcbOriginOffset({ x: 0, y: 0 });
-              }}>
-                Clear
-              </button>
-            </div>
-            <small>Machine coordinates where PCB top-left corner (0,0) is located</small>
+          )}
+          <div className="flex-row" style={{ marginLeft: 8 }}>
+            <label>X (mm) <input type="number" step="0.1" value={pcbOriginOffset?.x || 0}
+              onChange={(e) => setPcbOriginOffset({ x: +e.target.value || 0, y: pcbOriginOffset?.y || 0 })}
+              style={{ width: 80 }} /></label>
+            <label>Y (mm) <input type="number" step="0.1" value={pcbOriginOffset?.y || 0}
+              onChange={(e) => setPcbOriginOffset({ x: pcbOriginOffset?.x || 0, y: +e.target.value || 0 })}
+              style={{ width: 80 }} /></label>
           </div>
-
-          <div className="section Reference-section" style={{ marginTop: 16 }}>
-            <h4 style={{ color: '#007bff', margin: '8px 0' }}>Reference Point</h4>
-            <div className="flex-row" style={{ marginLeft: 8, gap: 8 }}>
-              <label>
-                <input type="radio" name="refType" checked={referenceType === 'origin'}
-                  onChange={() => {
-                    setReferenceType('origin');
-                    setReferencePoint(null);
-                  }} />
-                Top-Left Origin
-              </label>
-              <label>
-                <input type="radio" name="refType" checked={referenceType === 'fiducial'}
-                  onChange={() => setReferenceType('fiducial')} />
-                Fiducial
-              </label>
-            </div>
-            {referenceType === 'fiducial' && (
-              <div className="flex-row" style={{ marginLeft: 8, marginTop: 8 }}>
-                <select value={referencePoint?.id || ''} onChange={(e) => {
-                  const fidId = e.target.value;
-                  const fid = fiducials.find(f => f.id === fidId && f.design);
-                  setReferencePoint(fid ? { x: fid.design.x, y: fid.design.y, id: fid.id } : null);
-                }}>
-                  <option value="">(select fiducial)</option>
-                  {fiducials.filter(f => f.design).map(f => (
-                    <option key={f.id} value={f.id}>{f.id} ({f.design.x.toFixed(1)}, {f.design.y.toFixed(1)})</option>
-                  ))}
-                </select>
-              </div>
-            )}
-            <small>Reference point for measuring distances to pads</small>
+          <div className="flex-row" style={{ gap: 8, marginTop: 8 }}>
+            <button className="btn sm secondary" onClick={onDetectOrigins} disabled={layers.length === 0}>
+              🎯 Detect Origins
+            </button>
+            <button className="btn sm secondary" onClick={() => {
+              // Test origin at bottom-left corner
+              const testOrigin = { id: 'O1', x: 0, y: 0, confidence: 0.9, description: 'Bottom-left corner (test)' };
+              setSelectedOrigin(testOrigin);
+              console.log('Set test origin (bottom-left):', testOrigin);
+              setTimeout(() => updateOverlay(), 100);
+            }}>
+              Test Origin (Bottom-Left)
+            </button>
+            <button className="btn sm secondary" onClick={() => {
+              setSelectedOrigin(null);
+              setPcbOriginOffset({ x: 0, y: 0 });
+            }}>
+              Clear
+            </button>
           </div>
+          <small>Machine coordinates where PCB top-left corner (0,0) is located</small>
         </div>
-      </aside>
 
-      <main className="main">
-        <nav className="navbar" role="navigation" aria-label="Component navigation">
-          <div className="navbarContainer">
-            {componentNavItems.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={`navItem ${activeComponent === item.id ? 'navItemActive' : ''}`}
-                onClick={() => setActiveComponent(item.id)}
-                aria-pressed={activeComponent === item.id}
-              >
-                {item.label}
-              </button>
-            ))}
+        <div className="section Reference-section" style={{ marginTop: 16 }}>
+          <h4 style={{ color: '#007bff', margin: '8px 0' }}>Reference Point</h4>
+          <div className="flex-row" style={{ marginLeft: 8, gap: 8 }}>
+            <label>
+              <input type="radio" name="refType" checked={referenceType === 'origin'}
+                onChange={() => {
+                  setReferenceType('origin');
+                  setReferencePoint(null);
+                }} />
+              Bottom-Left Origin
+            </label>
+            <label>
+              <input type="radio" name="refType" checked={referenceType === 'fiducial'}
+                onChange={() => setReferenceType('fiducial')} />
+              Fiducial
+            </label>
           </div>
+          {referenceType === 'fiducial' && (
+            <div className="flex-row" style={{ marginLeft: 8, marginTop: 8 }}>
+              <select value={referencePoint?.id || ''} onChange={(e) => {
+                const fidId = e.target.value;
+                const fid = fiducials.find(f => f.id === fidId && f.design);
+                setReferencePoint(fid ? { x: fid.design.x, y: fid.design.y, id: fid.id } : null);
+              }}>
+                <option value="">(select fiducial)</option>
+                {fiducials.filter(f => f.design).map(f => (
+                  <option key={f.id} value={f.id}>{f.id} ({f.design.x.toFixed(1)}, {f.design.y.toFixed(1)})</option>
+                ))}
+              </select>
+            </div>
+          )}
+          <small>Reference point for measuring distances to pads</small>
+        </div>
+      </div>
+
+      <div className="main" onDrop={onDrop} onDragOver={(e) => e.preventDefault()}>
+
+        {/* Top Statistics / Status Bar could go here */}
+
+        <nav className="navbar" role="navigation">
+          {componentNavItems.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={`navItem ${activeComponent === item.id ? 'navItemActive' : ''}`}
+              onClick={() => setActiveComponent(item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
         </nav>
 
-        <div style={{ display: activeComponent === 'SerialPanel' ? 'block' : 'none' }}>
-          <SerialPanel
-            isConnected={isSerialConnected}
-            onConnect={() => handleSerialConnect(true)}
-            onDisconnect={() => handleSerialDisconnect()}
-            dispensingSequence={dispensingSequence}
-            jobStatistics={jobStatistics}
-            pressureSettings={pressureSettings}
-            speedSettings={speedSettings}
-            referencePoint={referencePoint}
-            selectedOrigin={selectedOrigin}
+        <div className="panel-content" style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 0 }}>
+          {/* Dynamic Content Area */}
 
-            // Alignment Props
-            fiducials={fiducials}
-            onInputMachine={onInputMachine}
-            onAutoAlign={onAutoAlign}
-            onSolve2={onSolve2}
-            onSolve3={onSolve3}
-            xf={xf}
-            applyXf={applyXf}
+          {activeComponent === 'SerialPanel' && (
+            <div className="panel full-height">
+              <div className="panel-header">
+                <h3 className="panel-title">MACHINE CONTROL</h3>
+              </div>
+              <div style={{ padding: 12 }}>
+                <SerialPanel
+                  isConnected={isSerialConnected}
+                  onConnect={() => handleSerialConnect(true)}
+                  onDisconnect={() => handleSerialDisconnect()}
+                  dispensingSequence={dispensingSequence}
+                  jobStatistics={jobStatistics}
+                  pressureSettings={pressureSettings}
+                  speedSettings={speedSettings}
+                  referencePoint={referencePoint}
+                  selectedOrigin={selectedOrigin}
 
-            onJobStart={(gcode) => {
-              console.log('Dispensing job started via SerialPanel');
-              maintenanceManager.recordDispense();
-            }}
-            onJobComplete={() => {
-              console.log('Dispensing job completed');
-              alert('Dispensing job completed successfully!');
-            }}
-            onMachinePositionUpdate={handleMachinePositionUpdate}
-          />
+                  // Alignment Props
+                  fiducials={fiducials}
+                  onInputMachine={onInputMachine}
+                  onAutoAlign={onAutoAlign}
+                  onSolve2={onSolve2}
+                  onSolve3={onSolve3}
+                  xf={xf}
+                  applyXf={applyXf}
+
+                  onJobStart={(gcode) => {
+                    console.log('Dispensing job started via SerialPanel');
+                    maintenanceManager.recordDispense();
+                  }}
+                  onJobComplete={() => {
+                    console.log('Dispensing job completed');
+                    alert('Dispensing job completed successfully!');
+                  }}
+                  onMachinePositionUpdate={handleMachinePositionUpdate}
+                />
+              </div>
+            </div>
+          )}
         </div>
 
         {activeComponent === 'JogPanel' && (
-          <JogPanel
-            isConnected={isSerialConnected}
-            machinePosition={livePreview.machinePosition}
-            onSendGcode={async (lines) => {
-              if (window.serial && window.serial.writeLine) {
-                for (const line of lines) await window.serial.writeLine(line);
-              } else {
-                alert("Serial not connected.");
-              }
-            }}
-          />
+          <div className="panel">
+            <div className="panel-header">
+              <h3 className="panel-title">MANUAL JOG</h3>
+            </div>
+            <div style={{ padding: 12 }}>
+              <JogPanel
+                isConnected={isSerialConnected}
+                machinePosition={livePreview.machinePosition}
+                onSendGcode={async (lines) => {
+                  if (window.serial && window.serial.writeLine) {
+                    for (const line of lines) await window.serial.writeLine(line);
+                  } else {
+                    alert("Serial not connected.");
+                  }
+                }}
+              />
+            </div>
+          </div>
         )}
 
         {activeComponent === 'Viewer' && (
-          <>
+          <div className="viewer-container">
             <Viewer
               svg={svg}
-              mirrorBottom={mirrorBottom}
               side={side}
               onClickSvg={handleCanvasClick}
               onMouseDown={handleFiducialMouseDown}
@@ -1969,166 +2080,178 @@ export default function App() {
                 const sortedIndices = sortedPads.map(p => pads.findIndex(orig => orig === p || (orig.x === p.x && orig.y === p.y)));
                 setSelectedPadIndices(sortedIndices);
               }}
+              onClearPath={() => {
+                setSelectedPadIndices([]);
+                setMultiSelectMode(false);
+                setGeneratedPath(null);
+              }}
+              hasPath={selectedPadIndices.length > 0}
             />
+
             {(referencePoint || selectedOrigin) && selectedMm && (
               <div className="distance-info">
-                <span className="badge">Path from {referencePoint ? `Fiducial ${referencePoint.id}` : 'Bottom-Left Origin'}</span>
-                <div className="kvs">
-                  <span>ΔX: {(selectedMm.x - (referencePoint || selectedOrigin).x).toFixed(2)} mm </span>
-                  <span>ΔY: {(selectedMm.y - (referencePoint || selectedOrigin).y).toFixed(2)} mm </span>
-                  <span><strong>2D: {Math.hypot(selectedMm.x - (referencePoint || selectedOrigin).x, selectedMm.y - (referencePoint || selectedOrigin).y).toFixed(2)} mm </strong></span>
-                  {generatedPath && <span>3D Path: {generatedPath.totalDistance.toFixed(2)} mm </span>}
-                  <span style={{ color: selectedMm.centerValid ? '#28a745' : '#ffc107' }}>Center: ({selectedMm.x.toFixed(3)}, {selectedMm.y.toFixed(3)}) {selectedMm.centerValid ? '✓' : '⚠️'}</span>
-                  {selectedMm.centerMethod && <span style={{ fontSize: '0.8em', color: '#666' }}> Method: {selectedMm.centerMethod}</span>}
+                <div className="row">
+                  <span className="badge active">FROM: {referencePoint ? `FID ${referencePoint.id}` : 'ORIGIN'}</span>
                 </div>
-                <div className="path-controls" style={{ marginTop: 8 }}>
-                  {/* <select value={pathType} onChange={(e) => setPathType(e.target.value)} style={{ fontSize: 12 }}>
+                <div className="kvs">
+                  <span>DX: <span className="lcd-text">{(selectedMm.x - (referencePoint || selectedOrigin).x).toFixed(2)}</span></span>
+                  <span>DY: <span className="lcd-text">{(selectedMm.y - (referencePoint || selectedOrigin).y).toFixed(2)}</span></span>
+                  <span>DIST: <span className="lcd-text">{Math.hypot(selectedMm.x - (referencePoint || selectedOrigin).x, selectedMm.y - (referencePoint || selectedOrigin).y).toFixed(2)}</span></span>
+                </div>
+              </div>
+            )}
+            {/* <select value={pathType} onChange={(e) => setPathType(e.target.value)} style={{ fontSize: 12 }}>
                     <option value="direct">Direct Path</option>
                     <option value="safe">Safe Path (Lift)</option>
                     <option value="optimized">Optimized Path</option>
-                    <option value="zigzag">Zig-Zag Path</option>
                   </select> */}
-                  <label style={{ marginLeft: 8, fontSize: 12 }}>
-                    <input type="checkbox" checked={showPasteDots} onChange={(e) => setShowPasteDots(e.target.checked)} />
-                    Show Paste Dots
-                  </label>
-                  {/* {generatedPath && (
+            <label style={{ marginLeft: 8, fontSize: 12 }}>
+              <input type="checkbox" checked={showPasteDots} onChange={(e) => setShowPasteDots(e.target.checked)} />
+              Show Paste Dots
+            </label>
+            {/* {generatedPath && (
                     <small style={{ marginLeft: 8, color: '#666' }}>
                       {generatedPath.type} • {generatedPath.segments.length} segments
                     </small>
                   )} */}
-                </div>
-              </div>
-            )}
-          </>
-        )}
-
-        {maintenanceAlert && (
-          <div className="maintenance-alert" style={{
-            position: 'fixed', top: 20, right: 20, background: '#ff6b35', color: 'white',
-            padding: 16, borderRadius: 8, zIndex: 1000, maxWidth: 300
-          }}>
-            <h4>🔧 Nozzle Maintenance Required</h4>
-            <p>{maintenanceAlert.type === 'cleaning_reminder' ?
-              `Dispenses: ${maintenanceAlert.dispenseCount}, Hours: ${Math.round(maintenanceAlert.hoursSinceLastCleaning)}` :
-              'Cleaning completed'}
-            </p>
-            <div className="flex-row" style={{ gap: 8, marginTop: 8 }}>
-              <button className="btn sm" onClick={() => {
-                maintenanceManager.markCleaned();
-                setMaintenanceAlert(null);
-              }}>Mark Cleaned</button>
-              <button className="btn sm secondary" onClick={() => setMaintenanceAlert(null)}>Dismiss</button>
-            </div>
           </div>
         )}
 
-        {activeComponent === 'FiducialPanel' && (
-          <div className="fiducial-panel">
-            <FiducialPanel
+        {
+          maintenanceAlert && (
+            <div className="maintenance-alert" style={{
+              position: 'fixed', top: 20, right: 20, background: '#ff6b35', color: 'white',
+              padding: 16, borderRadius: 8, zIndex: 1000, maxWidth: 300
+            }}>
+              <h4>🔧 Nozzle Maintenance Required</h4>
+              <p>{maintenanceAlert.type === 'cleaning_reminder' ?
+                `Dispenses: ${maintenanceAlert.dispenseCount}, Hours: ${Math.round(maintenanceAlert.hoursSinceLastCleaning)}` :
+                'Cleaning completed'}
+              </p>
+              <div className="flex-row" style={{ gap: 8, marginTop: 8 }}>
+                <button className="btn sm" onClick={() => {
+                  maintenanceManager.markCleaned();
+                  setMaintenanceAlert(null);
+                }}>Mark Cleaned</button>
+                <button className="btn sm secondary" onClick={() => setMaintenanceAlert(null)}>Dismiss</button>
+              </div>
+            </div>
+          )
+        }
+
+        {
+          activeComponent === 'FiducialPanel' && (
+            <div className="fiducial-panel">
+              <FiducialPanel
+                fiducials={fiducials}
+                activeId={fidActiveId}
+                setActiveId={setFidActiveId}
+                pickMode={fidPickMode}
+                togglePickMode={() => setFidPickMode(v => !v)}
+                onInputMachine={onInputMachine}
+                onClearOne={onClearOne}
+                onClearAll={onClearAll}
+                onSolve2={onSolve2}
+                onSolve3={onSolve3}
+                transformSummary={transformSummary}
+                applyTransform={applyXf}
+                setApplyTransform={setApplyXf}
+                detectionResult={fiducialDetectionResult}
+                onRedetectFiducials={onRedetectFiducials}
+                onAutoAlign={onAutoAlign}
+                onAutoDetectCamera={onAutoDetectCamera}
+                // Alignment Props
+                alignmentInfo={alignment}
+                onCaptureAlignment={handleAlignmentCapture}
+              />
+              {selectedOrigin && selectedMm && xf && applyXf && (
+                <div style={{ padding: 8, background: '#f8f9fa', border: '1px solid #dee2e6', borderRadius: 4, marginTop: 8 }}>
+                  <small><strong>Transform Verification:</strong></small>
+                  <div style={{ fontSize: '0.8em', fontFamily: 'monospace' }}>
+                    Origin: {selectedOrigin.x.toFixed(3)}, {selectedOrigin.y.toFixed(3)} → {verifyTransform(selectedOrigin).x.toFixed(3)}, {verifyTransform(selectedOrigin).y.toFixed(3)}
+                  </div>
+                  <div style={{ fontSize: '0.8em', fontFamily: 'monospace' }}>
+                    Target: {selectedMm.x.toFixed(3)}, {selectedMm.y.toFixed(3)} → {verifyTransform(selectedMm).x.toFixed(3)}, {verifyTransform(selectedMm).y.toFixed(3)}
+                  </div>
+                </div>
+              )}
+            </div>
+          )
+        }
+
+        {
+          activeComponent === 'CameraPanel' && (
+            <CameraPanel
               fiducials={fiducials}
-              activeId={fidActiveId}
-              setActiveId={setFidActiveId}
-              pickMode={fidPickMode}
-              togglePickMode={() => setFidPickMode(v => !v)}
+              xf={xf}
+              applyXf={applyXf}
+              selectedDesign={selectedOrigin ? selectedOrigin : (selectedMm ? { x: selectedMm.x, y: selectedMm.y } : null)}
+              toolOffset={maintenanceManager.getToolOffset()}
+              setToolOffset={(o) => maintenanceManager.setToolOffset(o)}
+              nozzleDia={0.6}
+              setNozzleDia={(d) => { /* update nozzle dia */ }}
+              padDetector={padDetector}
+              qualityController={qualityController}
+              onCaptureAlignment={handleAlignmentCapture}
+              alignmentInfo={alignment}
+              machinePosition={livePreview.machinePosition}
+              fiducialVisionDetector={fiducialVisionDetector}
+              layerData={layerData}
+              onUpdateFiducials={handleFiducialsUpdate}
+            />
+          )
+        }
+
+        {
+          activeComponent === 'AutomatedDispensingPanel' && (
+            <AutomatedDispensingPanel
+              dispensingSequencer={dispensingSequencer}
+              dispensingSequence={dispensingSequence}
+              safeSequence={safeSequence}
+              jobStatistics={jobStatistics}
+              referencePoint={referencePoint}
+              selectedOrigin={selectedOrigin}
+              pressureSettings={pressureSettings}
+              speedSettings={speedSettings}
+              boardOutline={boardOutline}
+              useSafePathPlanning={useSafePathPlanning}
+              setUseSafePathPlanning={setUseSafePathPlanning}
+              componentHeights={componentHeights}
+              setComponentHeights={setComponentHeights}
+              safePathPlanner={safePathPlanner}
+              onStartJob={(gcode, sequence) => {
+                console.log('Starting automated dispensing job:', { gcode, sequence });
+              }}
+              batchProcessor={batchProcessor}
+              currentBatch={currentBatch}
+              onStartBatch={handleStartBatch}
+              layerData={layerData}
+              fiducials={fiducials}
               onInputMachine={onInputMachine}
-              onClearOne={onClearOne}
-              onClearAll={onClearAll}
+              onAutoAlign={onAutoAlign}
               onSolve2={onSolve2}
               onSolve3={onSolve3}
-              transformSummary={transformSummary}
-              applyTransform={applyXf}
-              setApplyTransform={setApplyXf}
-              detectionResult={fiducialDetectionResult}
-              onRedetectFiducials={onRedetectFiducials}
-              onAutoAlign={onAutoAlign}
-              onAutoDetectCamera={onAutoDetectCamera}
-              // Alignment Props
-              alignmentInfo={alignment}
-              onCaptureAlignment={handleAlignmentCapture}
+              xf={xf}
+              applyXf={applyXf}
+              isConnected={isSerialConnected}
+              onJobComplete={() => maintenanceManager.recordDispense()}
             />
-            {selectedOrigin && selectedMm && xf && applyXf && (
-              <div style={{ padding: 8, background: '#f8f9fa', border: '1px solid #dee2e6', borderRadius: 4, marginTop: 8 }}>
-                <small><strong>Transform Verification:</strong></small>
-                <div style={{ fontSize: '0.8em', fontFamily: 'monospace' }}>
-                  Origin: {selectedOrigin.x.toFixed(3)}, {selectedOrigin.y.toFixed(3)} → {verifyTransform(selectedOrigin).x.toFixed(3)}, {verifyTransform(selectedOrigin).y.toFixed(3)}
-                </div>
-                <div style={{ fontSize: '0.8em', fontFamily: 'monospace' }}>
-                  Target: {selectedMm.x.toFixed(3)}, {selectedMm.y.toFixed(3)} → {verifyTransform(selectedMm).x.toFixed(3)}, {verifyTransform(selectedMm).y.toFixed(3)}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
+          )
+        }
 
-        {activeComponent === 'CameraPanel' && (
-          <CameraPanel
-            fiducials={fiducials}
-            xf={xf}
-            applyXf={applyXf}
-            selectedDesign={selectedOrigin ? selectedOrigin : (selectedMm ? { x: selectedMm.x, y: selectedMm.y } : null)}
-            toolOffset={maintenanceManager.getToolOffset()}
-            setToolOffset={(o) => maintenanceManager.setToolOffset(o)}
-            nozzleDia={0.6}
-            setNozzleDia={(d) => { /* update nozzle dia */ }}
-            padDetector={padDetector}
-            qualityController={qualityController}
-            onCaptureAlignment={handleAlignmentCapture}
-            alignmentInfo={alignment}
-            machinePosition={livePreview.machinePosition}
-            fiducialVisionDetector={fiducialVisionDetector}
-            layerData={layerData}
-            onUpdateFiducials={handleFiducialsUpdate}
-          />
-        )}
-
-        {activeComponent === 'AutomatedDispensingPanel' && (
-          <AutomatedDispensingPanel
-            dispensingSequencer={dispensingSequencer}
-            dispensingSequence={dispensingSequence}
-            safeSequence={safeSequence}
-            jobStatistics={jobStatistics}
-            referencePoint={referencePoint}
-            selectedOrigin={selectedOrigin}
-            pressureSettings={pressureSettings}
-            speedSettings={speedSettings}
-            boardOutline={boardOutline}
-            useSafePathPlanning={useSafePathPlanning}
-            setUseSafePathPlanning={setUseSafePathPlanning}
-            componentHeights={componentHeights}
-            setComponentHeights={setComponentHeights}
-            safePathPlanner={safePathPlanner}
-            onStartJob={(gcode, sequence) => {
-              console.log('Starting automated dispensing job:', { gcode, sequence });
-            }}
-            batchProcessor={batchProcessor}
-            currentBatch={currentBatch}
-            onStartBatch={handleStartBatch}
-            layerData={layerData}
-
-            // Alignment Props
-            fiducials={fiducials}
-            onInputMachine={onInputMachine}
-            onAutoAlign={onAutoAlign}
-            onSolve2={onSolve2}
-            onSolve3={onSolve3}
-            xf={xf}
-            applyXf={applyXf}
-            isConnected={isSerialConnected}
-          />
-        )}
-
-        {activeComponent === 'BatchPanel' && (
-          <BatchPanel
-            batchProcessor={batchProcessor}
-            currentBatch={currentBatch}
-            onBatchSelect={handleBatchSelect}
-            onStartBatch={handleStartBatch}
-            onPauseBatch={handlePauseBatch}
-            onAddBoard={handleAddCurrentBoard}
-            onDeleteBatch={handleDeleteBatch}
-          />
-        )}
+        {
+          activeComponent === 'BatchPanel' && (
+            <BatchPanel
+              batchProcessor={batchProcessor}
+              currentBatch={currentBatch}
+              onBatchSelect={handleBatchSelect}
+              onStartBatch={handleStartBatch}
+              onPauseBatch={handlePauseBatch}
+              onAddBoard={handleAddCurrentBoard}
+              onDeleteBatch={handleDeleteBatch}
+            />
+          )
+        }
 
         {/* {activeComponent === 'ComponentList' && (
           <ComponentList
@@ -2197,15 +2320,17 @@ export default function App() {
           />
         )} */}
 
-        {activeComponent === 'LivePreview' && (
-          <LivePreview
-            dispensingSequence={dispensingSequence}
-            isJobRunning={livePreview.isActive}
-            currentPadIndex={livePreview.currentPadIndex}
-            machinePosition={livePreview.machinePosition}
-            onUpdateOverlay={updateOverlay}
-          />
-        )}
+        {
+          activeComponent === 'LivePreview' && (
+            <LivePreview
+              dispensingSequence={dispensingSequence}
+              isJobRunning={livePreview.isActive}
+              currentPadIndex={livePreview.currentPadIndex}
+              machinePosition={livePreview.machinePosition}
+              onUpdateOverlay={updateOverlay}
+            />
+          )
+        }
 
         {/* {activeComponent === 'MotionPanel' && (
           <MotionPanel onSendLines={async (lines) => {
@@ -2215,28 +2340,32 @@ export default function App() {
           }} />
         )} */}
 
-        {activeComponent === 'PressurePanel' && (
-          <PressurePanel
-            pressureController={pressureController}
-            pressureSettings={pressureSettings}
-            setPressureSettings={setPressureSettings}
-            selectedPad={selectedMm ? pads.find(p => Math.abs(p.x - selectedMm.x) < 0.1 && Math.abs(p.y - selectedMm.y) < 0.1) : null}
-          />
-        )}
+        {
+          activeComponent === 'PressurePanel' && (
+            <PressurePanel
+              pressureController={pressureController}
+              pressureSettings={pressureSettings}
+              setPressureSettings={setPressureSettings}
+              selectedPad={selectedMm ? pads.find(p => Math.abs(p.x - selectedMm.x) < 0.1 && Math.abs(p.y - selectedMm.y) < 0.1) : null}
+            />
+          )
+        }
 
-        {activeComponent === 'SpeedPanel' && (
-          <SpeedPanel
-            speedProfileManager={speedProfileManager}
-            speedSettings={speedSettings}
-            referencePoint={referencePoint}
-            selectedOrigin={selectedOrigin}
-            setSpeedSettings={setSpeedSettings}
-            selectedPad={selectedMm ? pads.find(p => Math.abs(p.x - selectedMm.x) < 0.1 && Math.abs(p.y - selectedMm.y) < 0.1) : null}
-            pressureSettings={pressureSettings}
-            pads={pads}
-          />
-        )}
-      </main>
-    </div>
+        {
+          activeComponent === 'SpeedPanel' && (
+            <SpeedPanel
+              speedProfileManager={speedProfileManager}
+              speedSettings={speedSettings}
+              referencePoint={referencePoint}
+              selectedOrigin={selectedOrigin}
+              setSpeedSettings={setSpeedSettings}
+              selectedPad={selectedMm ? pads.find(p => Math.abs(p.x - selectedMm.x) < 0.1 && Math.abs(p.y - selectedMm.y) < 0.1) : null}
+              pressureSettings={pressureSettings}
+              pads={pads}
+            />
+          )
+        }
+      </div>
+    </div >
   );
 }

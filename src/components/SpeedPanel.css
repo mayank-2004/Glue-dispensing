@@ -1,35 +1,42 @@
 .speed-controls {
-  border: 1px solid #dee2e6;
-  border-radius: 4px;
-  padding: 12px;
-  background: #f8f9fa;
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  padding: 16px;
+  background: var(--bg-tertiary);
 }
 
 .profile-stats {
-  background: #e7f3ff;
-  border: 1px solid #b3d9ff;
-  border-radius: 4px;
-  padding: 8px;
+  background: rgba(30, 41, 59, 0.5);
+  border: 1px solid var(--border-secondary);
+  border-radius: 6px;
+  padding: 12px;
   font-size: 0.9em;
+  color: var(--text-secondary);
 }
 
 .profiles-detail {
-  border-top: 1px solid #dee2e6;
+  border-top: 1px solid var(--border-secondary);
   padding-top: 12px;
+  margin-top: 12px;
 }
 
 .profile-item {
   transition: background-color 0.2s ease;
+  padding: 8px;
+  border-radius: 6px;
+  border: 1px solid transparent;
 }
 
 .profile-item:hover {
-  background-color: #e9ecef !important;
+  background-color: var(--bg-button-hover) !important;
+  border-color: var(--border-secondary);
 }
 
 .info {
-  background: #e7f3ff;
-  border: 1px solid #b3d9ff;
-  border-radius: 4px;
-  padding: 8px;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 6px;
+  padding: 12px;
   font-size: 0.9em;
+  color: var(--accent-text);
 }

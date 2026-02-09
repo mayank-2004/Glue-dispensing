@@ -4,16 +4,19 @@
   margin: 0;
   max-height: 28vh;
   overflow: auto;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border-primary);
   margin-top: 10px;
-  border-radius: 5px;
+  border-radius: 8px;
   margin-left: 8px;
+  background: rgba(15, 23, 42, 0.3);
 }
 
 .Components-section {
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border-primary);
   margin-top: 10px;
-  border-radius: 5px;
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+  padding: 8px;
 }
 
 .components .comp-item {
@@ -22,46 +25,65 @@
   grid-template-rows: auto auto;
   gap: 6px 8px;
   align-items: center;
-  padding: 6px 4px;
-  border-bottom: 1px dashed #e5e7eb;
-  transition: background-color 0.2s ease;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-secondary);
+  transition: all 0.2s ease;
+  color: var(--text-secondary);
+}
+
+.components .comp-item:last-child {
+  border-bottom: none;
 }
 
 .components .comp-item:hover {
-  background: rgba(59, 130, 246, 0.05);
+  background: rgba(59, 130, 246, 0.1);
+  padding-left: 16px;
+}
+
+.components .comp-item.selected {
+  background: rgba(234, 179, 8, 0.15);
+  border-left: 3px solid #eab308;
+}
+
+.components .comp-item.selected:hover {
+  background: rgba(234, 179, 8, 0.25);
 }
 
 .components .comp-item.home {
-  background: rgba(0, 128, 0, 0.06);
+  background: rgba(34, 197, 94, 0.1);
+  border-left: 3px solid #22c55e;
 }
 
 .components .comp-item.home:hover {
-  background: rgba(0, 128, 0, 0.1);
+  background: rgba(34, 197, 94, 0.15);
 }
 
 .components .comp-meta {
   display: flex;
-  gap: 6px;
+  gap: 8px;
   align-items: center;
 }
 
 .components .comp-name {
   font-weight: 600;
+  color: var(--text-primary);
 }
 
 .badge-home {
-  background: #16a34a;
+  background: #15803d;
   color: #fff;
-  border-radius: 6px;
-  padding: 1px 6px;
+  border-radius: 4px;
+  padding: 2px 6px;
   font-size: 11px;
   font-weight: 600;
+  letter-spacing: 0.5px;
 }
 
 .components .comp-dist {
   font-size: 12px;
-  opacity: 0.85;
+  opacity: 0.7;
   grid-column: 1 / 2;
+  font-family: 'Roboto Mono', monospace;
 }
 
 .components .comp-actions {
@@ -75,4 +97,13 @@
   padding: 4px 8px;
   margin: 0;
   font-size: 12px;
+  background: var(--bg-button);
+  border: 1px solid var(--border-secondary);
+  color: var(--text-secondary);
+}
+
+.components .comp-actions .btn:hover {
+  background: var(--bg-button-hover);
+  color: var(--text-primary);
+  border-color: var(--border-primary);
 }

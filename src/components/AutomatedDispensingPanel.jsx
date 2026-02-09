@@ -20,6 +20,7 @@ export default function AutomatedDispensingPanel({
   batchProcessor,
   currentBatch,
   onStartBatch,
+  onJobComplete,
 
   // Alignment Props
   fiducials = [],
@@ -219,6 +220,7 @@ export default function AutomatedDispensingPanel({
       await sendGcodeWait('M400');
 
       alert("Job Complete!");
+      if (onJobComplete) onJobComplete();
       setJobStage('finished');
       setMachineStatus('idle');
       setIsJobRunning(false);
@@ -295,11 +297,17 @@ export default function AutomatedDispensingPanel({
       <div className="flow-container" style={{ marginTop: 20 }}>
         {/* Status Header */}
         <div className="flow-header" style={{ marginBottom: 16 }}>
-          <div className="stage-indicator" style={{ background: jobStage !== 'idle' ? '#e3f2fd' : '#eee', padding: 8, borderRadius: 4 }}>
+          <div className="stage-indicator" style={{
+            background: jobStage !== 'idle' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255, 255, 255, 0.1)',
+            padding: 8,
+            borderRadius: 4,
+            border: '1px solid var(--border-secondary)',
+            color: jobStage !== 'idle' ? 'var(--accent-text)' : 'var(--text-secondary)'
+          }}>
             <strong>Status:</strong> {jobStage.toUpperCase()}
             {machineStatus === 'busy' && ' (Busy)'}
           </div>
-          <div className="pos-readout" style={{ fontSize: 12, marginTop: 4, fontFamily: 'monospace' }}>
+          <div className="pos-readout" style={{ fontSize: 12, marginTop: 4, fontFamily: 'monospace', color: 'var(--text-secondary)' }}>
             Pos: {currentPos.x.toFixed(3)}, {currentPos.y.toFixed(3)}, {currentPos.z.toFixed(3)}
           </div>
         </div>

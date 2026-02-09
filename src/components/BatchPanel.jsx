@@ -1,12 +1,12 @@
 import { useState, useEffect } from "react";
 
-export default function BatchPanel({ 
-  batchProcessor, 
-  currentBatch, 
+export default function BatchPanel({
+  batchProcessor,
+  currentBatch,
   onBatchSelect,
   onStartBatch,
   onPauseBatch,
-  onAddBoard 
+  onAddBoard
 }) {
   const [batches, setBatches] = useState([]);
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -15,10 +15,10 @@ export default function BatchPanel({
 
   useEffect(() => {
     if (!batchProcessor) return;
-    
+
     const updateBatches = () => setBatches(batchProcessor.getAllBatches());
     updateBatches();
-    
+
     return batchProcessor.addListener((event, data) => {
       updateBatches();
       if (event === 'batchStarted' || event === 'boardCompleted') {
@@ -44,16 +44,16 @@ export default function BatchPanel({
 
   const handleDeleteBatch = (batchId) => {
     if (!batchProcessor) return;
-    
+
     const batch = batchProcessor.getBatch(batchId);
     if (!batch) return;
-    
+
     const confirmDelete = window.confirm(
       `Are you sure you want to delete batch "${batch.name}"?\n\n` +
       `This will permanently remove the batch and all ${batch.totalBoards} boards.\n` +
       `This action cannot be undone.`
     );
-    
+
     if (confirmDelete) {
       const success = batchProcessor.deleteBatch(batchId);
       if (success) {
@@ -92,8 +92,8 @@ export default function BatchPanel({
     <div className="panel">
       <div className="panel-header">
         <h3>Batch Processing</h3>
-        <button 
-          className="btn sm" 
+        <button
+          className="btn sm"
           onClick={() => setShowCreateForm(!showCreateForm)}
         >
           + New Batch
@@ -101,14 +101,14 @@ export default function BatchPanel({
       </div>
 
       {showCreateForm && (
-        <div className="form-group" style={{ padding: 12, background: '#f8f9fa', margin: '8px 0' }}>
+        <div className="form-group" style={{ padding: 12, background: 'var(--bg-tertiary)', margin: '8px 0', borderRadius: 4, border: '1px solid var(--border-secondary)' }}>
           <input
             type="text"
             placeholder="Batch name"
             value={newBatchName}
             onChange={(e) => setNewBatchName(e.target.value)}
             onKeyPress={(e) => e.key === 'Enter' && handleCreateBatch()}
-            style={{ marginBottom: 8 }}
+            style={{ marginBottom: 8, background: 'rgba(0,0,0,0.2)', color: 'var(--text-primary)', border: '1px solid var(--border-secondary)' }}
           />
           <div className="flex-row" style={{ gap: 8 }}>
             <button className="btn sm" onClick={handleCreateBatch}>Create</button>
@@ -119,16 +119,16 @@ export default function BatchPanel({
 
       <div className="batch-list" style={{ maxHeight: 300, overflowY: 'auto' }}>
         {batches.map(batch => (
-          <div 
-            key={batch.id} 
+          <div
+            key={batch.id}
             className={`batch-item ${selectedBatchId === batch.id ? 'selected' : ''}`}
             style={{
               padding: 12,
-              border: '1px solid #dee2e6',
+              border: '1px solid var(--border-secondary)',
               borderRadius: 4,
               margin: '8px 0',
               cursor: 'pointer',
-              backgroundColor: selectedBatchId === batch.id ? '#e3f2fd' : 'white',
+              backgroundColor: selectedBatchId === batch.id ? 'rgba(59, 130, 246, 0.15)' : 'rgba(0,0,0,0.2)',
               position: 'relative'
             }}
             onClick={() => {
@@ -138,12 +138,12 @@ export default function BatchPanel({
           >
             <div className="flex-row" style={{ justifyContent: 'space-between', alignItems: 'flex-start', paddingRight: '32px' }}>
               <div style={{ flex: 1 }}>
-                <strong>{batch.name}</strong>
-                <div style={{ fontSize: '0.85em', color: '#666' }}>
+                <strong style={{ color: 'var(--text-primary)' }}>{batch.name}</strong>
+                <div style={{ fontSize: '0.85em', color: 'var(--text-secondary)' }}>
                   {batch.totalBoards} boards • {batch.statistics.totalPads} pads
                 </div>
               </div>
-              <div 
+              <div
                 className="status-badge"
                 style={{
                   padding: '2px 8px',
@@ -164,34 +164,34 @@ export default function BatchPanel({
                 <div className="progress-bar" style={{
                   width: '100%',
                   height: 4,
-                  backgroundColor: '#e9ecef',
+                  backgroundColor: 'var(--border-secondary)',
                   borderRadius: 2,
                   overflow: 'hidden'
                 }}>
-                  <div 
+                  <div
                     style={{
                       width: `${(batch.completedBoards / batch.totalBoards) * 100}%`,
                       height: '100%',
-                      backgroundColor: '#007bff',
+                      backgroundColor: '#3b82f6',
                       transition: 'width 0.3s ease'
                     }}
                   />
                 </div>
-                <div style={{ fontSize: '0.75em', color: '#666', marginTop: 4 }}>
-                  Board {batch.currentBoardIndex + 1} of {batch.totalBoards} • 
+                <div style={{ fontSize: '0.75em', color: 'var(--text-secondary)', marginTop: 4 }}>
+                  Board {batch.currentBoardIndex + 1} of {batch.totalBoards} •
                   {batch.statistics.completedPads} / {batch.statistics.totalPads} pads
                 </div>
               </div>
             )}
 
             {batch.status === 'completed' && (
-              <div style={{ fontSize: '0.75em', color: '#28a745', marginTop: 4 }}>
+              <div style={{ fontSize: '0.75em', color: '#4ade80', marginTop: 4 }}>
                 ✓ Completed in {formatDuration(new Date(batch.completedAt) - new Date(batch.startedAt))}
               </div>
             )}
-            
+
             {/* Delete button for each batch */}
-            <button 
+            <button
               className="delete-btn"
               onClick={(e) => {
                 e.stopPropagation();
@@ -207,9 +207,9 @@ export default function BatchPanel({
       </div>
 
       {selectedBatchId && (
-        <div className="batch-controls" style={{ marginTop: 12, padding: 12, background: '#f8f9fa' }}>
+        <div className="batch-controls" style={{ marginTop: 12, padding: 12, background: 'var(--bg-tertiary)' }}>
           <div className="flex-row" style={{ gap: 8, marginBottom: 8 }}>
-            <button 
+            <button
               className="btn sm"
               onClick={handleAddCurrentBoard}
               disabled={!onAddBoard}
@@ -217,7 +217,7 @@ export default function BatchPanel({
               Add Current Board
             </button>
             {currentBatch?.status === 'pending' && (
-              <button 
+              <button
                 className="btn sm primary"
                 onClick={() => onStartBatch?.(selectedBatchId)}
               >
@@ -225,7 +225,7 @@ export default function BatchPanel({
               </button>
             )}
             {currentBatch?.status === 'running' && (
-              <button 
+              <button
                 className="btn sm warning"
                 onClick={() => onPauseBatch?.(selectedBatchId)}
               >
@@ -233,7 +233,7 @@ export default function BatchPanel({
               </button>
             )}
             {currentBatch?.status === 'paused' && (
-              <button 
+              <button
                 className="btn sm primary"
                 onClick={() => onStartBatch?.(selectedBatchId)}
               >
@@ -241,13 +241,13 @@ export default function BatchPanel({
               </button>
             )}
           </div>
-          
+
           {currentBatch && (
-            <div style={{ fontSize: '0.85em' }}>
-              <div>Status: <strong>{currentBatch.status}</strong></div>
+            <div style={{ fontSize: '0.85em', color: 'var(--text-secondary)' }}>
+              <div>Status: <strong style={{ color: 'var(--text-primary)' }}>{currentBatch.status}</strong></div>
               <div>Progress: {currentBatch.completedBoards} / {currentBatch.totalBoards} boards</div>
               {currentBatch.failedBoards > 0 && (
-                <div style={{ color: '#dc3545' }}>Failed: {currentBatch.failedBoards}</div>
+                <div style={{ color: '#f87171' }}>Failed: {currentBatch.failedBoards}</div>
               )}
             </div>
           )}
