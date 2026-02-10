@@ -137,7 +137,36 @@ export default function App() {
   const [dispensingSequencer] = useState(() => new DispensingSequencer());
   const [safePathPlanner] = useState(() => new SafePathPlanner());
   const [batchProcessor] = useState(() => new BatchProcessor());
-  const [batchExecutor] = useState(() => new BatchExecutor(null, dispensingSequencer, pressureController, speedProfileManager));
+
+  // Serial Interface Adapter for BatchExecutor
+  const serialAdapter = useMemo(() => ({
+    onJobStart: async (gcode) => {
+      // Send G-code lines to machine
+      if (window.serial && window.serial.writeLine) {
+        // Simple line-by-line send (simulated job execution)
+        const lines = gcode.split('\n');
+        for (const line of lines) {
+          if (!line.trim() || line.startsWith(';')) continue;
+          await window.serial.writeLine(line);
+        }
+        // Simulate completion for now (since we don't have real "job done" event from firmware yet)
+        // In real implementation, this would be set by SerialPanel's queue manager
+        if (serialAdapter.onJobComplete) serialAdapter.onJobComplete();
+      } else {
+        console.warn("Serial connection not available for batch execution");
+        // Simulate for testing
+        setTimeout(() => {
+          if (serialAdapter.onJobComplete) serialAdapter.onJobComplete();
+        }, 1000);
+      }
+    },
+    onJobComplete: null, // Will be assigned by BatchExecutor
+    pauseJob: () => console.log("Pause job requested"),
+    resumeJob: () => console.log("Resume job requested"),
+    stopJob: () => console.log("Stop job requested")
+  }), []);
+
+  const [batchExecutor] = useState(() => new BatchExecutor(serialAdapter, dispensingSequencer, pressureController, speedProfileManager));
   const [currentBatchId, setCurrentBatchId] = useState(null);
   const [currentBatch, setCurrentBatch] = useState(null);
   const [layerData, setLayerData] = useState({});
@@ -865,30 +894,8 @@ export default function App() {
       drawText(gm, uh.x + uh.r * 1.6, uh.y - uh.r * 0.8, label, uh.r * 1.0, color);
     }
 
-    // Draw multi-selected pads
+    // Draw multi-selected pads (visualized via overlay-sequence later)
     if (selectedPadIndices.length > 0) {
-      // Draw path lines between selected pads (Origin -> Pad 1 -> Pad 2...)
-      if (multiSelectMode) {
-        const startPoint = referencePoint || selectedOrigin || { x: 0, y: 0 };
-        let prevU = mmToCurrentUnits(startPoint);
-
-        selectedPadIndices.forEach(idx => {
-          const pad = pads[idx];
-          if (!pad) return;
-          const u = mmToCurrentUnits({ x: pad.x, y: pad.y });
-          if (!u || !prevU) return;
-
-          const line = document.createElementNS(NS, "line");
-          line.setAttribute("x1", prevU.x); line.setAttribute("y1", prevU.y);
-          line.setAttribute("x2", u.x); line.setAttribute("y2", u.y);
-          line.setAttribute("stroke", "#ffeb3b"); // Yellow
-          line.setAttribute("stroke-width", u.r * 0.15);
-          line.setAttribute("stroke-dasharray", "5,3");
-          gm.appendChild(line);
-
-          prevU = u;
-        });
-      }
 
       selectedPadIndices.forEach(idx => {
         const pad = pads[idx];
@@ -1051,34 +1058,53 @@ export default function App() {
 
     // Draw dispensing sequence (Straight lines connecting pads)
     // Only draw if user has explicitly selected pads (avoid showing mess on load)
-    if (dispensingSequence && dispensingSequence.length > 1 && selectedPadIndices.length > 0) {
+    if (dispensingSequence && dispensingSequence.length > 0 && selectedPadIndices.length > 0) {
       const gs = ensureGroup("overlay-sequence");
 
-      // Draw lines between consecutive pads
-      for (let i = 0; i < dispensingSequence.length - 1; i++) {
-        const p1 = dispensingSequence[i];
-        const p2 = dispensingSequence[i + 1];
-
-        const start = mmToCurrentUnits({ x: p1.x, y: p1.y });
-        const end = mmToCurrentUnits({ x: p2.x, y: p2.y });
+      // Connection from Reference/Origin to the FIRST pad
+      if (activeRef) {
+        const start = mmToCurrentUnits({ x: activeRef.x, y: activeRef.y });
+        const end = mmToCurrentUnits({ x: dispensingSequence[0].x, y: dispensingSequence[0].y });
 
         const line = document.createElementNS(NS, "line");
         line.setAttribute("x1", start.x); line.setAttribute("y1", start.y);
         line.setAttribute("x2", end.x); line.setAttribute("y2", end.y);
 
-        // Neon Green-Yellow for sequence path
+        // Neon Green-Yellow for sequence path (Same as pad-to-pad)
         line.setAttribute("stroke", "#ccff00");
         line.setAttribute("stroke-width", start.r * 0.5);
         line.setAttribute("stroke-opacity", "0.8");
-        // line.setAttribute("stroke-dasharray", "5,3"); // Optional: makes it look like a planned path
         gs.appendChild(line);
+      }
+
+      // Draw lines between consecutive pads
+      if (dispensingSequence.length > 1) {
+        for (let i = 0; i < dispensingSequence.length - 1; i++) {
+          const p1 = dispensingSequence[i];
+          const p2 = dispensingSequence[i + 1];
+
+          const start = mmToCurrentUnits({ x: p1.x, y: p1.y });
+          const end = mmToCurrentUnits({ x: p2.x, y: p2.y });
+
+          const line = document.createElementNS(NS, "line");
+          line.setAttribute("x1", start.x); line.setAttribute("y1", start.y);
+          line.setAttribute("x2", end.x); line.setAttribute("y2", end.y);
+
+          // Neon Green-Yellow for sequence path
+          line.setAttribute("stroke", "#ccff00");
+          line.setAttribute("stroke-width", start.r * 0.5);
+          line.setAttribute("stroke-opacity", "0.8");
+          // line.setAttribute("stroke-dasharray", "5,3"); // Optional: makes it look like a planned path
+          gs.appendChild(line);
+        }
       }
     } else {
       ensureGroup("overlay-sequence"); // Clear if empty
     }
 
     // Draw generated path (Single Reference -> Target path)
-    if (generatedPath && activeRef && selectedMm) {
+    // ONLY if NOT in multi-select mode (to avoid clutter)
+    if (!multiSelectMode && generatedPath && activeRef && selectedMm) {
       const gp = ensureGroup("overlay-path");
 
       // Draw path segments
@@ -1117,7 +1143,13 @@ export default function App() {
       const end = mmToCurrentUnits(selectedMm);
       const midX = (start.x + end.x) / 2, midY = (start.y + end.y) / 2 - start.r * 0.6;
       drawText(gp, midX, midY, `${generatedPath.totalDistance.toFixed(2)} mm`, start.r * 1.2, "#222", "#fffb");
-    } else if (activeRef && selectedMm) {
+    } else {
+      // CLEAR generated path overlay if not active or in multi-select mode
+      ensureGroup("overlay-path");
+    }
+
+    // Fallback: simple line if no path generated (but still single mode)
+    if (!multiSelectMode && activeRef && selectedMm && !generatedPath) {
       // Fallback to simple line if no path generated
       const uh = mmToCurrentUnits({ x: activeRef.x, y: activeRef.y });
       // Find selected pad and calculate center position for yellow line endpoint
@@ -1210,7 +1242,7 @@ export default function App() {
     } else {
       ensureGroup("overlay-ghost");
     }
-  }, [selectedMm, fiducials, xf, selectedOrigin, generatedPath, pads, getSvgEl, getSvgGeom, livePreview, dispensingSequence, showPasteDots, nozzleDia, side]);
+  }, [multiSelectMode, selectedMm, fiducials, xf, selectedOrigin, generatedPath, pads, getSvgEl, getSvgGeom, livePreview, dispensingSequence, showPasteDots, nozzleDia, side]);
 
   const hexToRgba = (hex, a = 0.3) => {
     const h = hex.replace("#", "");
@@ -1251,8 +1283,6 @@ export default function App() {
         const dx = transformedPadCenter.x - refPoint.x;
         const dy = transformedPadCenter.y - refPoint.y;
         const dist = Math.hypot(dx, dy);
-
-        // console.log(`Pad ${pad.id} CENTER: Original(${pad.x.toFixed(2)}, ${pad.y.toFixed(2)}) + height/2(${(padHeight / 2).toFixed(2)}) → Center(${pad.x.toFixed(2)}, ${trueCenterY.toFixed(2)}) → Transformed(${transformedPadCenter.x.toFixed(2)}, ${transformedPadCenter.y.toFixed(2)}) → Distance: ${dist.toFixed(2)}mm`);
 
         return {
           ...pad,
@@ -1530,14 +1560,6 @@ export default function App() {
         } else {
           return [...prev, hit.pad]; // Append (keep order)
         }
-      });
-      // Optionally update selectedMm
-      setSelectedMm({
-        x: hit.pos.x,
-        y: hit.pos.y,
-        centerValid: hit.pos.centerValid,
-        centerMethod: hit.pos.centerMethod,
-        originalPad: pads[hit.pad]
       });
       return;
     }
@@ -1854,41 +1876,11 @@ export default function App() {
 
         <MaintenanceManager manager={maintenanceManager} />
 
-        <ComponentList
-          components={padDistances}
-          onFocus={(pad) => {
-            const displayCoords = {
-              x: pad.x,
-              y: pad.y,
-              centerValid: pad.centerValid,
-              centerMethod: pad.centerMethod,
-              originalPad: pad
-            };
-
-            console.log('ComponentList Focus to CENTER:', {
-              pad: { x: pad.x, y: pad.y },
-              displayCoords
-            });
-
-            setSelectedMm(displayCoords);
-          }}
-          onItemClick={(pad, index) => {
-            if (multiSelectMode) {
-              setSelectedPadIndices(prev => {
-                const newSelection = [...prev];
-                const existingIdx = newSelection.indexOf(index);
-                if (existingIdx >= 0) {
-                  newSelection.splice(existingIdx, 1);
-                } else {
-                  newSelection.push(index);
-                }
-                return newSelection;
-              });
-            } else {
-              // In normal mode, clicking the row also triggering focus can be nice,
-              // but let's keep it distinct for now or alias it.
-              // For now, only multi-select uses row click.
-              // Optional: trigger focus here too if desired.
+        <div style={{ color: '#9aa0a6', margin: '0 0 12px 0', border: '1px solid #9aa0a6', padding: '4px 12px 6px 12px', borderRadius: '4px' }}>
+          Components
+          <ComponentList
+            components={padDistances}
+            onFocus={(pad) => {
               const displayCoords = {
                 x: pad.x,
                 y: pad.y,
@@ -1896,12 +1888,41 @@ export default function App() {
                 centerMethod: pad.centerMethod,
                 originalPad: pad
               };
+
+              console.log('ComponentList Focus to CENTER:', {
+                pad: { x: pad.x, y: pad.y },
+                displayCoords
+              });
+
               setSelectedMm(displayCoords);
-            }
-          }}
-          multiSelectMode={multiSelectMode}
-          selectedIndices={selectedPadIndices}
-        />
+            }}
+            onItemClick={(pad, index) => {
+              if (multiSelectMode) {
+                setSelectedPadIndices(prev => {
+                  const newSelection = [...prev];
+                  const existingIdx = newSelection.indexOf(index);
+                  if (existingIdx >= 0) {
+                    newSelection.splice(existingIdx, 1);
+                  } else {
+                    newSelection.push(index);
+                  }
+                  return newSelection;
+                });
+              } else {
+                const displayCoords = {
+                  x: pad.x,
+                  y: pad.y,
+                  centerValid: pad.centerValid,
+                  centerMethod: pad.centerMethod,
+                  originalPad: pad
+                };
+                setSelectedMm(displayCoords);
+              }
+            }}
+            multiSelectMode={multiSelectMode}
+            selectedIndices={selectedPadIndices}
+          />
+        </div>
 
         <div className="section Origin-section">
           <h3 style={{ color: '#007bff', padding: '8px 12px', borderBottom: '2px solid #007bff' }}>PCB Origin</h3>
@@ -2062,7 +2083,10 @@ export default function App() {
                 onClickSvg={handleCanvasClick}
                 onMouseDown={handleFiducialMouseDown}
                 multiSelectMode={multiSelectMode}
-                onToggleMultiSelect={() => setMultiSelectMode(prev => !prev)}
+                onToggleMultiSelect={() => {
+                  if (!multiSelectMode) setSelectedMm(null);
+                  setMultiSelectMode(prev => !prev);
+                }}
                 selectedCount={selectedPadIndices.length}
                 onOptimize={() => {
                   if (selectedPadIndices.length < 2) return;
@@ -2086,9 +2110,9 @@ export default function App() {
                     <span className="badge active">FROM: {referencePoint ? `FID ${referencePoint.id}` : 'ORIGIN'}</span>
                   </div>
                   <div className="kvs">
-                    <span>DX: <span className="lcd-text">{(selectedMm.x - (referencePoint || selectedOrigin).x).toFixed(2)}</span></span>
-                    <span>DY: <span className="lcd-text">{(selectedMm.y - (referencePoint || selectedOrigin).y).toFixed(2)}</span></span>
-                    <span>DIST: <span className="lcd-text">{Math.hypot(selectedMm.x - (referencePoint || selectedOrigin).x, selectedMm.y - (referencePoint || selectedOrigin).y).toFixed(2)}</span></span>
+                    <span>DX: <span className="lcd-text">{(selectedMm.x - (referencePoint || selectedOrigin).x).toFixed(2)}mm </span></span>
+                    <span>DY: <span className="lcd-text">{(selectedMm.y - (referencePoint || selectedOrigin).y).toFixed(2)}mm </span></span>
+                    <span>DIST: <span className="lcd-text">{Math.hypot(selectedMm.x - (referencePoint || selectedOrigin).x, selectedMm.y - (referencePoint || selectedOrigin).y).toFixed(2)}mm</span></span>
                   </div>
                 </div>
               )}

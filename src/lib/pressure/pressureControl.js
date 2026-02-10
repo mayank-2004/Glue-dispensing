@@ -12,6 +12,13 @@ export class PressureController {
     return this.presets[type] || this.presets.medium;
   }
 
+  updateSettings(settings) {
+    if (!settings) return;
+    if (settings.customPressure) this.presets.custom.pressure = settings.customPressure;
+    if (settings.customDwellTime) this.presets.custom.dwellTime = settings.customDwellTime;
+    this.currentSettings = settings;
+  }
+
   calculatePressure(padSize, viscosity = 'medium') {
     const preset = this.getPreset(viscosity);
     const area = padSize.width * padSize.height;

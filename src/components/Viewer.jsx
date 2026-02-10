@@ -82,7 +82,7 @@ export default function Viewer({
               </button>
             )}
 
-            {hasPath && (
+            {multiSelectMode && hasPath && (
               <button
                 className="viewer-btn"
                 onClick={onClearPath}

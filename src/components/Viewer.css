@@ -86,17 +86,18 @@
 .viewer-btn-group {
   display: flex;
   align-items: center;
-  background: var(--bg-button);
+  gap: 1px; /* Gap for separation between buttons */
+  background: var(--border-secondary); /* Border color as background for gaps */
   border: 1px solid var(--border-secondary);
   border-radius: 6px;
   overflow: hidden;
 }
 
 .viewer-btn {
-  background: transparent;
-  color: #fff;
+  background: var(--bg-button); /* Solid background */
+  color: var(--text-secondary);
   border: none;
-  padding: 6px 2px;
+  padding: 0 12px; /* Increased horizontal padding */
   cursor: pointer;
   font-weight: 500;
   font-size: 13px;
@@ -104,11 +105,11 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  height: 32px;
-  border-right: 1px solid var(--border-secondary);
+  height: 36px; /* slightly taller */
 }
 
-.viewer-btn:last-child {
+/* Remove border-right as we use gap + background for separation now */
+.viewer-btn {
   border-right: none;
 }
 
@@ -118,31 +119,33 @@
 }
 
 .viewer-btn:disabled {
+  background: var(--bg-secondary);
   opacity: 0.5;
   cursor: not-allowed;
 }
 
 .viewer-btn.active {
-  background: rgba(234, 179, 8, 0.15);
+  background: rgba(234, 179, 8, 0.2);
   color: #facc15;
+  box-shadow: inset 0 0 8px rgba(234, 179, 8, 0.1);
 }
 
 .viewer-btn.active:hover {
-  background: rgba(234, 179, 8, 0.25);
+  background: rgba(234, 179, 8, 0.3);
 }
 
 .viewer-readout {
-  padding: 0 8px;
+  padding: 0 12px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-primary);
   background: var(--bg-secondary);
-  height: 32px;
+  height: 36px;
   display: flex;
   align-items: center;
-  border-right: 1px solid var(--border-secondary);
-  min-width: 40px;
+  min-width: 48px;
   justify-content: center;
+  font-weight: 600;
 }
 
 .viewer.zoom-enabled {

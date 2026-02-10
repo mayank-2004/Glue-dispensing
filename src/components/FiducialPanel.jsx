@@ -65,7 +65,7 @@ export default function FiducialPanel({
 
         return (
           <div className="info" style={{ marginBottom: 16, background: '#e3f2fd', border: '1px solid #90caf9' }}>
-            <strong>Detected Panel Size</strong>
+            <strong style={{ color: "black" }}>Detected Panel Size</strong>
             {content}
           </div>
         );
@@ -190,9 +190,6 @@ export default function FiducialPanel({
           {"rms" in transformSummary && <div>RMS error: {transformSummary.rms.toFixed(3)} mm</div>}
         </div>
       )}
-
-
-
     </div>
   );
 }

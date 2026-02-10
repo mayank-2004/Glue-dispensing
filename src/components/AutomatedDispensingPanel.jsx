@@ -88,6 +88,7 @@ export default function AutomatedDispensingPanel({
     });
 
     try {
+      console.log('SEND:', cmd); // Debug log
       // Send command
       await window.serial.writeLine(cmd);
       // Wait for ACK
@@ -187,6 +188,16 @@ export default function AutomatedDispensingPanel({
       await sendGcodeWait('G1 Z6 F3000');
 
       const seq = activeSequence;
+      console.log("------------------------------------------");
+      console.log("STARTING JOB DISPENSE LOOP");
+      console.log("Sequence Length:", seq.length);
+      console.log("First Point:", seq[0]);
+      console.log("Is Safe Path Planning Enabled?:", useSafePathPlanning);
+      console.log("Active Transform (XF):", transform);
+      console.log("Speed Settings:", speedSettings);
+      console.log("Pressure Settings:", pressureSettings);
+      console.log("------------------------------------------");
+
       setJobProgress({ current: 0, total: seq.length });
 
       for (let i = 0; i < seq.length; i++) {
@@ -206,13 +217,17 @@ export default function AutomatedDispensingPanel({
         const cmds = dispensePoint({
           x: p.x, y: p.y,
           zWork: 0.1, zSafe: 6,
-          feedXY: speedSettings.travelSpeed || 3000,
-          feedZ: speedSettings.dispenseSpeed || 500,
+          feedXY: speedSettings.travelSpeed || 6000,
+          feedZ: speedSettings.dispenseSpeed || 300,
           pressure: pressure,
           dwellMs: dwell
         });
 
-        for (const c of cmds) await sendGcodeWait(c);
+        console.log(`Point ${i + 1} Commands:`, cmds);
+        for (const c of cmds) {
+          console.log(`Sending from loop: ${c}`);
+          await sendGcodeWait(c);
+        }
       }
 
       // Park

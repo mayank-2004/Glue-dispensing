@@ -21,7 +21,7 @@ const MaintenanceManager = ({ manager }) => {
 
     return (
         <div className="section maintenance-section" style={{ borderTop: '1px solid #eee', marginTop: 16, paddingTop: 16 }}>
-            <h3 style={{ color: '#ff6b35', margin: '0 0 12px 0' }}>Nozzle Care</h3>
+            <h3 style={{ color: '#9aa0a6', margin: '0 0 12px 0' }}>Nozzle Care</h3>
 
             <div className="maintenance-stats" style={{ fontSize: '0.9em', marginBottom: 12 }}>
                 <div className="flex-row" style={{ justifyContent: 'space-between', marginBottom: 4 }}>
