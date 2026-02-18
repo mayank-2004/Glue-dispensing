@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import JSZip from "jszip";
 import "./App.css";
 
@@ -101,10 +101,66 @@ export default function App() {
 
   // Serial State lifted from SerialPanel
   const [isSerialConnected, setIsSerialConnected] = useState(false);
+  const [machinePos, setMachinePos] = useState({ x: 0, y: 0, z: 0 });
+  const statusIntervalRef = useRef(null);
 
   // Connection Handlers
-  const handleSerialConnect = (status) => setIsSerialConnected(status);
-  const handleSerialDisconnect = () => setIsSerialConnected(false);
+  const handleSerialConnect = (status) => {
+    setIsSerialConnected(status);
+    if (status) {
+      // Start polling for status
+      if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
+      statusIntervalRef.current = setInterval(async () => {
+        try {
+          if (window.serial && window.serial.writeLine) {
+            await window.serial.writeLine('M114');
+          }
+        } catch (e) { console.error('Status poll failed:', e); }
+      }, 500);
+    } else {
+      if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
+    }
+  };
+
+  const handleSerialDisconnect = () => {
+    setIsSerialConnected(false);
+    if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
+  };
+
+  // Global Serial Data Handler
+  useEffect(() => {
+    if (window.serial && window.serial.onData) {
+      window.serial.onData((line) => {
+        // Parse Position - Robust Marlin/GRBL regex
+        // Supports: X:10.00 Y:20.00 Z:5.00
+        // Supports: MPos:10.00,20.00,5.00
+        let x = null, y = null, z = null;
+
+        // Try Marlin format first
+        const marlinMatch = line.match(/X\s*:\s*([-\d.]+).*?Y\s*:\s*([-\d.]+).*?Z\s*:\s*([-\d.]+)/i);
+        if (marlinMatch) {
+          x = parseFloat(marlinMatch[1]);
+          y = parseFloat(marlinMatch[2]);
+          z = parseFloat(marlinMatch[3]);
+        } else {
+          // Try GRBL format as fallback
+          const grblMatch = line.match(/MPos:([-\d.]+),([-\d.]+),([-\d.]+)/);
+          if (grblMatch) {
+            x = parseFloat(grblMatch[1]);
+            y = parseFloat(grblMatch[2]);
+            z = parseFloat(grblMatch[3]);
+          }
+        }
+
+        if (x !== null && y !== null && z !== null) {
+          setMachinePos({ x, y, z });
+        }
+      });
+    }
+    return () => {
+      if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
+    };
+  }, []);
 
   // const [opencvReady, setOpencvReady] = useState(false);
   // const [cameraStream, setCameraStream] = useState(null);
@@ -122,7 +178,9 @@ export default function App() {
   const [referencePoint, setReferencePoint] = useState(null);
   const [referenceType, setReferenceType] = useState('origin');
   const [xf, setXf] = useState(null);
+
   const [applyXf, setApplyXf] = useState(false);
+  const [boardType, setBoardType] = useState('single'); // 'single' or 'panel'
   const [activeComponent, setActiveComponent] = useState('SerialPanel')
 
   // New feature states
@@ -190,6 +248,10 @@ export default function App() {
 
   // Panel Alignment State
   const [alignment, setAlignment] = useState({ p1: null, p2: null, transform: null });
+
+  // Refs for log optimization
+  const prevOriginLogRef = useRef(null);
+  const prevActiveRefLogRef = useRef(null);
 
   const handleAlignmentCapture = useCallback((refIndex) => {
     // Get current machine position from livePreview (assuming it tracks latest MPos)
@@ -299,7 +361,6 @@ export default function App() {
   //   alert(`✅ OpenCV detected ${detectedFiducials.length} fiducials!`);
   // };
 
-  // Update current batch when selection changes
   useEffect(() => {
     if (currentBatchId && batchProcessor) {
       setCurrentBatch(batchProcessor.getBatch(currentBatchId));
@@ -545,7 +606,7 @@ export default function App() {
     } else setPads([]);
 
     // Detect fiducials automatically
-    const detectedFiducials = analyzeFiducialsInLayers(ls);
+    let detectedFiducials = analyzeFiducialsInLayers(ls);
     setFiducialDetectionResult(detectedFiducials);
 
     // Detect board outline if available
@@ -575,17 +636,48 @@ export default function App() {
     }
 
     if (detectedFiducials.length > 0) {
+      // For Panel mode, prioritize fiducials that span the largest area (corners)
+      if (boardType === 'panel' && detectedFiducials.length > 3) {
+        // Find the set of 3 fiducials that maximizes the triangle area
+        let bestSet = detectedFiducials.slice(0, 3);
+        let maxArea = 0;
+
+        // Simple brute force for small N (N usually <= 6)
+        const N = Math.min(detectedFiducials.length, 6);
+        for (let i = 0; i < N; i++) {
+          for (let j = i + 1; j < N; j++) {
+            for (let k = j + 1; k < N; k++) {
+              const p1 = detectedFiducials[i];
+              const p2 = detectedFiducials[j];
+              const p3 = detectedFiducials[k];
+              // Triangle area formula: 0.5 * |x1(y2-y3) + x2(y3-y1) + x3(y1-y2)|
+              const area = 0.5 * Math.abs(p1.x * (p2.y - p3.y) + p2.x * (p3.y - p1.y) + p3.x * (p1.y - p2.y));
+
+              // Also consider confidence score
+              const score = area * (p1.confidence + p2.confidence + p3.confidence);
+
+              if (score > maxArea) {
+                maxArea = score;
+                bestSet = [p1, p2, p3];
+              }
+            }
+          }
+        }
+
+        detectedFiducials = bestSet; // Override for auto-population
+      }
+
       // Auto-populate fiducials with detected positions
       const colors = ["#2ea8ff", "#8e2bff", "#00c49a", "#ff6b35", "#9c27b0", "#4caf50"];
-      const autoFiducials = detectedFiducials.map((fid, idx) => ({
-        id: fid.id,
+      const autoFiducials = detectedFiducials.slice(0, 3).map((fid, idx) => ({
+        id: fid.id || `F${idx + 1}`,
         design: { x: fid.x, y: fid.y },
         machine: { x: fid.x, y: fid.y }, // Initialize machine coords to match design
         color: colors[idx % colors.length],
         confidence: fid.confidence
       }));
 
-      // Fill remaining slots with empty fiducials
+      // Fill remaining slots with empty fiducials if needed
       while (autoFiducials.length < 3) {
         autoFiducials.push({
           id: `F${autoFiducials.length + 1}`,
@@ -872,7 +964,14 @@ export default function App() {
     // Draw reference point (origin or fiducial)
     const activeRef = referencePoint || selectedOrigin;
     if (activeRef) {
-      console.log('Drawing activeRef:', activeRef, 'coordinates:', { x: activeRef.x, y: activeRef.y });
+      // Log ONLY if activeRef has changed significantly (by ID or coordinates)
+      const prev = prevActiveRefLogRef.current;
+      const hasChanged = !prev || prev.id !== activeRef.id || Math.abs(prev.x - activeRef.x) > 0.001 || Math.abs(prev.y - activeRef.y) > 0.001;
+
+      if (hasChanged) {
+        console.log('Drawing activeRef:', activeRef, 'coordinates:', { x: activeRef.x, y: activeRef.y });
+        prevActiveRefLogRef.current = { ...activeRef };
+      }
       const uh = mmToCurrentUnits({ x: activeRef.x, y: activeRef.y });
       const isOrigin = activeRef === selectedOrigin;
       const color = isOrigin ? "rgba(196, 42, 193, 1)" : (activeRef.color || "#2ea8ff");
@@ -1258,40 +1357,32 @@ export default function App() {
     if (refPoint && pads.length > 0) {
       const distances = pads.map(pad => {
         // Step 1: Calculate TRUE CENTER of the pad (same as handleCanvasClick)
-        const padHeight = pad.height || 1.0;
-        const trueCenterY = pad.y + (padHeight / 2);  // Add half height to get center
+        // Gerber pads are already centered, so we use pad.y directly.
+        const trueCenterY = pad.y;
 
-        // Step 2: Apply coordinate transformation relative to origin
-        const origin = selectedOrigin;
-        let transformedPadCenter;
+        // Step 2: Apply coordinate transformation relative to origin if available
+        // Note: This 'transformedPadCenter' is mainly for debugging or if we need to store relative coords differently.
+        // But for distance calculation, we can just use pad.x/y and origin.x/y directly.
 
-        if (origin) {
-          // Apply transformation using TRUE CENTER coordinates
-          transformedPadCenter = {
-            x: pad.x - origin.x,
-            y: trueCenterY + origin.y  // Use trueCenterY instead of pad.y
-          };
+        let dx, dy;
+        if (refPoint === selectedOrigin) {
+          dx = pad.x - selectedOrigin.x;
+          dy = trueCenterY - selectedOrigin.y;
         } else {
-          // No origin, use center coordinates
-          transformedPadCenter = {
-            x: pad.x,
-            y: trueCenterY
-          };
+          dx = pad.x - refPoint.x;
+          dy = trueCenterY - refPoint.y;
         }
 
-        // Step 3: Calculate distance from reference to pad CENTER
-        const dx = transformedPadCenter.x - refPoint.x;
-        const dy = transformedPadCenter.y - refPoint.y;
         const dist = Math.hypot(dx, dy);
 
         return {
           ...pad,
-          distance: dist,  // Distance to CENTER point
+          distance: dist,
           dx,
           dy,
-          transformedX: transformedPadCenter.x,
-          transformedY: transformedPadCenter.y,
-          trueCenterY: trueCenterY  // Store center Y for reference
+          transformedX: pad.x - (selectedOrigin?.x || 0), // For display relative to origin
+          transformedY: trueCenterY - (selectedOrigin?.y || 0),
+          trueCenterY: trueCenterY
         };
       });
       setPadDistances(distances);
@@ -1508,20 +1599,19 @@ export default function App() {
   // Update overlay when origin changes
   useEffect(() => {
     if (selectedOrigin) {
-      console.log('Origin changed, updating overlay:', selectedOrigin);
-      setTimeout(() => updateOverlay(), 100); // Small delay to ensure SVG is ready
+      // Log ONLY if selectedOrigin has changed
+      const prev = prevOriginLogRef.current;
+      const hasChanged = !prev || Math.abs(prev.x - selectedOrigin.x) > 0.001 || Math.abs(prev.y - selectedOrigin.y) > 0.001;
+
+      if (hasChanged) {
+        console.log('Origin changed, updating overlay:', selectedOrigin);
+        prevOriginLogRef.current = { ...selectedOrigin };
+        setTimeout(() => updateOverlay(), 300); // Small delay to ensure SVG is ready
+      }
     }
   }, [selectedOrigin, updateOverlay]);
 
-
-
-  // Zoom handlers
-
-
   const handleCanvasClick = useCallback((evt) => {
-    // Handle Zoom Click code removed
-
-
     console.log('handleCanvasClick fired. PickMode:', fidPickMode);
     if (fidPickMode) return;
 
@@ -1611,13 +1701,16 @@ export default function App() {
       console.warn('Pad center calculation may be inaccurate:', hit.pos.centerMethod);
     }
 
-    // Show distance from reference point to clicked pad
+    // Show distance from reference to clicked pad
     const refPoint = referencePoint || selectedOrigin;
     if (refPoint) {
+      // Calculate true center (Gerber pads are already centered)
+      const trueCenterY = padCenter.y;
+
       const dx = padCenter.x - refPoint.x;
-      const dy = padCenter.y - refPoint.y;
+      const dy = trueCenterY - refPoint.y;
       const dist = Math.hypot(dx, dy);
-      const refName = refPoint === selectedOrigin ? 'Top-Left Origin' : `Fiducial ${refPoint.id || ''}`;
+      const refName = refPoint === selectedOrigin ? 'PCB Origin' : `Fiducial ${refPoint.id || ''}`;
       const show = window.confirm(
         `Distance from ${refName}:\n` +
         `ΔX: ${dx.toFixed(2)} mm\n` +
@@ -1662,21 +1755,55 @@ export default function App() {
     if (layers.length === 0) return;
 
     // Re-run fiducial detection
-    const detectedFiducials = analyzeFiducialsInLayers(layers);
+    let detectedFiducials = analyzeFiducialsInLayers(layers);
     setFiducialDetectionResult(detectedFiducials);
 
     if (detectedFiducials.length > 0) {
+      // For Panel mode, prioritize fiducials that span the largest area (corners)
+      if (boardType === 'panel' && detectedFiducials.length > 3) {
+        // Find the set of 3 fiducials that maximizes the triangle area
+        let bestSet = detectedFiducials.slice(0, 3);
+        let maxArea = 0;
+
+        // Simple brute force for small N (N usually <= 6)
+        const N = Math.min(detectedFiducials.length, 6);
+        for (let i = 0; i < N; i++) {
+          for (let j = i + 1; j < N; j++) {
+            for (let k = j + 1; k < N; k++) {
+              const p1 = detectedFiducials[i];
+              const p2 = detectedFiducials[j];
+              const p3 = detectedFiducials[k];
+              // Triangle area formula: 0.5 * |x1(y2-y3) + x2(y3-y1) + x3(y1-y2)|
+              const area = 0.5 * Math.abs(p1.x * (p2.y - p3.y) + p2.x * (p3.y - p1.y) + p3.x * (p1.y - p2.y));
+
+              // Also consider confidence score
+              const score = area * (p1.confidence + p2.confidence + p3.confidence);
+
+              if (score > maxArea) {
+                maxArea = score;
+                bestSet = [p1, p2, p3];
+              }
+            }
+          }
+        }
+
+        // Use the best spread set for panel alignment
+        // But we still want to keep the original ordering/IDs if possible? 
+        // No, IDs are generated. Let's just use the best set.
+        detectedFiducials = bestSet; // Override for auto-population
+      }
+
       // Auto-populate fiducials with detected positions
       const colors = ["#2ea8ff", "#8e2bff", "#00c49a", "#ff6b35", "#9c27b0", "#4caf50"];
-      const autoFiducials = detectedFiducials.map((fid, idx) => ({
-        id: fid.id,
+      const autoFiducials = detectedFiducials.slice(0, 3).map((fid, idx) => ({
+        id: fid.id || `F${idx + 1}`,
         design: { x: fid.x, y: fid.y },
         machine: { x: fid.x, y: fid.y }, // Initialize machine coords to match design
         color: colors[idx % colors.length],
         confidence: fid.confidence
       }));
 
-      // Fill remaining slots with empty fiducials
+      // Fill remaining slots with empty fiducials if needed
       while (autoFiducials.length < 3) {
         autoFiducials.push({
           id: `F${autoFiducials.length + 1}`,
@@ -1814,6 +1941,24 @@ export default function App() {
             onChange={pickFiles}
             className="d-none"
           />
+
+          <div className="control-group" style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-color)', marginBottom: 12 }}>
+            <label style={{ display: 'block', marginBottom: 8, color: 'var(--text-secondary)', fontSize: '0.9em', fontWeight: 600 }}>Board Layout Type</label>
+            <div className="flex-row" style={{ gap: 8 }}>
+              <label className={`btn sm ${boardType === 'single' ? 'primary' : 'secondary'}`} style={{ flex: 1, textAlign: 'center', cursor: 'pointer' }}>
+                <input type="radio" name="boardType" checked={boardType === 'single'} onChange={() => setBoardType('single')} style={{ display: 'none' }} />
+                Single PCB
+              </label>
+              <label className={`btn sm ${boardType === 'panel' ? 'primary' : 'secondary'}`} style={{ flex: 1, textAlign: 'center', cursor: 'pointer' }}>
+                <input type="radio" name="boardType" checked={boardType === 'panel'} onChange={() => setBoardType('panel')} style={{ display: 'none' }} />
+                Panel
+              </label>
+            </div>
+            <small style={{ display: 'block', marginTop: 4, color: '#666', fontSize: '0.8em', lineHeight: 1.2 }}>
+              {boardType === 'single' ? 'Using local board fiducials' : 'Using global panel frame fiducials'}
+            </small>
+          </div>
+
           {/* <div className="row">
             <button className="btn primary w-100" onClick={() => document.getElementById("fileInput").click()}>
               📂 Open Gerber / ZIP
@@ -1963,7 +2108,7 @@ export default function App() {
               Clear
             </button>
           </div>
-          <small>Machine coordinates where PCB top-left corner (0,0) is located</small>
+          <small>Machine coordinates where PCB bottom-left corner (0,0) is located</small>
         </div>
 
         <div className="section Reference-section" style={{ marginTop: 16 }}>
@@ -2016,7 +2161,7 @@ export default function App() {
         </nav>
 
         <div className="panel-content" style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 0 }}>
-          {activeComponent === 'SerialPanel' && (
+          <div style={{ display: activeComponent === 'SerialPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
             <div className="panel full-height">
               <div className="panel-header">
                 <h3 className="panel-title">MACHINE CONTROL</h3>
@@ -2052,9 +2197,9 @@ export default function App() {
                 />
               </div>
             </div>
-          )}
+          </div>
 
-          {activeComponent === 'JogPanel' && (
+          <div style={{ display: activeComponent === 'JogPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
             <div className="panel">
               <div className="panel-header">
                 <h3 className="panel-title">MANUAL JOG</h3>
@@ -2073,9 +2218,9 @@ export default function App() {
                 />
               </div>
             </div>
-          )}
+          </div>
 
-          {activeComponent === 'Viewer' && (
+          <div style={{ display: activeComponent === 'Viewer' ? 'block' : 'none', width: '100%', height: '100%' }}>
             <div className="viewer-container">
               <Viewer
                 svg={svg}
@@ -2102,6 +2247,8 @@ export default function App() {
                   setGeneratedPath(null);
                 }}
                 hasPath={selectedPadIndices.length > 0}
+                pickMode={fidPickMode}
+                onTogglePickMode={() => setFidPickMode(v => !v)}
               />
 
               {(referencePoint || selectedOrigin) && selectedMm && (
@@ -2116,22 +2263,12 @@ export default function App() {
                   </div>
                 </div>
               )}
-              {/* <select value={pathType} onChange={(e) => setPathType(e.target.value)} style={{ fontSize: 12 }}>
-                    <option value="direct">Direct Path</option>
-                    <option value="safe">Safe Path (Lift)</option>
-                    <option value="optimized">Optimized Path</option>
-                  </select> */}
               <label style={{ marginLeft: 8, fontSize: 12 }}>
                 <input type="checkbox" checked={showPasteDots} onChange={(e) => setShowPasteDots(e.target.checked)} />
                 Show Paste Dots
               </label>
-              {/* {generatedPath && (
-                    <small style={{ marginLeft: 8, color: '#666' }}>
-                      {generatedPath.type} • {generatedPath.segments.length} segments
-                    </small>
-                  )} */}
             </div>
-          )}
+          </div>
 
           {
             maintenanceAlert && (
@@ -2155,212 +2292,166 @@ export default function App() {
             )
           }
 
-          {
-            activeComponent === 'FiducialPanel' && (
-              <div className="fiducial-panel">
-                <FiducialPanel
-                  fiducials={fiducials}
-                  activeId={fidActiveId}
-                  setActiveId={setFidActiveId}
-                  pickMode={fidPickMode}
-                  togglePickMode={() => setFidPickMode(v => !v)}
-                  onInputMachine={onInputMachine}
-                  onClearOne={onClearOne}
-                  onClearAll={onClearAll}
-                  onSolve2={onSolve2}
-                  onSolve3={onSolve3}
-                  transformSummary={transformSummary}
-                  applyTransform={applyXf}
-                  setApplyTransform={setApplyXf}
-                  detectionResult={fiducialDetectionResult}
-                  onRedetectFiducials={onRedetectFiducials}
-                  onAutoAlign={onAutoAlign}
-                  onAutoDetectCamera={onAutoDetectCamera}
-                  alignmentInfo={alignment}
-                  onCaptureAlignment={handleAlignmentCapture}
-                />
-                {selectedOrigin && selectedMm && xf && applyXf && (
-                  <div style={{ padding: 8, background: '#f8f9fa', border: '1px solid #dee2e6', borderRadius: 4, marginTop: 8 }}>
-                    <small><strong>Transform Verification:</strong></small>
-                    <div style={{ fontSize: '0.8em', fontFamily: 'monospace' }}>
-                      Origin: {selectedOrigin.x.toFixed(3)}, {selectedOrigin.y.toFixed(3)} → {verifyTransform(selectedOrigin).x.toFixed(3)}, {verifyTransform(selectedOrigin).y.toFixed(3)}
-                    </div>
-                    <div style={{ fontSize: '0.8em', fontFamily: 'monospace' }}>
-                      Target: {selectedMm.x.toFixed(3)}, {selectedMm.y.toFixed(3)} → {verifyTransform(selectedMm).x.toFixed(3)}, {verifyTransform(selectedMm).y.toFixed(3)}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )
-          }
-
-          {
-            activeComponent === 'CameraPanel' && (
-              <CameraPanel
+          <div style={{ display: activeComponent === 'FiducialPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
+            <div className="fiducial-panel">
+              <FiducialPanel
+                boardType={boardType}
                 fiducials={fiducials}
-                xf={xf}
-                applyXf={applyXf}
-                selectedDesign={selectedOrigin ? selectedOrigin : (selectedMm ? { x: selectedMm.x, y: selectedMm.y } : null)}
-                toolOffset={maintenanceManager.getToolOffset()}
-                setToolOffset={(o) => maintenanceManager.setToolOffset(o)}
-                nozzleDia={0.6}
-                setNozzleDia={(d) => { /* update nozzle dia */ }}
-                padDetector={padDetector}
-                qualityController={qualityController}
-                onCaptureAlignment={handleAlignmentCapture}
-                alignmentInfo={alignment}
-                machinePosition={livePreview.machinePosition}
-                fiducialVisionDetector={fiducialVisionDetector}
-                layerData={layerData}
-                onUpdateFiducials={handleFiducialsUpdate}
-              />
-            )
-          }
-
-          {
-            activeComponent === 'AutomatedDispensingPanel' && (
-              <AutomatedDispensingPanel
-                dispensingSequencer={dispensingSequencer}
-                dispensingSequence={dispensingSequence}
-                safeSequence={safeSequence}
-                jobStatistics={jobStatistics}
-                referencePoint={referencePoint}
-                selectedOrigin={selectedOrigin}
-                pressureSettings={pressureSettings}
-                speedSettings={speedSettings}
-                boardOutline={boardOutline}
-                useSafePathPlanning={useSafePathPlanning}
-                setUseSafePathPlanning={setUseSafePathPlanning}
-                componentHeights={componentHeights}
-                setComponentHeights={setComponentHeights}
-                safePathPlanner={safePathPlanner}
-                onStartJob={(gcode, sequence) => {
-                  console.log('Starting automated dispensing job:', { gcode, sequence });
-                }}
-                batchProcessor={batchProcessor}
-                currentBatch={currentBatch}
-                onStartBatch={handleStartBatch}
-                layerData={layerData}
-                fiducials={fiducials}
+                activeId={fidActiveId}
+                setActiveId={setFidActiveId}
+                pickMode={fidPickMode}
+                togglePickMode={() => setFidPickMode(v => !v)}
                 onInputMachine={onInputMachine}
-                onAutoAlign={onAutoAlign}
+                onClearOne={onClearOne}
+                onClearAll={onClearAll}
                 onSolve2={onSolve2}
                 onSolve3={onSolve3}
-                xf={xf}
-                applyXf={applyXf}
-                isConnected={isSerialConnected}
-                onJobComplete={() => maintenanceManager.recordDispense()}
+                transformSummary={transformSummary}
+                applyTransform={applyXf}
+                setApplyTransform={setApplyXf}
+                detectionResult={fiducialDetectionResult}
+                onRedetectFiducials={onRedetectFiducials}
+                onAutoAlign={onAutoAlign}
+                onAutoDetectCamera={onAutoDetectCamera}
+                alignmentInfo={alignment}
+                onCaptureAlignment={handleAlignmentCapture}
               />
-            )
-          }
+              {selectedOrigin && selectedMm && xf && applyXf && (
+                <div style={{ padding: 8, background: '#f8f9fa', border: '1px solid #dee2e6', borderRadius: 4, marginTop: 8 }}>
+                  <small><strong>Transform Verification:</strong></small>
+                  <div style={{ fontSize: '0.8em', fontFamily: 'monospace' }}>
+                    Origin: {selectedOrigin.x.toFixed(3)}, {selectedOrigin.y.toFixed(3)} → {verifyTransform(selectedOrigin).x.toFixed(3)}, {verifyTransform(selectedOrigin).y.toFixed(3)}
+                  </div>
+                  <div style={{ fontSize: '0.8em', fontFamily: 'monospace' }}>
+                    Target: {selectedMm.x.toFixed(3)}, {selectedMm.y.toFixed(3)} → {verifyTransform(selectedMm).x.toFixed(3)}, {verifyTransform(selectedMm).y.toFixed(3)}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
 
-          {
-            activeComponent === 'BatchPanel' && (
-              <BatchPanel
-                batchProcessor={batchProcessor}
-                currentBatch={currentBatch}
-                onBatchSelect={handleBatchSelect}
-                onStartBatch={handleStartBatch}
-                onPauseBatch={handlePauseBatch}
-                onAddBoard={handleAddCurrentBoard}
-                onDeleteBatch={handleDeleteBatch}
-              />
-            )
-          }
+          <div style={{ display: activeComponent === 'CameraPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
+            <CameraPanel
+              fiducials={fiducials}
+              xf={xf}
+              applyXf={applyXf}
+              selectedDesign={selectedOrigin ? selectedOrigin : (selectedMm ? { x: selectedMm.x, y: selectedMm.y } : null)}
+              toolOffset={maintenanceManager.getToolOffset()}
+              setToolOffset={(o) => maintenanceManager.setToolOffset(o)}
+              nozzleDia={0.6}
+              setNozzleDia={(d) => { /* update nozzle dia */ }}
+              padDetector={padDetector}
+              qualityController={qualityController}
+              onCaptureAlignment={handleAlignmentCapture}
+              alignmentInfo={alignment}
+              machinePosition={livePreview.machinePosition}
+              fiducialVisionDetector={fiducialVisionDetector}
+              layerData={layerData}
+              onUpdateFiducials={handleFiducialsUpdate}
+            />
+          </div>
 
-          {
-            activeComponent === 'PressurePanel' && (
-              <PressurePanel
-                pressureController={pressureController}
-                pressureSettings={pressureSettings}
-                setPressureSettings={setPressureSettings}
-                selectedPad={selectedMm ? pads.find(p => Math.abs(p.x - selectedMm.x) < 0.1 && Math.abs(p.y - selectedMm.y) < 0.1) : null}
-              />
-            )
-          }
+          <div style={{ display: activeComponent === 'AutomatedDispensingPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
+            <AutomatedDispensingPanel
+              dispensingSequencer={dispensingSequencer}
+              dispensingSequence={dispensingSequence}
+              safeSequence={safeSequence}
+              jobStatistics={jobStatistics}
+              referencePoint={referencePoint}
+              selectedOrigin={selectedOrigin}
+              pressureSettings={pressureSettings}
+              speedSettings={speedSettings}
+              boardOutline={boardOutline}
+              useSafePathPlanning={useSafePathPlanning}
+              setUseSafePathPlanning={setUseSafePathPlanning}
+              componentHeights={componentHeights}
+              setComponentHeights={setComponentHeights}
 
-          {
-            activeComponent === 'SpeedPanel' && (
-              <SpeedPanel
-                speedProfileManager={speedProfileManager}
-                speedSettings={speedSettings}
-                referencePoint={referencePoint}
-                selectedOrigin={selectedOrigin}
-                setSpeedSettings={setSpeedSettings}
-                selectedPad={selectedMm ? pads.find(p => Math.abs(p.x - selectedMm.x) < 0.1 && Math.abs(p.y - selectedMm.y) < 0.1) : null}
-                pressureSettings={pressureSettings}
-                pads={pads}
-              />
-            )
-          }
+              // Alignment Props
+              fiducials={fiducials}
+              onInputMachine={onInputMachine}
+              onAutoAlign={onAutoAlign}
+              onSolve2={onSolve2}
+              onSolve3={onSolve3}
+              xf={xf}
+              applyXf={applyXf}
+              isConnected={isSerialConnected}
+              machinePosition={machinePos}
+
+              // Panel Measurements
+              panelDimensions={(() => {
+                const machineFids = fiducials.filter(f => f.machine && typeof f.machine.x === 'number' && typeof f.machine.y === 'number');
+                if (machineFids.length >= 2) {
+                  const xs = machineFids.map(f => f.machine.x);
+                  const ys = machineFids.map(f => f.machine.y);
+                  const width = Math.max(...xs) - Math.min(...xs);
+                  const height = Math.max(...ys) - Math.min(...ys);
+                  return {
+                    width,
+                    height,
+                    diagonal: Math.hypot(width, height)
+                  };
+                }
+                return null;
+              })()}
+
+              onStartJob={(gcode, mode) => {
+                console.log(`Job started in ${mode} mode`);
+                maintenanceManager.recordDispense();
+              }}
+              onDownloadGCode={(gcode) => {
+                const blob = new Blob([gcode.join('\n')], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `dispensing-${Date.now()}.gcode`;
+                a.click();
+              }}
+              batchProcessor={batchProcessor}
+              currentBatch={currentBatch}
+              onStartBatch={handleStartBatch}
+              onJobComplete={() => {
+                console.log('Automated job finished');
+                alert('Job Complete!');
+              }}
+              layerData={layerData}
+            />
+          </div>
+
+          <div style={{ display: activeComponent === 'BatchPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
+            <BatchPanel
+              batchProcessor={batchProcessor}
+              currentBatch={currentBatch}
+              onBatchSelect={handleBatchSelect}
+              onStartBatch={handleStartBatch}
+              onPauseBatch={handlePauseBatch}
+              onAddBoard={handleAddCurrentBoard}
+              onDeleteBatch={handleDeleteBatch}
+            />
+          </div>
+
+          <div style={{ display: activeComponent === 'PressurePanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
+            <PressurePanel
+              pressureController={pressureController}
+              pressureSettings={pressureSettings}
+              setPressureSettings={setPressureSettings}
+              selectedPad={selectedMm ? pads.find(p => Math.abs(p.x - selectedMm.x) < 0.1 && Math.abs(p.y - selectedMm.y) < 0.1) : null}
+            />
+          </div>
+
+          <div style={{ display: activeComponent === 'SpeedPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
+            <SpeedPanel
+              speedProfileManager={speedProfileManager}
+              speedSettings={speedSettings}
+              referencePoint={referencePoint}
+              selectedOrigin={selectedOrigin}
+              setSpeedSettings={setSpeedSettings}
+              selectedPad={selectedMm ? pads.find(p => Math.abs(p.x - selectedMm.x) < 0.1 && Math.abs(p.y - selectedMm.y) < 0.1) : null}
+              pressureSettings={pressureSettings}
+              pads={pads}
+            />
+          </div>
         </div>
-
-        {/* {activeComponent === 'ComponentList' && (
-          <ComponentList
-            components={padDistances}
-            onFocus={(pad) => {
-              // Calculate TRUE CENTER of the pad
-              const padHeight = pad.height || 1.0;
-              const trueCenterY = pad.y + (padHeight / 2);
-
-              // Use transformed CENTER coordinates
-              const origin = selectedOrigin;
-              let displayCoords;
-
-              if (pad.transformedX !== undefined && pad.transformedY !== undefined) {
-                // Use pre-calculated transformed CENTER coordinates
-                displayCoords = {
-                  x: pad.transformedX,
-                  y: pad.transformedY,
-                  centerValid: pad.centerValid,
-                  centerMethod: pad.centerMethod,
-                  originalPad: pad
-                };
-              } else if (origin) {
-                // Calculate transformation using TRUE CENTER on the fly
-                displayCoords = {
-                  x: pad.x - origin.x,
-                  y: trueCenterY + origin.y,  // Use trueCenterY
-                  centerValid: pad.centerValid,
-                  centerMethod: pad.centerMethod,
-                  originalPad: pad
-                };
-              } else {
-                // No transformation needed, use CENTER
-                displayCoords = {
-                  x: pad.x,
-                  y: trueCenterY,  // Use trueCenterY
-                  centerValid: pad.centerValid,
-                  centerMethod: pad.centerMethod,
-                  originalPad: pad
-                };
-              }
-              setSelectedMm(displayCoords);
-            }}
-          />
-        )} */}
-
-        {/* {activeComponent === 'LayerList' && (
-          <LayerList layers={layers} layerData={layerData} onToggle={toggleLayer} />
-        )}
-        {activeComponent === 'LinearMovePanel' && (
-          <LinearMovePanel
-            homeDesign={selectedOrigin ? { x: selectedOrigin.x, y: selectedOrigin.y } : null}
-            focusDesign={selectedMm}
-            xf={xf}
-            applyXf={applyXf}
-            components={pads}
-            axisLetter="A"
-            collisionDetector={collisionDetector}
-            maintenanceManager={maintenanceManager}
-            pressureController={pressureController}
-            pressureSettings={pressureSettings}
-            speedProfileManager={speedProfileManager}
-            speedSettings={speedSettings}
-            referencePoint={referencePoint}
-            selectedOrigin={selectedOrigin}
-          />
-        )} */}
 
         {/* {
           activeComponent === 'LivePreview' && (

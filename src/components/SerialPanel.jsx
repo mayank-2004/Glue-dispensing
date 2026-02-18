@@ -32,14 +32,25 @@ export default function SerialPanel({
     window.serial.onData((line) => {
       setConsoleLines((prev) => [...prev, line].slice(-500));
 
-      const match = line.match(/X:([-\d.]+)\s+Y:([-\d.]+)\s+Z:([-\d.]+)/);
-      if (match) {
-        const pos = {
-          x: parseFloat(match[1]),
-          y: parseFloat(match[2]),
-          z: parseFloat(match[3])
-        };
-        // setCurrentPos(pos); // Removed local state
+      let x = null, y = null, z = null;
+      // Try Marlin format
+      const marlinMatch = line.match(/X\s*:\s*([-\d.]+).*?Y\s*:\s*([-\d.]+).*?Z\s*:\s*([-\d.]+)/i);
+      if (marlinMatch) {
+        x = parseFloat(marlinMatch[1]);
+        y = parseFloat(marlinMatch[2]);
+        z = parseFloat(marlinMatch[3]);
+      } else {
+        // Try GRBL format
+        const grblMatch = line.match(/MPos:([-\d.]+),([-\d.]+),([-\d.]+)/);
+        if (grblMatch) {
+          x = parseFloat(grblMatch[1]);
+          y = parseFloat(grblMatch[2]);
+          z = parseFloat(grblMatch[3]);
+        }
+      }
+
+      if (x !== null && y !== null && z !== null) {
+        const pos = { x, y, z };
         if (onMachinePositionUpdate) onMachinePositionUpdate(pos);
       }
     });
@@ -70,7 +81,7 @@ export default function SerialPanel({
       // But connected logic relies on serial port being open. 'SerialPanel' unmounts? No.
       // We can check window.serial availability or just rely on parent disconnect cleaning up)
       try {
-        await window.serial.writeLine('?');
+        await window.serial.writeLine('M114');
       } catch (e) { console.error(e); }
     }, 500);
     return interval;

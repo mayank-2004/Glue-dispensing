@@ -98,6 +98,7 @@ export function extractPadsMm(gerberText) {
 
   let curX = 0, curY = 0, currentD = null, currentAperture = null;
   let currentRefDes = null; // State for Object Attribute RefDes
+  let srState = null; // State for Step and Repeat
   const pads = [];
 
   console.log('Available apertures:', apertures);
@@ -124,6 +125,51 @@ export function extractPadsMm(gerberText) {
       continue;
     }
 
+    // SR (Step and Repeat) Handling
+    // Format: %SRX<R>Y<R>I<d>J<d>*%
+    // Example: %SRX2Y3I5.0J6.0*%  -> Repeat 2 times in X (dist 5.0), 3 times in Y (dist 6.0)
+    // The "Repeat" count usually means "Total number of copies" or "Number of additional copies". 
+    // Standard Gerber spec says: 
+    // X, Y = number of repeats along axis. 1 means no repeat (just the original).
+    // I, J = Step distance in X, Y.
+    // An empty %SR*% cancels the step and repeat.
+
+    const sr = t.match(/%SR(?:X(\d+))?(?:Y(\d+))?(?:I([\d.-]+))?(?:J([\d.-]+))?\*%/i);
+    if (sr) {
+      // If empty %SR*%, reset to single mode
+      if (!sr[1] && !sr[2] && !sr[3] && !sr[4]) {
+        // console.log("SR End - Resetting");
+        srState = null;
+      } else {
+        // Parse parameters
+        const dimX = sr[1] ? parseInt(sr[1]) : 1;
+        const dimY = sr[2] ? parseInt(sr[2]) : 1;
+        const stepX = sr[3] ? parseFloat(sr[3]) : 0.0; // Distance in current units
+        const stepY = sr[4] ? parseFloat(sr[4]) : 0.0;
+
+        console.log(`SR Start: X=${dimX} Y=${dimY} dX=${stepX} dY=${stepY} (Units: ${units})`);
+
+        // Adjust step for units if needed? 
+        // In Gerber, coordinates in SR parameters are usually in the same unit/format as G-codes?
+        // Actually, SR parameters are decimal numbers in the file units (mm or inch).
+        // But our main parsing uses 'units' var to convert at the END.
+        // If we duplicate points HERE, we must do it in the "current" coordinate system (which is raw from file).
+        // parseCoord handles the raw integer scaling. But SR I/J values are explicitly decimal in the % command?
+        // Check Spec: "The I and J modifiers specify the distance... expressed in the unit of the file."
+
+        // Critical: I/J are DECIMAL numbers, not integer-scaled like coordinates.
+        // So if units='mm', stepX is in mm. If units='in', stepX is in inches.
+        // BUT, our `curX`/`curY` and `pads` are stored in RAW integer format until the very end return!!!
+        // Wait, look at line 87: parseCoord returns a FLOAT (e.g. 10.5 mm).
+        // Wait, line 166: if units === 'in', we multiply by IN2MM.
+        // So `pads` currently stores values in FILE UNITS (mm or in).
+
+        srState = { dimX, dimY, stepX, stepY };
+      }
+      continue;
+    }
+
+
     const md = t.match(/D0?(\d+)$/i);
     if (md) {
       currentD = +md[1];
@@ -144,6 +190,7 @@ export function extractPadsMm(gerberText) {
 
         // console.log(`Flash at (${x}, ${y}) with aperture:`, aperture, 'RefDes:', currentRefDes);
 
+        // Push the PRIMARY pad
         pads.push({
           x,
           y,
@@ -152,6 +199,34 @@ export function extractPadsMm(gerberText) {
           shape: aperture.shape,
           componentIdentifier: currentRefDes // Attach found RefDes
         });
+
+        // Loop for SR repeats
+        if (srState) {
+          const { dimX, dimY, stepX, stepY } = srState;
+          // Loop starts at 0, but (0,0) is the primary flash we just pushed.
+          // SR implies a grid. If X=2, we have the original + 1 copy at +stepX.
+          // Proper loops: x=0..dimX-1, y=0..dimY-1.
+          // (0,0) is the original. Skip it to avoid double pads!
+
+          for (let i = 0; i < dimX; i++) {
+            for (let j = 0; j < dimY; j++) {
+              if (i === 0 && j === 0) continue; // Original already added
+
+              const offsetX = i * stepX;
+              const offsetY = j * stepY;
+
+              pads.push({
+                x: x + offsetX,
+                y: y + offsetY,
+                width: aperture.width,
+                height: aperture.height,
+                shape: aperture.shape,
+                componentIdentifier: currentRefDes ? `${currentRefDes}_SR${i}_${j}` : null
+              });
+            }
+          }
+        }
+
         curX = x; curY = y; continue;
       }
     }

@@ -66,7 +66,6 @@ function extractBounds(gerberText) {
     };
     
     console.log('Origin detection - extracted bounds:', bounds, 'from', coords.length, 'coordinates');
-    // console.log('Sample coordinates:', coords.slice(0, 5));
     console.log('Origin will be set to:', { x: bounds.minX, y: bounds.minY });
     
     return bounds;
@@ -280,5 +279,3 @@ function calculatePadBounds(pads) {
     maxY: Math.max(...ys)
   };
 }
-
-// Removed ranking function - only returning single bottom-left origin

@@ -18,10 +18,10 @@ export default function FiducialPanel({
   detectionResult,
   onRedetectFiducials,
   onAutoAlign,
-
   onAutoDetectCamera,
   alignmentInfo,
-  onCaptureAlignment
+  onCaptureAlignment,
+  boardType = 'single'
 }) {
   const ready2 = fiducials.filter(f => f.design && f.machine).length >= 2;
   const ready3 = fiducials.filter(f => f.design && f.machine).length >= 3;
@@ -54,9 +54,9 @@ export default function FiducialPanel({
 
           content = (
             <div>
-              <div className="flex-row" style={{ justifyContent: 'space-between', marginTop: 4 }}>
-                <span>Width: <strong>{width.toFixed(2)} mm</strong></span>
-                <span>Height: <strong>{height.toFixed(2)} mm</strong></span>
+              <div className="flex-row" style={{ justifyContent: 'space-between', marginTop: 4, color: "black", display: "flex", flexDirection: "column" }}>
+                <span>Width: <strong>{width.toFixed(2)} mm </strong></span>
+                <span>Height: <strong>{height.toFixed(2)} mm </strong></span>
                 <span>Diag: <strong>{diag.toFixed(2)} mm</strong></span>
               </div>
             </div>
@@ -65,15 +65,15 @@ export default function FiducialPanel({
 
         return (
           <div className="info" style={{ marginBottom: 16, background: '#e3f2fd', border: '1px solid #90caf9' }}>
-            <strong style={{ color: "black" }}>Detected Panel Size</strong>
+            <strong style={{ color: "black" }}>{boardType === 'panel' ? 'Detected Full Panel Size' : 'Detected PCB Size'}</strong>
             {content}
           </div>
         );
       })()}
 
       {/* Alignment Capture Controls */}
-      {alignmentInfo && onCaptureAlignment && (
-        <div className="box alignment-section" style={{ marginBottom: 16, borderTop: '1px solid #dee2e6', paddingTop: 8 }}>
+      {/* {alignmentInfo && onCaptureAlignment && (
+        <div className="box alignment-section" style={{ padding: 8, borderRadius: 8, marginBottom: 16, border: '1px solid #dee2e6', paddingTop: 8 }}>
           <legend style={{ fontSize: '0.9em', fontWeight: 'bold', marginBottom: 6 }}>Panel Alignment (Ref 1 & 2)</legend>
           <div className="flex-row" style={{ gap: 8, alignItems: 'center', marginBottom: 6 }}>
             <button className={`btn sm ${alignmentInfo?.p1 ? 'secondary' : ''}`} onClick={() => onCaptureAlignment(1)}>
@@ -93,9 +93,9 @@ export default function FiducialPanel({
             )}
           </div>
         </div>
-      )}
+      )} */}
 
-      <h3>Fiducials & Alignment</h3>
+      {/* <h3>{boardType === 'panel' ? 'Panel Fiducials (Global)' : 'PCB Fiducials (Local)'}</h3> */}
 
       {detectionResult !== null && (
         <div className={`info ${detectionResult.length === 0 ? 'warning' : 'success'}`} style={{ marginBottom: 12 }}>

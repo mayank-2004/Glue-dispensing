@@ -1,24 +1,9 @@
-/**
- * Machine Vision Fiducial Detection System
- * Automatically detects fiducials using strict blob analysis with advanced criteria
- * Constraints: 
- * - Max 3mm diameter
- * - Min 4mm isolation
- * - Circularity > 0.65
- * - Inertia Ratio > 0.5
- * - Convexity > 0.8
- * - Edge Contrast > 40
- */
-
 export class FiducialVisionDetector {
   constructor() {
     this.isDetecting = false;
     this.homography = null;
   }
 
-  /**
-   * Detect fiducials in camera feed
-   */
   async detectFiducialsInFrame(videoElement, expectedFiducials = [], options = {}) {
     if (!videoElement || this.isDetecting) return { success: false };
 

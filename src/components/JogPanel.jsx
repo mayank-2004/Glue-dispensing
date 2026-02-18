@@ -66,7 +66,7 @@ export default function JogPanel({
                 <div className="jog-grid">
                     <div className="jog-cell"></div>
                     <div className="jog-cell">
-                        <button className="btn jog-btn y-plus" onClick={() => jog("Y", 1)} disabled={isBusy}>Y+</button>
+                        <button className="btn jog-btn y-plus" onClick={() => jog("Y", -1)} disabled={isBusy}>Y+</button>
                     </div>
                     <div className="jog-cell"></div>
 
@@ -87,7 +87,7 @@ export default function JogPanel({
 
                     <div className="jog-cell"></div>
                     <div className="jog-cell">
-                        <button className="btn jog-btn y-minus" onClick={() => jog("Y", -1)} disabled={isBusy}>Y-</button>
+                        <button className="btn jog-btn y-minus" onClick={() => jog("Y", 1)} disabled={isBusy}>Y-</button>
                     </div>
                     <div className="jog-cell"></div>
                 </div>

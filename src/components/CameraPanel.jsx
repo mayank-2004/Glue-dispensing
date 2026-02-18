@@ -650,7 +650,7 @@ export default function CameraPanel({
       {/* Settings Row - Nozzle & Tool Offset */}
       <div className="camera-controls-row">
         {/* Nozzle & Dispensing */}
-        <div className="box nozzle-section">
+        {/* <div className="box nozzle-section">
           <legend>Nozzle & Dispensing</legend>
           <div className="settings-grid">
             <div className="settings-field">
@@ -675,10 +675,10 @@ export default function CameraPanel({
             <button className="btn" disabled={!selectedDesign}>Test Dispense</button>
             <button className="btn secondary">Prime Nozzle</button>
           </div>
-        </div>
+        </div> */}
 
         {/* Tool Offset */}
-        <div className="box tool-offset-section">
+        {/* <div className="box tool-offset-section">
           <legend>Tool Offset</legend>
           <div className="offset-inputs">
             <div className="offset-field">
@@ -695,7 +695,7 @@ export default function CameraPanel({
           <small style={{ fontSize: '12px', color: '#6c757d' }}>
             Offsets are added to machine XY before projecting to camera. Saved in your browser.
           </small>
-        </div>
+        </div> */}
       </div>
     </div>
   );

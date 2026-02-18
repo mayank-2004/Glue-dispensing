@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { header, home, moveAbs, dispensePoint, jogRel } from "../lib/motion/gcode.js";
 import { applyTransform } from "../lib/utils/transform2d.js";
 import "./AutomatedDispensingPanel.css";
@@ -22,7 +22,6 @@ export default function AutomatedDispensingPanel({
   currentBatch,
   onStartBatch,
   onJobComplete,
-
   // Alignment Props
   fiducials = [],
   onInputMachine,
@@ -31,7 +30,9 @@ export default function AutomatedDispensingPanel({
   onSolve3,
   xf,
   applyXf,
-  isConnected = false
+  isConnected = false,
+  machinePosition = { x: 0, y: 0, z: 0 },
+  panelDimensions = null // New prop for calculated dimensions
 }) {
   const [isJobRunning, setIsJobRunning] = useState(false);
   const [jobMode, setJobMode] = useState('single'); // 'single' or 'batch'
@@ -41,11 +42,26 @@ export default function AutomatedDispensingPanel({
   const [machineStatus, setMachineStatus] = useState('idle');
   const [jobProgress, setJobProgress] = useState({ current: 0, total: 0 });
   const [regIndex, setRegIndex] = useState(0);
-  const [currentPos, setCurrentPos] = useState({ x: 0, y: 0, z: 0 });
+  // const [currentPos, setCurrentPos] = useState({ x: 0, y: 0, z: 0 }); // Replaced by prop
   const [jogStep, setJogStep] = useState(1);
 
   const refPoint = referencePoint || selectedOrigin;
   const activeSequence = useSafePathPlanning ? safeSequence : dispensingSequence;
+
+  // Render Panel Dimensions if available
+  const renderPanelDimensions = () => {
+    if (!panelDimensions) return null;
+    return (
+      <div className="info" style={{ marginBottom: 16, background: '#e3f2fd', border: '1px solid #90caf9', padding: '8px 12px', borderRadius: 4 }}>
+        <strong style={{ color: "black", display: 'block', marginBottom: 4 }}>Active Panel Dimensions</strong>
+        <div className="flex-row" style={{ justifyContent: 'space-between', color: "black", fontSize: '0.9em' }}>
+          <span>W: <strong>{panelDimensions.width.toFixed(2)}</strong></span>
+          <span>H: <strong>{panelDimensions.height.toFixed(2)}</strong></span>
+          <span>Diag: <strong>{panelDimensions.diagonal.toFixed(2)}</strong></span>
+        </div>
+      </div>
+    );
+  };
 
   // Refs for async access
   const xfRef = useRef(xf);
@@ -57,18 +73,32 @@ export default function AutomatedDispensingPanel({
   useEffect(() => { xfRef.current = xf; }, [xf]);
   useEffect(() => { fiducialsRef.current = fiducials; }, [fiducials]);
 
+  // Stabilize board dimension calculation
+  const currentBoardSize = useMemo(() => {
+    const validFids = fiducials.filter(f => f.machine && typeof f.machine.x === 'number' && typeof f.machine.y === 'number');
+    if (validFids.length >= 2) {
+      const xs = validFids.map(f => f.machine.x);
+      const ys = validFids.map(f => f.machine.y);
+      return {
+        width: Math.max(...xs) - Math.min(...xs),
+        height: Math.max(...ys) - Math.min(...ys)
+      };
+    }
+    return boardOutline;
+  }, [fiducials, boardOutline]);
+
   // Position & ACK listener
   useEffect(() => {
     const handleData = (line) => {
-      // 1. Parse Position
-      const match = line.match(/X:([-\d.]+)\s+Y:([-\d.]+)\s+Z:([-\d.]+)/);
-      if (match) {
-        setCurrentPos({
-          x: parseFloat(match[1]),
-          y: parseFloat(match[2]),
-          z: parseFloat(match[3])
-        });
-      }
+      // 1. Parse Position - HANDLED BY APP.JSX NOW
+      // const match = line.match(/X:([-\d.]+)\s+Y:([-\d.]+)\s+Z:([-\d.]+)/);
+      // if (match) {
+      //   setCurrentPos({
+      //     x: parseFloat(match[1]),
+      //     y: parseFloat(match[2]),
+      //     z: parseFloat(match[3])
+      //   });
+      // }
 
       // 2. Handle ACKs (Marlin/GRBL sends 'ok')
       // Handles standard 'ok' responses to keep sync
@@ -131,7 +161,20 @@ export default function AutomatedDispensingPanel({
   };
 
   const proceedToRegistration = async () => {
+    // Check if we already have a valid transform and machine fiducials
     const validFids = fiducialsRef.current.filter(f => f.design);
+    const machineFids = fiducialsRef.current.filter(f => f.machine && typeof f.machine.x === 'number');
+
+    // If we have a transform and at least 2 aligned fiducials
+    if (xfRef.current && machineFids.length >= 2) {
+      if (confirm("Existing alignment detected. Skip manual registration and use saved fiducials?")) {
+        console.log("Skipping registration, using existing transform:", xfRef.current);
+        setJobStage('dispensing');
+        runDispenseLoop();
+        return;
+      }
+    }
+
     if (validFids.length === 0) {
       if (!confirm("No design fiducials found. Skip registration and dispense immediately?")) {
         setJobStage('idle'); setIsJobRunning(false); return;
@@ -157,7 +200,13 @@ export default function AutomatedDispensingPanel({
     const validFids = fiducialsRef.current.filter(f => f.design);
     const fid = validFids[regIndex];
 
-    if (onInputMachine) onInputMachine(fid.id, { x: currentPos.x, y: currentPos.y });
+    console.log(`Alignment: Confirming Fiducial ${fid.id}`, {
+      design: fid.design,
+      capturedMachine: machinePosition,
+      Note: "If capturedMachine is close to (0,0), alignment will fail unless physical origin really is 0,0."
+    });
+
+    if (onInputMachine) onInputMachine(fid.id, { x: machinePosition.x, y: machinePosition.y });
 
     const nextIdx = regIndex + 1;
     if (nextIdx < validFids.length) {
@@ -191,14 +240,28 @@ export default function AutomatedDispensingPanel({
       console.log("------------------------------------------");
       console.log("STARTING JOB DISPENSE LOOP");
       console.log("Sequence Length:", seq.length);
-      console.log("First Point:", seq[0]);
+      console.log("First Point (RAW):", seq[0]);
       console.log("Is Safe Path Planning Enabled?:", useSafePathPlanning);
       console.log("Active Transform (XF):", transform);
+      console.log("Apply XF:", applyXf);
+      console.log("First Point (TRANSFORMED):", transform ? applyTransform(transform, seq[0]) : "No Transform");
+      console.log("Reference Point:", refPoint);
       console.log("Speed Settings:", speedSettings);
       console.log("Pressure Settings:", pressureSettings);
       console.log("------------------------------------------");
 
       setJobProgress({ current: 0, total: seq.length });
+
+      // Safety Check: Validate Bounds
+      console.log('Validating Machine Bounds...');
+      const firstPt = transform ? applyTransform(transform, seq[0]) : seq[0];
+      const startRef = transform ? applyTransform(transform, refPoint) : refPoint;
+
+      if (startRef.x < 0 || startRef.y < 0) {
+        if (!confirm(`WARNING: Reference Point is at negative machine coordinates (X${startRef.x.toFixed(2)}, Y${startRef.y.toFixed(2)}). Machine may crash. Continue?`)) {
+          throw new Error("Job Aborted by User (Negative Coordinates)");
+        }
+      }
 
       for (let i = 0; i < seq.length; i++) {
         if (!isJobRunning) throw new Error("Job Aborted");
@@ -297,10 +360,10 @@ export default function AutomatedDispensingPanel({
         </div>
 
         {/* Board Info */}
-        {boardOutline && (
+        {(currentBoardSize || boardOutline) && (
           <div className="box">
             <div className="grid2">
-              <span>Board: {boardOutline.width.toFixed(1)} x {boardOutline.height.toFixed(1)} mm</span>
+              <span>Board: {(currentBoardSize?.width || 0).toFixed(1)} x {(currentBoardSize?.height || 0).toFixed(1)}mm </span> <br />
               <span>Pads: {activeSequence.length}</span>
             </div>
           </div>
@@ -317,22 +380,34 @@ export default function AutomatedDispensingPanel({
               {machineStatus === 'busy' && ' (Busy)'}
             </div>
             <div className="pos-readout">
-              Pos: {currentPos.x.toFixed(3)}, {currentPos.y.toFixed(3)}, {currentPos.z.toFixed(3)}
+              Pos: {machinePosition.x.toFixed(3)}, {machinePosition.y.toFixed(3)}, {machinePosition.z.toFixed(3)}
             </div>
           </div>
 
           {/* STAGE: IDLE */}
           {jobStage === 'idle' && (
-            <div className="stage-box">
-              <button className="btn primary lg full-width"
-                onClick={startJobFlow}
-                disabled={!refPoint || !activeSequence.length || !isConnected}>
-                {isConnected ? '▶ Start Automated Job' : '⚠️ Connect Machine First'}
-              </button>
-              <button className="btn secondary full-width mt-2" onClick={handleDownloadGCode}>
-                💾 Download G-Code
-              </button>
-              {jobMode === 'batch' && <p>Batch mode not supported in new flow yet</p>}
+            <div className="section">
+              <h3>Processing Control</h3>
+
+              {renderPanelDimensions()}
+
+              <div className="row">
+                <button
+                  className={`btn ${isJobRunning ? 'danger' : 'primary'}`}
+                  onClick={isJobRunning ? () => setIsJobRunning(false) : startJobFlow}
+                  disabled={!isConnected && !isJobRunning}
+                >
+                  {isJobRunning ? '⏹ ABORT JOB' : '▶ START JOB'}
+                </button>
+
+                <button
+                  className="btn secondary"
+                  onClick={handleDownloadGCode}
+                  disabled={isJobRunning}
+                >
+                  💾 Download G-Code
+                </button>
+              </div>      {jobMode === 'batch' && <p>Batch mode not supported in new flow yet</p>}
             </div>
           )}
 
@@ -361,12 +436,12 @@ export default function AutomatedDispensingPanel({
 
               {/* Jog Controls */}
               <div className="jog-controls-mini">
-                <button onClick={() => jog('Y', 1)} className="btn">Y+</button>
+                <button onClick={() => jog('Y', -1)} className="btn">Y+</button>
                 <div className="flex-row">
                   <button onClick={() => jog('X', -1)} className="btn">X-</button>
                   <button onClick={() => jog('X', 1)} className="btn">X+</button>
                 </div>
-                <button onClick={() => jog('Y', -1)} className="btn">Y-</button>
+                <button onClick={() => jog('Y', 1)} className="btn">Y-</button>
                 <div className="flex-row mt-1">
                   <button onClick={() => jogZ(1)} className="btn sm">Z Up</button>
                   <button onClick={() => jogZ(-1)} className="btn sm">Z Down</button>

@@ -3,7 +3,6 @@ import "./Viewer.css";
 
 export default function Viewer({
   svg,
-  // mirrorBottom, // Removed
   side,
   onClickSvg,
   onMouseDown,
