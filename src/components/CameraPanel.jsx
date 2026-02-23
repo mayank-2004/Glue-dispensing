@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyTransform } from "../lib/utils/transform2d";
 import { FiducialVisionDetector } from "../lib/vision/fiducialVision.js";
+import { jogRel } from "../lib/motion/gcode";
 import "./CameraPanel.css";
 
 export default function CameraPanel({
@@ -19,12 +20,22 @@ export default function CameraPanel({
   onCaptureAlignment, // function(index: 1|2)
   alignmentInfo,      // { p1: {x,y}, p2: {x,y}, status: '...' }
   machinePosition,    // Current machine coordinates {x,y,z}
-  onUpdateFiducials   // function(newFiducials)
+  onUpdateFiducials,  // function(newFiducials)
+  activeBoardName,      // string for logging
+  panelBoards = [],
+  setPanelBoards
 }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const rafRef = useRef(0);
   const machinePositionRef = useRef(machinePosition);
+
+  // Ref to hold latest props for stale-closure avoidance in setInterval
+  const latestPropsRef = useRef({ fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards });
+  useEffect(() => {
+    latestPropsRef.current = { fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards };
+  }, [fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards]);
+
   const [streamOn, setStreamOn] = useState(false);
 
   useEffect(() => { machinePositionRef.current = machinePosition; }, [machinePosition]);
@@ -48,6 +59,9 @@ export default function CameraPanel({
   const [fiducialDetector] = useState(() => new FiducialVisionDetector());
   // const [autoDetecting, setAutoDetecting] = useState(false);
   const [detectionInterval, setDetectionInterval] = useState(null);
+
+  const [jogStep, setJogStep] = useState(1);
+  const [isBusy, setIsBusy] = useState(false);
 
   // helpers for safe formatting
   const f3 = (v) => (Number.isFinite(v) ? v.toFixed(3) : "—");
@@ -364,28 +378,80 @@ export default function CameraPanel({
       const result = await fiducialDetector.detectFiducialsInFrame(videoRef.current, fiducials, { pxPerMm });
 
       if (result.success && result.fiducials.length > 0) {
-        console.log('Auto-detected fiducials:', result.fiducials);
+        console.log('Auto-detected fiducials in frame:', result.fiducials);
         setVisionResult({
           detected: true,
           fiducials: result.fiducials,
           confidence: result.fiducials[0].confidence
-        }); // Show debug overlay
-
-        // Update fiducial positions with detected coordinates in PARENT
-        const updatedFiducials = result.fiducials.map((detected, idx) => {
-          const existing = fiducials[idx] || { id: `F${idx + 1}`, color: `#${Math.floor(Math.random() * 16777215).toString(16)}` };
-          return {
-            ...existing,
-            machine: detected.machinePosition || null, // Might be null if no H
-            pixelPosition: detected.pixelPosition,
-            confidence: detected.confidence,
-            autoDetected: true
-          };
         });
 
-        // Trigger callback to update parent state
-        if (onUpdateFiducials) {
-          onUpdateFiducials(updatedFiducials);
+        const cProps = latestPropsRef.current;
+        const pBoards = cProps.panelBoards;
+        const setPBoards = cProps.setPanelBoards;
+        const hasMultiBoards = pBoards && pBoards.length > 0 && setPBoards;
+
+        // Gather all fiducials across all boards
+        let allFids = [];
+        if (hasMultiBoards) {
+          pBoards.forEach((b, bIdx) => {
+            b.fiducials.forEach((f, fIdx) => {
+              if (f.design) allFids.push({ ...f, bIdx, fIdx, boardName: b.name });
+            });
+          });
+        }
+
+        let changedBoards = false;
+        let nextBoards = hasMultiBoards ? [...pBoards] : [];
+
+        result.fiducials.forEach(detected => {
+          if (!detected.machinePosition) return;
+
+          let closestFid = null;
+          let minDist = Infinity;
+
+          allFids.forEach(f => {
+            const dist = Math.hypot(f.design.x - detected.machinePosition.x, f.design.y - detected.machinePosition.y);
+            if (dist < minDist) {
+              minDist = dist;
+              closestFid = f;
+            }
+          });
+
+          // Match if within 20mm of a design coordinate
+          if (minDist < 20 && closestFid) {
+            const bIdx = closestFid.bIdx;
+            const fIdx = closestFid.fIdx;
+
+            const newFiducials = [...nextBoards[bIdx].fiducials];
+            newFiducials[fIdx] = {
+              ...newFiducials[fIdx],
+              machine: detected.machinePosition,
+              pixelPosition: detected.pixelPosition,
+              autoDetected: true,
+              confidence: detected.confidence
+            };
+            nextBoards[bIdx] = { ...nextBoards[bIdx], fiducials: newFiducials };
+            changedBoards = true;
+            console.log(`[Camera Match] Assigned to ${closestFid.boardName} ${closestFid.id} (Proximity: ${minDist.toFixed(1)}mm)`);
+          }
+        });
+
+        if (changedBoards && setPBoards) {
+          setPBoards(nextBoards);
+          console.log("Global Panel Arrays Updated:", nextBoards.map(b => ({ name: b.name, fiducials: b.fiducials })));
+        } else {
+          // Fallback legacy behavior if no design markers match
+          const updatedFiducials = result.fiducials.map((detected, idx) => {
+            const existing = fiducials[idx] || { id: `F${idx + 1}`, color: `#${Math.floor(Math.random() * 16777215).toString(16)}` };
+            return {
+              ...existing,
+              machine: detected.machinePosition || null,
+              pixelPosition: detected.pixelPosition,
+              confidence: detected.confidence,
+              autoDetected: true
+            };
+          });
+          if (onUpdateFiducials) onUpdateFiducials(updatedFiducials);
         }
 
         // alert(`Successfully detected ${result.fiducials.length} fiducials!`);
@@ -457,48 +523,102 @@ export default function CameraPanel({
             };
           });
 
-          // 2. Filter against already STORED fiducials (in props.fiducials)
-          // to find NEW ones.
-          const existingStored = fiducials.filter(f => f.machine);
-          const newUnique = [];
+          const cProps = latestPropsRef.current;
+          const currentFids = cProps.fiducials;
+          const updateCallback = cProps.onUpdateFiducials;
+          const boardName = cProps.activeBoardName || 'Unknown Board';
+          const pBoards = cProps.panelBoards;
+          const setPBoards = cProps.setPanelBoards;
+
+          const hasMultiBoards = pBoards && pBoards.length > 0 && setPBoards;
+
+          // Gather all defined design fiducials across all boards
+          let allFids = [];
+          if (hasMultiBoards) {
+            pBoards.forEach((b, bIdx) => {
+              b.fiducials.forEach((f, fIdx) => {
+                if (f.design) allFids.push({ ...f, bIdx, fIdx, boardName: b.name });
+              });
+            });
+          }
+
+          let changedBoards = false;
+          let nextBoards = hasMultiBoards ? [...pBoards] : [];
+          let fidsChanged = false;
+          let nextFids = [...currentFids];
 
           incomingCandidates.forEach(cand => {
-            // Check distance to any existing stored fiducial
-            const isDuplicate = existingStored.some(stored => {
-              const dist = Math.hypot(stored.machine.x - cand.estimatedWorld.x, stored.machine.y - cand.estimatedWorld.y);
-              return dist < 10; // 10mm tolerance for "same fiducial"
+            let closestFid = null;
+            let minDist = Infinity;
+
+            // Find closest matching design coordinate across all mapped boards
+            allFids.forEach(f => {
+              const dist = Math.hypot(f.design.x - cand.estimatedWorld.x, f.design.y - cand.estimatedWorld.y);
+              if (dist < minDist) {
+                minDist = dist;
+                closestFid = f;
+              }
             });
 
-            if (!isDuplicate) {
-              newUnique.push(cand);
+            // If a candidate is within 20mm of a Design fiducial, map it there!
+            if (minDist < 20 && closestFid) {
+              const bIdx = closestFid.bIdx;
+              const fIdx = closestFid.fIdx;
+
+              const existingMachine = nextBoards[bIdx].fiducials[fIdx].machine;
+              let skip = false;
+              if (existingMachine) {
+                const diff = Math.hypot(existingMachine.x - cand.estimatedWorld.x, existingMachine.y - cand.estimatedWorld.y);
+                if (diff < 0.05) skip = true; // Avoid UI jitter
+              }
+
+              if (!skip) {
+                const newFiducials = [...nextBoards[bIdx].fiducials];
+                newFiducials[fIdx] = {
+                  ...newFiducials[fIdx],
+                  machine: cand.estimatedWorld,
+                  autoDetected: true,
+                  confidence: cand.confidence
+                };
+                nextBoards[bIdx] = { ...nextBoards[bIdx], fiducials: newFiducials };
+                changedBoards = true;
+                console.log(`[Monitor Match] Snapped to ${closestFid.boardName} ${closestFid.id} (Proximity: ${minDist.toFixed(1)}mm)`);
+              }
+            } else {
+              // Fallback: Just drop into the currently active board's first empty slot (Legacy behavior)
+              const emptyIdx = nextFids.findIndex(f => !f.machine);
+              if (emptyIdx !== -1) {
+                const isDup = nextFids.some(f => f.machine && Math.hypot(f.machine.x - cand.estimatedWorld.x, f.machine.y - cand.estimatedWorld.y) < 5);
+                if (!isDup) {
+                  nextFids[emptyIdx] = {
+                    ...nextFids[emptyIdx],
+                    machine: cand.estimatedWorld,
+                    autoDetected: true,
+                    confidence: cand.confidence
+                  };
+                  fidsChanged = true;
+
+                  // Keep state in sync if multi-board is active
+                  if (hasMultiBoards) {
+                    const activeBIdx = pBoards.findIndex(b => b.name === boardName);
+                    if (activeBIdx !== -1) {
+                      const syncedFids = [...nextBoards[activeBIdx].fiducials];
+                      syncedFids[emptyIdx] = nextFids[emptyIdx];
+                      nextBoards[activeBIdx] = { ...nextBoards[activeBIdx], fiducials: syncedFids };
+                      changedBoards = true;
+                    }
+                  }
+                }
+              }
             }
           });
 
-          // 3. Store valid new unique fiducials into next empty slots
-          let updatedList = [...fiducials];
-          let changed = false;
-
-          newUnique.forEach(cand => {
-            // Find first empty slot (no machine pos)
-            const emptyIdx = updatedList.findIndex(f => !f.machine);
-            if (emptyIdx !== -1) {
-              // Fill it
-              updatedList[emptyIdx] = {
-                ...updatedList[emptyIdx],
-                machine: cand.estimatedWorld,
-                autoDetected: true,
-                confidence: cand.confidence
-              };
-              changed = true;
-              // Add to existingStored locally so we don't add same one to multiple slots in one loop
-              existingStored.push({ machine: cand.estimatedWorld });
-            }
-          });
-
-
-          if (changed && onUpdateFiducials) {
-            console.log("Accumulated new fiducials:", updatedList);
-            onUpdateFiducials(updatedList);
+          if (changedBoards && setPBoards) {
+            console.log("Global Panel State Updated:", nextBoards.map(b => ({ name: b.name, fiducials: b.fiducials })));
+            setPBoards(nextBoards);
+          } else if (fidsChanged && updateCallback) {
+            console.log(`[${boardName}] Fallback Local Update:`, nextFids);
+            updateCallback(nextFids);
           }
 
           // Visual Feedback: Show current frame results
@@ -549,6 +669,37 @@ export default function CameraPanel({
     if (!Hm) return alert("Need at least 4 valid pairs to solve.");
     setH(Hm);
   }
+
+  const jog = async (axis, dir) => {
+    if (isBusy) return;
+    setIsBusy(true);
+    try {
+      const dist = dir * jogStep;
+      const cmds = jogRel(axis === 'X' ? { dx: dist, feed: 2000 } : { dy: dist, feed: 2000 });
+      if (window.serial && window.serial.writeLine) {
+        for (const line of cmds) await window.serial.writeLine(line);
+      }
+    } catch (e) {
+      console.error("Jog failed", e);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const jogZ = async (dir) => {
+    if (isBusy) return;
+    setIsBusy(true);
+    try {
+      const cmds = jogRel({ dz: dir * 0.5, feed: 500 });
+      if (window.serial && window.serial.writeLine) {
+        for (const line of cmds) await window.serial.writeLine(line);
+      }
+    } catch (e) {
+      console.error("Jog Z failed", e);
+    } finally {
+      setIsBusy(false);
+    }
+  };
 
   return (
     <div className="panel camera-panel">
@@ -635,20 +786,41 @@ export default function CameraPanel({
           <input type="checkbox" checked={measureMode} onChange={e => setMeasureMode(e.target.checked)} />
           Measure error
         </label>
-        {/* {visionEnabled && (
-          <button className="btn sm" onClick={detectPadAtPosition} disabled={!selectedDesign || autoDetecting}>
-            {autoDetecting ? 'Detecting...' : 'Detect Pad'}
-          </button>
-        )}
-        {qualityEnabled && (
-          <button className="btn sm" onClick={analyzeQuality} disabled={!selectedDesign}>
-            Analyze Quality
-          </button>
-        )} */}
+      </div>
+
+      <div className="camera-controls-row" style={{ marginTop: 12 }}>
+        <div className="box jog-section" style={{ flex: 1, padding: 12, background: '#1c1c1c', borderRadius: 8 }}>
+          <legend style={{ color: '#007bff', fontWeight: 'bold', marginBottom: 8 }}>Mini Jog Controls</legend>
+          <div className="flex-row" style={{ gap: 16, alignItems: 'center', justifyContent: 'center' }}>
+            <div className="jog-controls-mini" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 40px)', gridTemplateRows: 'repeat(3, 40px)', gap: 4, textAlign: 'center' }}>
+              <div></div>
+              <button onClick={() => jog('Y', -1)} disabled={isBusy} className="btn" style={{ padding: 0, width: '100%', height: '100%' }}>Y+</button>
+              <div></div>
+              <button onClick={() => jog('X', -1)} disabled={isBusy} className="btn" style={{ padding: 0, width: '100%', height: '100%' }}>X-</button>
+              <button disabled className="btn secondary" style={{ opacity: 0.5, padding: 0, width: '100%', height: '100%' }}>{"\u25ef"}</button>
+              <button onClick={() => jog('X', 1)} disabled={isBusy} className="btn" style={{ padding: 0, width: '100%', height: '100%' }}>X+</button>
+              <div></div>
+              <button onClick={() => jog('Y', 1)} disabled={isBusy} className="btn" style={{ padding: 0, width: '100%', height: '100%' }}>Y-</button>
+              <div></div>
+            </div>
+            <div className="flex-col" style={{ gap: 4 }}>
+              <button onClick={() => jogZ(1)} disabled={isBusy} className="btn sm" style={{ height: 40, width: 50 }}>Z Up</button>
+              <button onClick={() => jogZ(-1)} disabled={isBusy} className="btn sm" style={{ height: 40, width: 50 }}>Z Down</button>
+            </div>
+            <div className="flex-col" style={{ gap: 8, marginLeft: 16 }}>
+              <small>Step (mm):</small>
+              <div className="flex-row" style={{ gap: 4 }}>
+                {[0.1, 1, 5, 10].map(s => (
+                  <button key={s} onClick={() => setJogStep(s)} className={`btn sm ${jogStep === s ? 'primary' : 'secondary'} `}>{s}</button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Settings Row - Nozzle & Tool Offset */}
-      <div className="camera-controls-row">
+      <div className="camera-controls-row" style={{ marginTop: 12 }}>
         {/* Nozzle & Dispensing */}
         {/* <div className="box nozzle-section">
           <legend>Nozzle & Dispensing</legend>

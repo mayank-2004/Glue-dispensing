@@ -5,7 +5,8 @@ export default function SerialPanel({
   onMachinePositionUpdate = null,
   isConnected = false,
   onConnect,
-  onDisconnect
+  onDisconnect,
+  machinePosition = { x: 0, y: 0, z: 0 } // Default for safety
 }) {
   const [ports, setPorts] = useState([]);
   const [path, setPath] = useState('');
@@ -118,10 +119,28 @@ export default function SerialPanel({
 
   return (
     <div className="panel serial-panel">
-      <h3>
-        Machine Connectivity
-        {isConnected && <span style={{ fontSize: '0.6em', background: '#28a745', color: 'white', padding: '2px 6px', borderRadius: 4, marginLeft: 8, verticalAlign: 'middle' }}>CONNECTED</span>}
-      </h3>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h3>
+          Machine Connectivity
+          {isConnected && <span style={{ fontSize: '0.6em', background: '#28a745', color: 'white', padding: '2px 6px', borderRadius: 4, marginLeft: 8, verticalAlign: 'middle' }}>CONNECTED</span>}
+        </h3>
+
+        {/* Machine Position Display */}
+        <div style={{
+          background: '#222',
+          color: '#0f0',
+          fontFamily: 'monospace',
+          padding: '4px 8px',
+          borderRadius: 4,
+          fontSize: '0.9em',
+          display: 'flex',
+          gap: '12px'
+        }}>
+          <span>X: {machinePosition.x.toFixed(2)}</span>
+          <span>Y: {machinePosition.y.toFixed(2)}</span>
+          <span>Z: {machinePosition.z.toFixed(2)}</span>
+        </div>
+      </div>
 
       <div className="flex-row">
         <button className="btn secondary" onClick={refresh}>Refresh</button>

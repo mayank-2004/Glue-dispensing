@@ -31,8 +31,7 @@ export default function AutomatedDispensingPanel({
   xf,
   applyXf,
   isConnected = false,
-  machinePosition = { x: 0, y: 0, z: 0 },
-  panelDimensions = null // New prop for calculated dimensions
+  machinePosition = { x: 0, y: 0, z: 0 }
 }) {
   const [isJobRunning, setIsJobRunning] = useState(false);
   const [jobMode, setJobMode] = useState('single'); // 'single' or 'batch'
@@ -48,20 +47,7 @@ export default function AutomatedDispensingPanel({
   const refPoint = referencePoint || selectedOrigin;
   const activeSequence = useSafePathPlanning ? safeSequence : dispensingSequence;
 
-  // Render Panel Dimensions if available
-  const renderPanelDimensions = () => {
-    if (!panelDimensions) return null;
-    return (
-      <div className="info" style={{ marginBottom: 16, background: '#e3f2fd', border: '1px solid #90caf9', padding: '8px 12px', borderRadius: 4 }}>
-        <strong style={{ color: "black", display: 'block', marginBottom: 4 }}>Active Panel Dimensions</strong>
-        <div className="flex-row" style={{ justifyContent: 'space-between', color: "black", fontSize: '0.9em' }}>
-          <span>W: <strong>{panelDimensions.width.toFixed(2)}</strong></span>
-          <span>H: <strong>{panelDimensions.height.toFixed(2)}</strong></span>
-          <span>Diag: <strong>{panelDimensions.diagonal.toFixed(2)}</strong></span>
-        </div>
-      </div>
-    );
-  };
+
 
   // Refs for async access
   const xfRef = useRef(xf);
@@ -161,135 +147,75 @@ export default function AutomatedDispensingPanel({
   };
 
   const proceedToRegistration = async () => {
-    // Check if we already have a valid transform and machine fiducials
-    const validFids = fiducialsRef.current.filter(f => f.design);
-    const machineFids = fiducialsRef.current.filter(f => f.machine && typeof f.machine.x === 'number');
-
-    // If we have a transform and at least 2 aligned fiducials
-    if (xfRef.current && machineFids.length >= 2) {
-      if (confirm("Existing alignment detected. Skip manual registration and use saved fiducials?")) {
-        console.log("Skipping registration, using existing transform:", xfRef.current);
-        setJobStage('dispensing');
-        runDispenseLoop();
-        return;
-      }
-    }
-
-    if (validFids.length === 0) {
-      if (!confirm("No design fiducials found. Skip registration and dispense immediately?")) {
-        setJobStage('idle'); setIsJobRunning(false); return;
-      }
-      setJobStage('dispensing');
-      runDispenseLoop();
-      return;
-    }
-    setRegIndex(0);
-    setJobStage('registering');
-    moveToFiducial(validFids[0]);
-  };
-
-  const moveToFiducial = async (fid) => {
-    await sendGcodeWait('G90');
-    await sendGcodeWait('G1 Z5 F1000');
-    await sendGcodeWait(`G1 X${fid.design.x.toFixed(3)} Y${fid.design.y.toFixed(3)} F3000`);
-    await sendGcodeWait('G1 Z1 F1000');
-    await sendGcodeWait('M400'); // Ensure stop
-  };
-
-  const confirmFiducial = async () => {
-    const validFids = fiducialsRef.current.filter(f => f.design);
-    const fid = validFids[regIndex];
-
-    console.log(`Alignment: Confirming Fiducial ${fid.id}`, {
-      design: fid.design,
-      capturedMachine: machinePosition,
-      Note: "If capturedMachine is close to (0,0), alignment will fail unless physical origin really is 0,0."
-    });
-
-    if (onInputMachine) onInputMachine(fid.id, { x: machinePosition.x, y: machinePosition.y });
-
-    const nextIdx = regIndex + 1;
-    if (nextIdx < validFids.length) {
-      setRegIndex(nextIdx);
-      moveToFiducial(validFids[nextIdx]);
-    } else {
-      if (validFids.length >= 2 && onSolve2) {
-        if (validFids.length >= 3 && onSolve3) onSolve3(); else onSolve2();
-        setTimeout(() => {
-          setJobStage('dispensing');
-          runDispenseLoop();
-        }, 500);
-      } else {
-        setJobStage('dispensing');
-        runDispenseLoop();
-      }
-    }
+    // With multi-board support, alignment is now handled upfront in FiducialPanel/CameraPanel.
+    // Proceed directly to dispensing loop.
+    setJobStage('dispensing');
+    runDispenseLoop();
   };
 
   const runDispenseLoop = async () => {
     setMachineStatus('busy');
     try {
-      const transform = (applyXf && xfRef.current) ? xfRef.current : null;
-      console.log("Starting dispense. XF:", transform);
+      if (!panelBoards || panelBoards.length === 0) {
+        throw new Error("No boards defined in panel configuration.");
+      }
 
       await sendGcodeWait('G21');
       await sendGcodeWait('G90');
       await sendGcodeWait('G1 Z6 F3000');
 
       const seq = activeSequence;
-      console.log("------------------------------------------");
-      console.log("STARTING JOB DISPENSE LOOP");
-      console.log("Sequence Length:", seq.length);
-      console.log("First Point (RAW):", seq[0]);
-      console.log("Is Safe Path Planning Enabled?:", useSafePathPlanning);
-      console.log("Active Transform (XF):", transform);
-      console.log("Apply XF:", applyXf);
-      console.log("First Point (TRANSFORMED):", transform ? applyTransform(transform, seq[0]) : "No Transform");
-      console.log("Reference Point:", refPoint);
-      console.log("Speed Settings:", speedSettings);
-      console.log("Pressure Settings:", pressureSettings);
-      console.log("------------------------------------------");
+      const totalPoints = seq.length * panelBoards.length;
+      let globalPointCount = 0;
 
-      setJobProgress({ current: 0, total: seq.length });
+      setJobProgress({ current: 0, total: totalPoints });
 
-      // Safety Check: Validate Bounds
-      console.log('Validating Machine Bounds...');
-      const firstPt = transform ? applyTransform(transform, seq[0]) : seq[0];
-      const startRef = transform ? applyTransform(transform, refPoint) : refPoint;
+      for (let bIdx = 0; bIdx < panelBoards.length; bIdx++) {
+        const board = panelBoards[bIdx];
+        const transform = applyXf ? board.xf : null;
 
-      if (startRef.x < 0 || startRef.y < 0) {
-        if (!confirm(`WARNING: Reference Point is at negative machine coordinates (X${startRef.x.toFixed(2)}, Y${startRef.y.toFixed(2)}). Machine may crash. Continue?`)) {
-          throw new Error("Job Aborted by User (Negative Coordinates)");
-        }
-      }
-
-      for (let i = 0; i < seq.length; i++) {
-        if (!isJobRunning) throw new Error("Job Aborted");
-
-        setJobProgress({ current: i + 1, total: seq.length });
-        let p = seq[i];
-
-        if (transform) {
-          const tp = applyTransform(transform, p);
-          p = { ...p, x: tp.x, y: tp.y };
+        if (applyXf && !transform) {
+          throw new Error(`Board "${board.name}" has no alignment transform (xf) calculated! Please solve its fiducials first.`);
         }
 
-        const pressure = pressureSettings.customPressure || 25;
-        const dwell = pressureSettings.customDwellTime || 120;
+        console.log(`--- DISPENSING ${board.name.toUpperCase()} ---`);
+        console.log("Active Transform (XF):", transform);
 
-        const cmds = dispensePoint({
-          x: p.x, y: p.y,
-          zWork: 0.1, zSafe: 6,
-          feedXY: speedSettings.travelSpeed || 6000,
-          feedZ: speedSettings.dispenseSpeed || 300,
-          pressure: pressure,
-          dwellMs: dwell
-        });
+        // Safety Check per board
+        const startRef = transform ? applyTransform(transform, refPoint || { x: 0, y: 0 }) : (refPoint || { x: 0, y: 0 });
+        if (startRef.x < 0 || startRef.y < 0) {
+          if (!confirm(`WARNING: ${board.name} evaluates to negative machine coords (X${startRef.x.toFixed(2)}, Y${startRef.y.toFixed(2)}). Continue?`)) {
+            throw new Error(`Job Aborted by User on ${board.name}`);
+          }
+        }
 
-        console.log(`Point ${i + 1} Commands:`, cmds);
-        for (const c of cmds) {
-          console.log(`Sending from loop: ${c}`);
-          await sendGcodeWait(c);
+        for (let i = 0; i < seq.length; i++) {
+          if (!isJobRunning) throw new Error("Job Aborted");
+
+          globalPointCount++;
+          setJobProgress({ current: globalPointCount, total: totalPoints });
+
+          let p = seq[i];
+          if (transform) {
+            const tp = applyTransform(transform, p);
+            p = { ...p, x: tp.x, y: tp.y };
+          }
+
+          const pressure = pressureSettings.customPressure || 25;
+          const dwell = pressureSettings.customDwellTime || 120;
+
+          const cmds = dispensePoint({
+            x: p.x, y: p.y,
+            zWork: 0.1, zSafe: 6,
+            feedXY: speedSettings.travelSpeed || 6000,
+            feedZ: speedSettings.dispenseSpeed || 300,
+            pressure: pressure,
+            dwellMs: dwell
+          });
+
+          for (const c of cmds) {
+            await sendGcodeWait(c);
+          }
         }
       }
 
@@ -389,8 +315,6 @@ export default function AutomatedDispensingPanel({
             <div className="section">
               <h3>Processing Control</h3>
 
-              {renderPanelDimensions()}
-
               <div className="row">
                 <button
                   className={`btn ${isJobRunning ? 'danger' : 'primary'}`}
@@ -449,7 +373,7 @@ export default function AutomatedDispensingPanel({
               </div>
               <div className="step-sel">
                 Step:
-                {[0.1, 1, 5].map(s => (
+                {[0.1, 1, 5, 10].map(s => (
                   <button key={s} onClick={() => setJogStep(s)} className={`btn sm ${jogStep === s ? 'primary' : 'secondary'}`}>{s}</button>
                 ))}
               </div>

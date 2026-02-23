@@ -4,28 +4,30 @@ const IN2MM = 25.4;
  * Detect potential origin points in PCB from Gerber layers
  */
 export function detectPcbOrigins(layers) {
-  // Only find bottom-left corner from board outline
-  const outlineOrigins = findOutlineOrigins(layers);
-  
-  // Filter to only bottom-left corner with 90% confidence
-  const bottomLeftOrigin = outlineOrigins.find(o => o.subtype === 'bottom_left');
-  
-  return bottomLeftOrigin ? [bottomLeftOrigin] : [];
+  // Always return the True Gerber Origin at (0,0) as the primary origin
+  return [{
+    x: 0,
+    y: 0,
+    type: 'true_gerber_origin',
+    subtype: 'center',
+    confidence: 1.0,
+    description: 'True Gerber Origin (0,0)'
+  }];
 }
 
 /**
  * Find origins from board outline
  */
 function findOutlineOrigins(layers) {
-  const outlineLayers = layers.filter(l => 
-    l.type === 'outline' || 
+  const outlineLayers = layers.filter(l =>
+    l.type === 'outline' ||
     l.filename.toLowerCase().includes('outline') ||
     l.filename.toLowerCase().includes('edge') ||
     l.filename.toLowerCase().includes('gm1')
   );
-  
+
   const origins = [];
-  
+
   for (const layer of outlineLayers) {
     const bounds = extractBounds(layer.text);
     if (bounds) {
@@ -41,7 +43,7 @@ function findOutlineOrigins(layers) {
       });
     }
   }
-  
+
   return origins;
 }
 
@@ -54,20 +56,20 @@ function extractBounds(gerberText) {
   try {
     const coords = extractCoordinates(gerberText);
     if (coords.length === 0) return null;
-    
+
     const xs = coords.map(c => c.x);
     const ys = coords.map(c => c.y);
-    
+
     const bounds = {
       minX: Math.min(...xs),
       maxX: Math.max(...xs),
       minY: Math.min(...ys),
       maxY: Math.max(...ys)
     };
-    
+
     console.log('Origin detection - extracted bounds:', bounds, 'from', coords.length, 'coordinates');
     console.log('Origin will be set to:', { x: bounds.minX, y: bounds.minY });
-    
+
     return bounds;
   } catch (error) {
     console.warn('Error extracting bounds:', error);
@@ -90,7 +92,7 @@ function extractCoordinates(gerberText) {
     const mo = block.match(/%MO(IN|MM)\*%/i);
     if (mo) units = mo[1].toLowerCase() === 'in' ? 'in' : 'mm';
     const fs = block.match(/%FS([LT])([AI])X(\d)(\d)Y(\d)(\d)\*%/i);
-    if (fs) { zeroSupp = fs[1].toUpperCase(); xInt=+fs[3]; xDec=+fs[4]; yInt=+fs[5]; yDec=+fs[6]; }
+    if (fs) { zeroSupp = fs[1].toUpperCase(); xInt = +fs[3]; xDec = +fs[4]; yInt = +fs[5]; yDec = +fs[6]; }
   }
 
   const opsText = gerberText.replace(/%[^%]*%/g, '');
@@ -103,7 +105,7 @@ function extractCoordinates(gerberText) {
     if (val.startsWith('-')) { sign = -1; val = val.slice(1); }
     const total = i + d;
     let s = z === 'L' ? val.padStart(total, '0') : val.padEnd(total, '0');
-    return sign * parseFloat(`${s.slice(0,i)}.${s.slice(i)}`);
+    return sign * parseFloat(`${s.slice(0, i)}.${s.slice(i)}`);
   };
 
   const parseXY = (t, last) => {
@@ -142,18 +144,18 @@ function extractCoordinates(gerberText) {
 function extractDrillHoles(drillText) {
   const holes = [];
   const lines = drillText.split('\n');
-  
+
   let currentTool = null;
   let units = 'mm';
   const tools = new Map();
-  
+
   for (const line of lines) {
     const trimmed = line.trim();
-    
+
     // Units
     if (trimmed === 'INCH') units = 'in';
     if (trimmed === 'METRIC') units = 'mm';
-    
+
     // Tool definition
     const toolDef = trimmed.match(/T(\d+)C([0-9.]+)/);
     if (toolDef) {
@@ -162,24 +164,24 @@ function extractDrillHoles(drillText) {
       if (units === 'in') diameter *= IN2MM;
       tools.set(toolNum, diameter);
     }
-    
+
     // Tool selection
     const toolSelect = trimmed.match(/T(\d+)/);
     if (toolSelect && !trimmed.includes('C')) {
       currentTool = parseInt(toolSelect[1]);
     }
-    
+
     // Coordinates
     const coords = trimmed.match(/X([+\-]?[0-9.]+)Y([+\-]?[0-9.]+)/);
     if (coords && currentTool && tools.has(currentTool)) {
       let x = parseFloat(coords[1]);
       let y = parseFloat(coords[2]);
-      
+
       if (units === 'in') {
         x *= IN2MM;
         y *= IN2MM;
       }
-      
+
       holes.push({
         x,
         y,
@@ -188,7 +190,7 @@ function extractDrillHoles(drillText) {
       });
     }
   }
-  
+
   return holes;
 }
 
@@ -208,10 +210,10 @@ function extractPadsFromLayer(gerberText) {
       const mo = block.match(/%MO(IN|MM)\*%/i);
       if (mo) units = mo[1].toLowerCase() === 'in' ? 'in' : 'mm';
       const fs = block.match(/%FS([LT])([AI])X(\d)(\d)Y(\d)(\d)\*%/i);
-      if (fs) { 
-        zeroSupp = fs[1].toUpperCase(); 
-        xInt = +fs[3]; xDec = +fs[4]; 
-        yInt = +fs[5]; yDec = +fs[6]; 
+      if (fs) {
+        zeroSupp = fs[1].toUpperCase();
+        xInt = +fs[3]; xDec = +fs[4];
+        yInt = +fs[5]; yDec = +fs[6];
       }
     }
 
@@ -225,7 +227,7 @@ function extractPadsFromLayer(gerberText) {
       if (val.startsWith('-')) { sign = -1; val = val.slice(1); }
       const total = i + d;
       let s = z === 'L' ? val.padStart(total, '0') : val.padEnd(total, '0');
-      return sign * parseFloat(`${s.slice(0,i)}.${s.slice(i)}`);
+      return sign * parseFloat(`${s.slice(0, i)}.${s.slice(i)}`);
     };
 
     const pads = [];
@@ -240,11 +242,11 @@ function extractPadsFromLayer(gerberText) {
 
       if (/[XY]/i.test(t)) {
         const m = {};
-        t.replace(/([XY])([+\-]?\d+(?:\.\d+)?)?/gi, (_, k, v) => { 
-          m[k.toUpperCase()] = v || ''; 
-          return ''; 
+        t.replace(/([XY])([+\-]?\d+(?:\.\d+)?)?/gi, (_, k, v) => {
+          m[k.toUpperCase()] = v || '';
+          return '';
         });
-        
+
         if (m.X !== undefined) curX = parseCoord(m.X, xInt, xDec);
         if (m.Y !== undefined) curY = parseCoord(m.Y, yInt, yDec);
 
@@ -268,10 +270,10 @@ function extractPadsFromLayer(gerberText) {
  */
 function calculatePadBounds(pads) {
   if (pads.length === 0) return null;
-  
+
   const xs = pads.map(p => p.x);
   const ys = pads.map(p => p.y);
-  
+
   return {
     minX: Math.min(...xs),
     maxX: Math.max(...xs),

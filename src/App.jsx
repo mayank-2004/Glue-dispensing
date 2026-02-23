@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo, useRef } from "react";
+﻿import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import JSZip from "jszip";
 import "./App.css";
 
@@ -167,20 +167,65 @@ export default function App() {
 
   const [fidPickMode, setFidPickMode] = useState(false);
   const [fidActiveId, setFidActiveId] = useState(null);
-  const [fiducials, setFiducials] = useState([
-    { id: "F1", design: null, machine: null, color: "#2ea8ff" },
-    { id: "F2", design: null, machine: null, color: "#8e2bff" },
-    { id: "F3", design: null, machine: null, color: "#00c49a" },
+  const [panelBoards, setPanelBoards] = useState([
+    {
+      id: 1,
+      name: 'Board 1',
+      fiducials: [
+        { id: "F1", design: null, machine: null, color: "#2ea8ff" },
+        { id: "F2", design: null, machine: null, color: "#8e2bff" },
+        { id: "F3", design: null, machine: null, color: "#00c49a" },
+      ],
+      xf: null
+    }
   ]);
+  const [activeBoardIndexState, _setActiveBoardIndex] = useState(0);
+  const activeBoardIndexRef = useRef(0);
+  const setActiveBoardIndex = useCallback((idx) => {
+    activeBoardIndexRef.current = idx;
+    _setActiveBoardIndex(idx);
+  }, []);
+
+  const fiducials = panelBoards[activeBoardIndexState]?.fiducials || [];
+  const setFiducials = useCallback((updater) => {
+    setPanelBoards(prev => {
+      const idx = activeBoardIndexRef.current;
+      const newBoards = [...prev];
+      const activeBoard = { ...newBoards[idx] };
+      activeBoard.fiducials = typeof updater === 'function' ? updater(activeBoard.fiducials) : updater;
+      newBoards[idx] = activeBoard;
+      return newBoards;
+    });
+  }, []);
   const [fiducialDetectionResult, setFiducialDetectionResult] = useState(null);
   const [originCandidates, setOriginCandidates] = useState([]);
   const [selectedOrigin, setSelectedOrigin] = useState(null);
+  const [pcbOriginOffset, setPcbOriginOffset] = useState({ x: 0, y: 0 }); // Relative offset from detected origin
+
+  // Effective Origin = Raw Origin + User Manual Offset
+  const effectiveOrigin = useMemo(() => {
+    if (!selectedOrigin) return null;
+    return {
+      ...selectedOrigin,
+      x: selectedOrigin.x + (pcbOriginOffset?.x || 0),
+      y: selectedOrigin.y + (pcbOriginOffset?.y || 0)
+    };
+  }, [selectedOrigin, pcbOriginOffset]);
+
   const [referencePoint, setReferencePoint] = useState(null);
   const [referenceType, setReferenceType] = useState('origin');
-  const [xf, setXf] = useState(null);
+
+  const xf = panelBoards[activeBoardIndexState]?.xf || null;
+  const setXf = useCallback((newXf) => {
+    setPanelBoards(prev => {
+      const idx = activeBoardIndexRef.current;
+      const newBoards = [...prev];
+      newBoards[idx] = { ...newBoards[idx], xf: typeof newXf === 'function' ? newXf(newBoards[idx].xf) : newXf };
+      return newBoards;
+    });
+  }, []);
 
   const [applyXf, setApplyXf] = useState(false);
-  const [boardType, setBoardType] = useState('single'); // 'single' or 'panel'
   const [activeComponent, setActiveComponent] = useState('SerialPanel')
 
   // New feature states
@@ -480,14 +525,6 @@ export default function App() {
     }
   });
 
-  const [pcbOriginOffset, setPcbOriginOffset] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem("pcbOriginOffset") || '{"x": 0, "y": 0');
-    } catch (error) {
-      return { x: 0, y: 0 };
-    }
-  });
-
   useEffect(() => {
     localStorage.setItem("toolOffset", JSON.stringify(toolOffset));
   }, [toolOffset]);
@@ -636,37 +673,6 @@ export default function App() {
     }
 
     if (detectedFiducials.length > 0) {
-      // For Panel mode, prioritize fiducials that span the largest area (corners)
-      if (boardType === 'panel' && detectedFiducials.length > 3) {
-        // Find the set of 3 fiducials that maximizes the triangle area
-        let bestSet = detectedFiducials.slice(0, 3);
-        let maxArea = 0;
-
-        // Simple brute force for small N (N usually <= 6)
-        const N = Math.min(detectedFiducials.length, 6);
-        for (let i = 0; i < N; i++) {
-          for (let j = i + 1; j < N; j++) {
-            for (let k = j + 1; k < N; k++) {
-              const p1 = detectedFiducials[i];
-              const p2 = detectedFiducials[j];
-              const p3 = detectedFiducials[k];
-              // Triangle area formula: 0.5 * |x1(y2-y3) + x2(y3-y1) + x3(y1-y2)|
-              const area = 0.5 * Math.abs(p1.x * (p2.y - p3.y) + p2.x * (p3.y - p1.y) + p3.x * (p1.y - p2.y));
-
-              // Also consider confidence score
-              const score = area * (p1.confidence + p2.confidence + p3.confidence);
-
-              if (score > maxArea) {
-                maxArea = score;
-                bestSet = [p1, p2, p3];
-              }
-            }
-          }
-        }
-
-        detectedFiducials = bestSet; // Override for auto-population
-      }
-
       // Auto-populate fiducials with detected positions
       const colors = ["#2ea8ff", "#8e2bff", "#00c49a", "#ff6b35", "#9c27b0", "#4caf50"];
       const autoFiducials = detectedFiducials.slice(0, 3).map((fid, idx) => ({
@@ -1280,28 +1286,31 @@ export default function App() {
     }
 
     const gf = ensureGroup("overlay-fids");
-    fiducials.forEach(f => {
-      if (!f.design) return;
-      // Skip duplicate drawing if this fiducial is the active reference
-      if (activeRef && f.id === activeRef.id) return;
+    panelBoards.forEach((board, bIdx) => {
+      const isBoardActive = bIdx === activeBoardIndexState;
+      board.fiducials.forEach(f => {
+        if (!f.design) return;
+        // Skip duplicate drawing if this fiducial is the active reference
+        if (activeRef && f.id === activeRef.id && isBoardActive) return;
 
-      const u = mmToCurrentUnits(f.design);
-      if (u.x >= geom.minX && u.x <= (geom.minX + geom.vbW) &&
-        u.y >= geom.minY && u.y <= (geom.minY + geom.vbH)) {
-        drawCircle(gf, u.x, u.y, u.r, hexToRgba(f.color, 0.20), f.color);
-        drawText(gf, u.x + u.r * 1.2, u.y - u.r * 0.8, f.id, u.r * 1.1, f.color);
-      }
+        const u = mmToCurrentUnits(f.design);
+        if (u.x >= geom.minX && u.x <= (geom.minX + geom.vbW) &&
+          u.y >= geom.minY && u.y <= (geom.minY + geom.vbH)) {
+
+          const opacity = isBoardActive ? 0.20 : 0.05;
+          const label = isBoardActive ? f.id : `${board.name} ${f.id}`;
+
+          drawCircle(gf, u.x, u.y, u.r, hexToRgba(f.color, opacity), f.color);
+          drawText(gf, u.x + u.r * 1.2, u.y - u.r * 0.8, label, u.r * (isBoardActive ? 1.1 : 0.8), f.color);
+        }
+      });
     });
 
-    // Draw selected origin point - ONLY if no specific reference point is set
-    // Redundant block: Active reference logic above already handles origin drawing
-    /* if (selectedOrigin && !referencePoint) {
-      console.log('Drawing origin overlay:', selectedOrigin);
+    // Draw True Gerber Origin
+    if (selectedOrigin) {
       const go = ensureGroup("overlay-origin");
       const uo = mmToCurrentUnits({ x: selectedOrigin.x, y: selectedOrigin.y });
-      console.log('Origin units:', uo, 'geom:', geom);
 
-      // Always draw origin, ignore bounds check for debugging
       const size = uo.r * 1.5;
       const cross1 = document.createElementNS(NS, "line");
       cross1.setAttribute("x1", uo.x - size); cross1.setAttribute("y1", uo.y);
@@ -1316,11 +1325,10 @@ export default function App() {
       go.appendChild(cross2);
 
       drawCircle(go, uo.x, uo.y, uo.r * 0.8, "rgba(255,69,0,0.15)", "#ff4500");
-      drawText(go, uo.x + uo.r * 1.8, uo.y - uo.r * 0.8, "TOP-LEFT", uo.r * 1.0, "#ff4500");
-      console.log('Origin marker drawn at:', uo.x, uo.y);
+      drawText(go, uo.x + uo.r * 1.8, uo.y - uo.r * 0.8, "ORIGIN (0,0)", uo.r * 1.0, "#ff4500");
     } else {
-      console.log('No selectedOrigin to draw');
-    } */
+      ensureGroup("overlay-origin");
+    }
 
     if (xf) {
       const grect = ensureGroup("overlay-ghost");
@@ -1759,40 +1767,6 @@ export default function App() {
     setFiducialDetectionResult(detectedFiducials);
 
     if (detectedFiducials.length > 0) {
-      // For Panel mode, prioritize fiducials that span the largest area (corners)
-      if (boardType === 'panel' && detectedFiducials.length > 3) {
-        // Find the set of 3 fiducials that maximizes the triangle area
-        let bestSet = detectedFiducials.slice(0, 3);
-        let maxArea = 0;
-
-        // Simple brute force for small N (N usually <= 6)
-        const N = Math.min(detectedFiducials.length, 6);
-        for (let i = 0; i < N; i++) {
-          for (let j = i + 1; j < N; j++) {
-            for (let k = j + 1; k < N; k++) {
-              const p1 = detectedFiducials[i];
-              const p2 = detectedFiducials[j];
-              const p3 = detectedFiducials[k];
-              // Triangle area formula: 0.5 * |x1(y2-y3) + x2(y3-y1) + x3(y1-y2)|
-              const area = 0.5 * Math.abs(p1.x * (p2.y - p3.y) + p2.x * (p3.y - p1.y) + p3.x * (p1.y - p2.y));
-
-              // Also consider confidence score
-              const score = area * (p1.confidence + p2.confidence + p3.confidence);
-
-              if (score > maxArea) {
-                maxArea = score;
-                bestSet = [p1, p2, p3];
-              }
-            }
-          }
-        }
-
-        // Use the best spread set for panel alignment
-        // But we still want to keep the original ordering/IDs if possible? 
-        // No, IDs are generated. Let's just use the best set.
-        detectedFiducials = bestSet; // Override for auto-population
-      }
-
       // Auto-populate fiducials with detected positions
       const colors = ["#2ea8ff", "#8e2bff", "#00c49a", "#ff6b35", "#9c27b0", "#4caf50"];
       const autoFiducials = detectedFiducials.slice(0, 3).map((fid, idx) => ({
@@ -1942,23 +1916,6 @@ export default function App() {
             className="d-none"
           />
 
-          <div className="control-group" style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-color)', marginBottom: 12 }}>
-            <label style={{ display: 'block', marginBottom: 8, color: 'var(--text-secondary)', fontSize: '0.9em', fontWeight: 600 }}>Board Layout Type</label>
-            <div className="flex-row" style={{ gap: 8 }}>
-              <label className={`btn sm ${boardType === 'single' ? 'primary' : 'secondary'}`} style={{ flex: 1, textAlign: 'center', cursor: 'pointer' }}>
-                <input type="radio" name="boardType" checked={boardType === 'single'} onChange={() => setBoardType('single')} style={{ display: 'none' }} />
-                Single PCB
-              </label>
-              <label className={`btn sm ${boardType === 'panel' ? 'primary' : 'secondary'}`} style={{ flex: 1, textAlign: 'center', cursor: 'pointer' }}>
-                <input type="radio" name="boardType" checked={boardType === 'panel'} onChange={() => setBoardType('panel')} style={{ display: 'none' }} />
-                Panel
-              </label>
-            </div>
-            <small style={{ display: 'block', marginTop: 4, color: '#666', fontSize: '0.8em', lineHeight: 1.2 }}>
-              {boardType === 'single' ? 'Using local board fiducials' : 'Using global panel frame fiducials'}
-            </small>
-          </div>
-
           {/* <div className="row">
             <button className="btn primary w-100" onClick={() => document.getElementById("fileInput").click()}>
               📂 Open Gerber / ZIP
@@ -2075,7 +2032,8 @@ export default function App() {
             <div style={{ marginBottom: 12 }}>
               <div style={{ padding: 8, background: '#1d1f24ff', borderRadius: 4 }}>
                 <strong>{selectedOrigin.description}</strong><br />
-                <small>Position: ({selectedOrigin.x.toFixed(2)}, {selectedOrigin.y.toFixed(2)}) mm </small>
+                <small>Position: (0.00, 0.00) mm <span style={{ opacity: 0.6, fontSize: '0.8em' }}>[Gerber: {selectedOrigin.x.toFixed(1)}, {selectedOrigin.y.toFixed(1)}]</span></small>
+                <br />
                 <small>Confidence: {(selectedOrigin.confidence * 100).toFixed(0)}%</small>
               </div>
             </div>
@@ -2093,13 +2051,13 @@ export default function App() {
               🎯 Detect Origins
             </button>
             <button className="btn sm secondary" onClick={() => {
-              // Test origin at bottom-left corner
-              const testOrigin = { id: 'O1', x: 0, y: 0, confidence: 0.9, description: 'Bottom-left corner (test)' };
+              // Test origin at (0,0)
+              const testOrigin = { id: 'O1', x: 0, y: 0, confidence: 0.9, description: 'True Gerber Origin (test)' };
               setSelectedOrigin(testOrigin);
-              console.log('Set test origin (bottom-left):', testOrigin);
+              console.log('Set test origin (Gerber 0,0):', testOrigin);
               setTimeout(() => updateOverlay(), 100);
             }}>
-              Test Origin (Bottom-Left)
+              Test Origin (0,0)
             </button>
             <button className="btn sm secondary" onClick={() => {
               setSelectedOrigin(null);
@@ -2108,25 +2066,82 @@ export default function App() {
               Clear
             </button>
           </div>
-          <small>Machine coordinates where PCB bottom-left corner (0,0) is located</small>
+          <small>Machine coordinates where True Gerber Origin (0,0) is located</small>
         </div>
 
         <div className="section Reference-section" style={{ marginTop: 16 }}>
           <h4 style={{ color: '#007bff', margin: '8px 0' }}>Reference Point</h4>
-          <div className="flex-row" style={{ marginLeft: 8, gap: 8 }}>
-            <label>
-              <input type="radio" name="refType" checked={referenceType === 'origin'}
-                onChange={() => {
-                  setReferenceType('origin');
-                  setReferencePoint(null);
-                }} />
-              Bottom-Left Origin
-            </label>
-            <label>
-              <input type="radio" name="refType" checked={referenceType === 'fiducial'}
-                onChange={() => setReferenceType('fiducial')} />
-              Fiducial
-            </label>
+          <div className="flex-row" style={{ marginLeft: 8, gap: 8, alignItems: 'center' }}>
+            <div className="flex-col">
+              <label>
+                <input type="radio" name="refType" checked={referenceType === 'origin'}
+                  onChange={() => {
+                    setReferenceType('origin');
+                    setReferencePoint(null);
+                  }} />
+                True Gerber Origin (0,0)
+              </label>
+              <label>
+                <input type="radio" name="refType" checked={referenceType === 'fiducial'}
+                  onChange={() => setReferenceType('fiducial')} />
+                Fiducial
+              </label>
+            </div>
+            <button
+              className="btn"
+              disabled={!isSerialConnected || (referenceType === 'fiducial' && !referencePoint)}
+              onClick={async () => {
+                let targetDesign = null;
+                if (referenceType === 'origin') {
+                  targetDesign = effectiveOrigin; // Use effective origin (with offset)
+                } else if (referencePoint) {
+                  targetDesign = { x: referencePoint.x, y: referencePoint.y };
+                }
+
+                if (targetDesign && effectiveOrigin) {
+                  let targetMachine = null;
+
+                  if (applyXf && xf) {
+                    targetMachine = applyTransform(xf, targetDesign);
+                  } else {
+                    // Fallback: Assume Machine Zero is at Bottom-Left Origin
+                    // Machine = Design - BottomLeftOrigin
+                    targetMachine = {
+                      x: targetDesign.x - effectiveOrigin.x,
+                      y: targetDesign.y - effectiveOrigin.y
+                    };
+                  }
+
+                  if (targetMachine) {
+                    const cmd = `G0 X${targetMachine.x.toFixed(3)} Y${targetMachine.y.toFixed(3)}`;
+                    if (confirm(`Move machine to X${targetMachine.x.toFixed(3)} Y${targetMachine.y.toFixed(3)}?\n(Based on Ref: ${referenceType === 'origin' ? 'Gerber (0,0)' : referencePoint?.id})`)) {
+                      console.log('Moving to reference:', cmd);
+                      if (window.serial && window.serial.writeLine) {
+                        await window.serial.writeLine(cmd);
+                      }
+                    }
+                  }
+                } else {
+                  alert("Origin not detected or invalid reference.");
+                }
+              }}
+            >
+              Move To
+            </button>
+            <button
+              className="btn secondary"
+              title="Set current machine position as Work Zero (0,0)"
+              disabled={!isSerialConnected}
+              onClick={async () => {
+                if (confirm("Set current machine position as Work Zero (G92 X0 Y0)?\nOnly do this if you are physically at the True Gerber Origin.")) {
+                  await window.serial.writeLine("G92 X0 Y0");
+                  setPcbOriginOffset({ x: 0, y: 0 });
+                  alert("Machine Zero Set!");
+                }
+              }}
+            >
+              Set Zero
+            </button>
           </div>
           {referenceType === 'fiducial' && (
             <div className="flex-row" style={{ marginLeft: 8, marginTop: 8 }}>
@@ -2142,7 +2157,7 @@ export default function App() {
               </select>
             </div>
           )}
-          <small>Reference point for measuring distances to pads</small>
+          <small>Reference point for measuring distances to pads. "Move To" sends machine to this location.</small>
         </div>
       </div>
 
@@ -2176,7 +2191,7 @@ export default function App() {
                   pressureSettings={pressureSettings}
                   speedSettings={speedSettings}
                   referencePoint={referencePoint}
-                  selectedOrigin={selectedOrigin}
+                  selectedOrigin={effectiveOrigin}
                   fiducials={fiducials}
                   onInputMachine={onInputMachine}
                   onAutoAlign={onAutoAlign}
@@ -2184,7 +2199,6 @@ export default function App() {
                   onSolve3={onSolve3}
                   xf={xf}
                   applyXf={applyXf}
-
                   onJobStart={(gcode) => {
                     console.log('Dispensing job started via SerialPanel');
                     maintenanceManager.recordDispense();
@@ -2194,6 +2208,7 @@ export default function App() {
                     alert('Dispensing job completed successfully!');
                   }}
                   onMachinePositionUpdate={handleMachinePositionUpdate}
+                  machinePosition={machinePos}
                 />
               </div>
             </div>
@@ -2235,7 +2250,7 @@ export default function App() {
                 selectedCount={selectedPadIndices.length}
                 onOptimize={() => {
                   if (selectedPadIndices.length < 2) return;
-                  const refPoint = referencePoint || selectedOrigin || { x: 0, y: 0 };
+                  const refPoint = referencePoint || effectiveOrigin || { x: 0, y: 0 };
                   const currentPads = selectedPadIndices.map(i => pads[i]);
                   const sortedPads = dispensingSequencer.calculateOptimalSequence(refPoint, currentPads);
                   const sortedIndices = sortedPads.map(p => pads.findIndex(orig => orig === p || (orig.x === p.x && orig.y === p.y)));
@@ -2251,15 +2266,15 @@ export default function App() {
                 onTogglePickMode={() => setFidPickMode(v => !v)}
               />
 
-              {(referencePoint || selectedOrigin) && selectedMm && (
+              {(referencePoint || effectiveOrigin) && selectedMm && (
                 <div className="distance-info">
                   <div className="row">
                     <span className="badge active">FROM: {referencePoint ? `FID ${referencePoint.id}` : 'ORIGIN'}</span>
                   </div>
                   <div className="kvs">
-                    <span>DX: <span className="lcd-text">{(selectedMm.x - (referencePoint || selectedOrigin).x).toFixed(2)}mm </span></span>
-                    <span>DY: <span className="lcd-text">{(selectedMm.y - (referencePoint || selectedOrigin).y).toFixed(2)}mm </span></span>
-                    <span>DIST: <span className="lcd-text">{Math.hypot(selectedMm.x - (referencePoint || selectedOrigin).x, selectedMm.y - (referencePoint || selectedOrigin).y).toFixed(2)}mm</span></span>
+                    <span>DX: <span className="lcd-text">{(selectedMm.x - (referencePoint || effectiveOrigin).x).toFixed(2)}mm </span></span>
+                    <span>DY: <span className="lcd-text">{(selectedMm.y - (referencePoint || effectiveOrigin).y).toFixed(2)}mm </span></span>
+                    <span>DIST: <span className="lcd-text">{Math.hypot(selectedMm.x - (referencePoint || effectiveOrigin).x, selectedMm.y - (referencePoint || effectiveOrigin).y).toFixed(2)}mm</span></span>
                   </div>
                 </div>
               )}
@@ -2295,7 +2310,6 @@ export default function App() {
           <div style={{ display: activeComponent === 'FiducialPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
             <div className="fiducial-panel">
               <FiducialPanel
-                boardType={boardType}
                 fiducials={fiducials}
                 activeId={fidActiveId}
                 setActiveId={setFidActiveId}
@@ -2315,12 +2329,17 @@ export default function App() {
                 onAutoDetectCamera={onAutoDetectCamera}
                 alignmentInfo={alignment}
                 onCaptureAlignment={handleAlignmentCapture}
+
+                panelBoards={panelBoards}
+                setPanelBoards={setPanelBoards}
+                activeBoardIndex={activeBoardIndexState}
+                setActiveBoardIndex={setActiveBoardIndex}
               />
-              {selectedOrigin && selectedMm && xf && applyXf && (
+              {effectiveOrigin && selectedMm && xf && applyXf && (
                 <div style={{ padding: 8, background: '#f8f9fa', border: '1px solid #dee2e6', borderRadius: 4, marginTop: 8 }}>
                   <small><strong>Transform Verification:</strong></small>
                   <div style={{ fontSize: '0.8em', fontFamily: 'monospace' }}>
-                    Origin: {selectedOrigin.x.toFixed(3)}, {selectedOrigin.y.toFixed(3)} → {verifyTransform(selectedOrigin).x.toFixed(3)}, {verifyTransform(selectedOrigin).y.toFixed(3)}
+                    Origin: {effectiveOrigin.x.toFixed(3)}, {effectiveOrigin.y.toFixed(3)} → {verifyTransform(effectiveOrigin).x.toFixed(3)}, {verifyTransform(effectiveOrigin).y.toFixed(3)}
                   </div>
                   <div style={{ fontSize: '0.8em', fontFamily: 'monospace' }}>
                     Target: {selectedMm.x.toFixed(3)}, {selectedMm.y.toFixed(3)} → {verifyTransform(selectedMm).x.toFixed(3)}, {verifyTransform(selectedMm).y.toFixed(3)}
@@ -2335,7 +2354,7 @@ export default function App() {
               fiducials={fiducials}
               xf={xf}
               applyXf={applyXf}
-              selectedDesign={selectedOrigin ? selectedOrigin : (selectedMm ? { x: selectedMm.x, y: selectedMm.y } : null)}
+              selectedDesign={effectiveOrigin ? effectiveOrigin : (selectedMm ? { x: selectedMm.x, y: selectedMm.y } : null)}
               toolOffset={maintenanceManager.getToolOffset()}
               setToolOffset={(o) => maintenanceManager.setToolOffset(o)}
               nozzleDia={0.6}
@@ -2348,6 +2367,9 @@ export default function App() {
               fiducialVisionDetector={fiducialVisionDetector}
               layerData={layerData}
               onUpdateFiducials={handleFiducialsUpdate}
+              activeBoardName={panelBoards[activeBoardIndexState]?.name || 'Unknown Board'}
+              panelBoards={panelBoards}
+              setPanelBoards={setPanelBoards}
             />
           </div>
 
@@ -2358,7 +2380,7 @@ export default function App() {
               safeSequence={safeSequence}
               jobStatistics={jobStatistics}
               referencePoint={referencePoint}
-              selectedOrigin={selectedOrigin}
+              selectedOrigin={effectiveOrigin}
               pressureSettings={pressureSettings}
               speedSettings={speedSettings}
               boardOutline={boardOutline}
@@ -2373,27 +2395,16 @@ export default function App() {
               onAutoAlign={onAutoAlign}
               onSolve2={onSolve2}
               onSolve3={onSolve3}
+
+              panelBoards={panelBoards}
+              setPanelBoards={setPanelBoards}
+              activeBoardIndex={activeBoardIndexState}
+              setActiveBoardIndex={setActiveBoardIndex}
+
               xf={xf}
               applyXf={applyXf}
               isConnected={isSerialConnected}
               machinePosition={machinePos}
-
-              // Panel Measurements
-              panelDimensions={(() => {
-                const machineFids = fiducials.filter(f => f.machine && typeof f.machine.x === 'number' && typeof f.machine.y === 'number');
-                if (machineFids.length >= 2) {
-                  const xs = machineFids.map(f => f.machine.x);
-                  const ys = machineFids.map(f => f.machine.y);
-                  const width = Math.max(...xs) - Math.min(...xs);
-                  const height = Math.max(...ys) - Math.min(...ys);
-                  return {
-                    width,
-                    height,
-                    diagonal: Math.hypot(width, height)
-                  };
-                }
-                return null;
-              })()}
 
               onStartJob={(gcode, mode) => {
                 console.log(`Job started in ${mode} mode`);
