@@ -31,7 +31,8 @@ export default function AutomatedDispensingPanel({
   xf,
   applyXf,
   isConnected = false,
-  machinePosition = { x: 0, y: 0, z: 0 }
+  machinePosition = { x: 0, y: 0, z: 0 },
+  panelBoards = []
 }) {
   const [isJobRunning, setIsJobRunning] = useState(false);
   const [jobMode, setJobMode] = useState('single'); // 'single' or 'batch'
@@ -129,10 +130,8 @@ export default function AutomatedDispensingPanel({
     setIsJobRunning(true);
 
     try {
-      // Send G28 and wait for OK. 
-      // Note: Homing takes time, but 'ok' might come immediately or after completion depending on firmware config.
-      // Usually G28 blocks until done on many firmwares, but not all.
-      await sendGcodeWait('G28');
+      // User explicitly requested to remove G28 automatic homing on job start.
+      // The machine will simply start executing moves from its current registered position/origin.
 
       // M400 guarantees previous moves finished.
       await sendGcodeWait('M400');

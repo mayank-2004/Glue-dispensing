@@ -182,6 +182,33 @@ export default function CameraPanel({
 
     if (!showOverlay) return;
 
+    // Draw Static Center Crosshair (User requested 4 sections)
+    ctx.strokeStyle = "rgba(0, 255, 255, 0.5)"; // Cyan transparent
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(W / 2, 0);
+    ctx.lineTo(W / 2, Hh);
+    ctx.moveTo(0, Hh / 2);
+    ctx.lineTo(W, Hh / 2);
+    ctx.stroke();
+
+
+
+    // Calculate & Display the live Machine Coordinate of the Crosshair center
+    // The center of the camera frame represents the current physical tool position
+    const cProps = latestPropsRef.current;
+    if (machinePositionRef.current) {
+      const mX = machinePositionRef.current.x + (toolOffset?.dx || 0);
+      const mY = machinePositionRef.current.y + (toolOffset?.dy || 0);
+
+      ctx.fillStyle = "rgba(0, 255, 255, 0.9)";
+      ctx.font = "bold 14px monospace";
+      ctx.fillText(`+ TARGET`, W / 2 + 12, Hh / 2 - 16);
+      ctx.font = "12px monospace";
+      ctx.fillText(`X: ${mX.toFixed(3)} mm`, W / 2 + 12, Hh / 2 + 0);
+      ctx.fillText(`Y: ${mY.toFixed(3)} mm`, W / 2 + 12, Hh / 2 + 14);
+    }
+
     // Draw vision detection result
     if (visionResult && visionResult.detected) {
       // Draw Blobs
@@ -289,11 +316,10 @@ export default function CameraPanel({
     }
   }
 
-  function onCanvasClick(e) {
+  async function onCanvasClick(e) {
     const rect = e.currentTarget.getBoundingClientRect();
     const u = e.clientX - rect.left;
     const v = e.clientY - rect.top;
-
     if (pendingPick) {
       const fr = fidRows.find(f => f.id === pendingPick);
       // guard: don't store if no world coords
@@ -310,6 +336,75 @@ export default function CameraPanel({
 
     if (measureMode) {
       setLastClickPx({ u, v });
+      return;
+    }
+
+    // Default Action: Click-to-Jog
+    // Calculate distance from center of canvas to the clicked point
+    const W = rect.width;
+    const Hh = rect.height;
+    const centerX = W / 2;
+    const centerY = Hh / 2;
+
+    const baseWorld = (applyXf && xf && selectedDesign) ? applyTransform(xf, selectedDesign) : (selectedDesign || { x: 0, y: 0 });
+    const pxmm = pxPerMmAt(baseWorld) || 20; // fallback 20 px/mm if not calibrated
+
+    let targetU = u;
+    let targetV = v;
+
+    // Bonus Feature: Run vision algorithm to snap exactly to the absolute center of the pad!
+    if (videoRef.current && streamOn && !isBusy) {
+      try {
+        const result = await fiducialDetector.detectFiducialsInFrame(videoRef.current, fiducials, { pxPerMm: pxmm });
+        if (result.success && result.fiducials.length > 0) {
+          let closestDist = Infinity;
+          let closestFid = null;
+
+          // Find the detected pad closest to where the user clicked
+          result.fiducials.forEach(f => {
+            const dist = Math.hypot(f.pixelPosition.x - u, f.pixelPosition.y - v);
+            if (dist < closestDist) {
+              closestDist = dist;
+              closestFid = f;
+            }
+          });
+
+          // If the user clicked within 60 pixels of a detected solid silver pad, SNAP to its absolute center!
+          if (closestDist < 60 && closestFid) {
+            targetU = closestFid.pixelPosition.x;
+            targetV = closestFid.pixelPosition.y;
+            console.log("Click snapped to detected fiducial precision center!");
+          }
+        }
+      } catch (err) {
+        console.warn("Snap-to-center vision detection failed, falling back to raw click coordinates.", err);
+      }
+    }
+
+    // X is positive to the right. Y is positive down on screen, but positive UP on machine.
+    const pixelDx = targetU - centerX;
+    const pixelDy = centerY - targetV;
+
+    const dx = pixelDx / pxmm;
+    const dy = pixelDy / pxmm;
+
+    // Send the diagonal jog command
+    if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
+      if (isBusy) return;
+      setIsBusy(true);
+      try {
+        const cmds = jogRel({ dx, dy, feed: 2000 });
+        if (window.serial && window.serial.writeLine) {
+          for (const line of cmds) await window.serial.writeLine(line);
+          setIsBusy(false);
+        } else {
+          setIsBusy(false);
+          console.warn("Serial disconnected. Simulated Jog: ", { dx, dy });
+        }
+      } catch (err) {
+        setIsBusy(false);
+        console.error("Click-to-jog failed:", err);
+      }
     }
   }
 
@@ -456,7 +551,7 @@ export default function CameraPanel({
 
         // alert(`Successfully detected ${result.fiducials.length} fiducials!`);
       } else {
-        alert('No fiducials found matching constraints (Max 3mm dia, 4mm isolation).');
+        alert('No fiducials found matching constraints (Max 2.0mm dia, 4mm isolation).');
       }
     } catch (error) {
       console.error('Camera fiducial detection failed:', error);

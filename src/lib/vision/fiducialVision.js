@@ -66,21 +66,44 @@ export class FiducialVisionDetector {
     const gray = new Uint8Array(width * height);
     const binarized = new Uint8Array(width * height);
 
-    // Step A: Grayscale
-    let minVal = 255, maxVal = 0;
+    // Step A & B & C: Color-based Segmentation
+    // The user's fiducial features a Silver/Tin pad surrounded by a Yellow ring on a Green board.
+    // Yellow = High R, High G, Low B.
+    // Green = Low R, High G, Low B.
+    // Silver/Tin = R, G, B are roughly equal (grey), and usually quite bright.
+    // To isolate the Silver pad (Foreground = 1) from the Yellow/Green background (0):
+    // We look for pixels where the Blue channel is relatively high compared to Red/Green
+    // (meaning it's NOT yellow and NOT green), AND it has decent overall brightness.
     for (let i = 0; i < data.length; i += 4) {
-      const lum = (data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114) | 0;
-      gray[i >> 2] = lum;
-      if (lum < minVal) minVal = lum;
-      if (lum > maxVal) maxVal = lum;
-    }
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
 
-    // Step B: Otsu's Threshold
-    const threshold = this.getOtsuThreshold(gray, width, height);
+      const lum = (r * 0.299 + g * 0.587 + b * 0.114) | 0;
+      gray[i >> 2] = lum; // Keep gray for edge detection later
 
-    // Step C: Binarize
-    for (let i = 0; i < gray.length; i++) {
-      binarized[i] = gray[i] < threshold ? 1 : 0;
+      // Without a ring light, "Silver/Tin" often looks like a dark, shadowy grey or almost black blob.
+      // It will NOT be bright (`lum > 60`) and its RGB channels might be skewed by room lighting.
+
+      // However, the Yellow/FR4 clearing ring is much more reliable!
+      // Even in low light, Yellow has (Red + Green) significantly higher than Blue.
+      const yellowScore = ((r + g) / 2) - b;
+
+      // Let's invert the binarization:
+      // We will actually look for the "Dark/Grey center" by explicitly REJECTING the yellow/green board.
+      // 1. Is it Yellowish? (Yellow clearing ring) -> yellowScore > 15
+      // 2. Is it Greenish? (Solder mask) -> G > R and G > B by a decent margin.
+
+      const isGreen = (g > r + 10) && (g > b + 10);
+      const isYellow = yellowScore > 10;
+
+      // If it is NOT Green and NOT Yellow, it is likely the Dark/Grey metallic pad!
+      // We will mark the PAD as Foreground (1) and everything else as Background (0).
+      if (!isGreen && !isYellow) {
+        binarized[i >> 2] = 1; // It's part of the darker/grey metallic pad
+      } else {
+        binarized[i >> 2] = 0; // It's the yellow mask or green board
+      }
     }
 
     // Step D: Connected Components (Two-Pass with Moments)
@@ -225,10 +248,10 @@ export class FiducialVisionDetector {
     const limitRadiusPx = maxRadiusPx * 1.25;
 
     // Thresholds
-    const MIN_CIRCULARITY = 0.7;
-    const MIN_INERTIA_RATIO = 0.5;
-    const MIN_CONVEXITY = 0.85; // Fiducials are solid circles, should be very convex (~1.0)
-    const MIN_EDGE_STRENGTH = 40; // Average intensity difference
+    const MIN_CIRCULARITY = 0.6; // Relaxed for shadow distortion
+    const MIN_INERTIA_RATIO = 0.4;
+    const MIN_CONVEXITY = 0.80; // Relaxed for unlit reflections
+    const MIN_EDGE_STRENGTH = 20; // Lowered significantly for unlit camera
 
     const validBlobs = [];
 
@@ -252,7 +275,7 @@ export class FiducialVisionDetector {
       // 3. Gradient / Edge Strength Check (Medium cost)
       // Sample radial points to ensure high contrast at the edge
       const edgeStrength = this.calculateEdgeStrength(blob, gray, width, height);
-      if (edgeStrength < MIN_EDGE_STRENGTH) {
+      if (edgeStrength < 20) { // Lowered to 20 for unlit camera
         // console.log(`Rejected ${blob.id}: Weak edge ${edgeStrength.toFixed(1)}`);
         continue;
       }
@@ -435,17 +458,21 @@ export class FiducialVisionDetector {
     const avgRingLum = ringLumSum / ringCount;
     const avgRingYellow = ringYellowScoreSum / ringCount;
 
-    // Criteria 1: Contrast
-    // Center should be Darker than Ring
-    // e.g. Ring is at least 30 units brighter
-    if (avgRingLum < avgCenterLum + 30) {
-      return false; // Low contrast or wrong polarity
+    // Removed strict Contrast checks that required the center to be darker.
+    // In this color-based approach, the Silver pad (center) might actually be 
+    // BRIGHTER or equal luminance to the Yellow ring, just a different color.
+
+    // Instead, just verify the ring actually looks Yellow-ish!
+    // The user explicitly showed a yellow clearing.
+    // Yellow Score: High Red + High Green, Low Blue
+    if (avgRingYellow < 10) {
+      return false; // Ring is not yellow enough to be the clearance zone
     }
 
     // Criteria 2: Ring Brightness (Isolation)
     // The Ring is the Soldermask Clearance, usually bright substrate or Gold/Copper
-    // Or at least significantly brighter than black.
-    if (avgRingLum < 90) {
+    // Without a ring light, the ring might be very dark too.
+    if (avgRingLum < 40) {
       return false; // Ring is too dark to be a clearance
     }
 
