@@ -32,7 +32,6 @@ export default function FiducialPanel({
 
   return (
     <div className="section">
-
       {/* Panel Size Calculation (Moved to Top) */}
       {(() => {
         const machineFids = fiducials.filter(f => f.machine && typeof f.machine.x === 'number' && typeof f.machine.y === 'number');
@@ -99,9 +98,7 @@ export default function FiducialPanel({
         </div>
       )} */}
 
-
-
-      {detectionResult !== null && (
+      {/* {detectionResult !== null && (
         <div className={`info ${detectionResult.length === 0 ? 'warning' : 'success'}`} style={{ marginBottom: 12 }}>
           {detectionResult.length > 0 ? (
             <div>
@@ -121,7 +118,7 @@ export default function FiducialPanel({
             </div>
           )}
         </div>
-      )}
+      )} */}
 
       <div className="flex-row" style={{ gap: 8, alignItems: "center", marginBottom: 16, paddingBottom: 16, borderBottom: '1px solid #ccc' }}>
         <strong>Mapping:</strong>
@@ -137,24 +134,23 @@ export default function FiducialPanel({
         <button
           className="btn sm"
           onClick={() => {
-            const newId = panelBoards.length + 1;
-            setPanelBoards(prev => [
-              ...prev,
-              {
-                id: newId,
-                name: `Board ${newId}`,
-                fiducials: [
-                  { id: "F1", design: null, machine: null, color: "#2ea8ff" },
-                  { id: "F2", design: null, machine: null, color: "#8e2bff" },
-                  { id: "F3", design: null, machine: null, color: "#00c49a" },
-                ],
-                xf: null
-              }
-            ]);
-            setActiveBoardIndex(newId - 1);
+            setPanelBoards(prev => {
+              const newBoards = [...prev];
+              const activeBoard = { ...newBoards[activeBoardIndex] };
+              const fCount = activeBoard.fiducials.length;
+              const newFid = {
+                id: `F${fCount + 1}`,
+                design: null,
+                machine: null,
+                color: `#${Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0')}`
+              };
+              activeBoard.fiducials = [...activeBoard.fiducials, newFid];
+              newBoards[activeBoardIndex] = activeBoard;
+              return newBoards;
+            });
           }}
         >
-          + Add Next Board
+          + Add Fiducial
         </button>
       </div>
 
@@ -189,7 +185,7 @@ export default function FiducialPanel({
       <table className="kv small">
         <thead>
           <tr>
-            <th>F <span style={{ fontSize: '0.8em', fontWeight: 'normal', color: '#666' }}>(2 Req, 1 Opt)</span></th>
+            <th>Fiducial</th>
             <th>Design (mm)</th>
             <th>Machine (mm)</th>
             <th />

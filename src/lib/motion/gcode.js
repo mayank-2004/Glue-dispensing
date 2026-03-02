@@ -1,6 +1,3 @@
-// src/lib/motion/gcode.js
-// Tiny, predictable G-code helpers for XYZR machines.
-
 export const defaultAxisMap = {
   X: "X",
   Y: "Y",

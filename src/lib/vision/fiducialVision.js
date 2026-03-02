@@ -13,10 +13,37 @@ export class FiducialVisionDetector {
     try {
       const canvas = document.createElement('canvas'); // Recycling could improve perf
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      canvas.width = videoElement.videoWidth || 640;
-      canvas.height = videoElement.videoHeight || 480;
 
-      ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+      const cw = videoElement.clientWidth || videoElement.videoWidth || 640;
+      const ch = videoElement.clientHeight || videoElement.videoHeight || 480;
+      canvas.width = cw;
+      canvas.height = ch;
+
+      const vw = videoElement.videoWidth || cw;
+      const vh = videoElement.videoHeight || ch;
+
+      // Simulate CSS object-fit: cover so vision coordinates perfectly match UI CSS coordinates
+      const videoRatio = vw / vh;
+      const containerRatio = cw / ch;
+
+      let drawW = vw;
+      let drawH = vh;
+      let startX = 0;
+      let startY = 0;
+
+      if (videoRatio > containerRatio) {
+        // Video is proportionally wider than the container, crop sides
+        drawH = vh;
+        drawW = vh * containerRatio;
+        startX = (vw - drawW) / 2;
+      } else {
+        // Video is proportionally taller, crop top/bottom
+        drawW = vw;
+        drawH = vw / containerRatio;
+        startY = (vh - drawH) / 2;
+      }
+
+      ctx.drawImage(videoElement, startX, startY, drawW, drawH, 0, 0, cw, ch);
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
       // 2. Process Image (Blob Detection + Feature Extraction)
@@ -70,7 +97,7 @@ export class FiducialVisionDetector {
     // The user's fiducial features a Silver/Tin pad surrounded by a Yellow ring on a Green board.
     // Yellow = High R, High G, Low B.
     // Green = Low R, High G, Low B.
-    // Silver/Tin = R, G, B are roughly equal (grey), and usually quite bright.
+    // Silver/Tin = R, G, B are roughly equal (grey), and usually quite bright. 
     // To isolate the Silver pad (Foreground = 1) from the Yellow/Green background (0):
     // We look for pixels where the Blue channel is relatively high compared to Red/Green
     // (meaning it's NOT yellow and NOT green), AND it has decent overall brightness.

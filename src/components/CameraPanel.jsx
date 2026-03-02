@@ -182,31 +182,66 @@ export default function CameraPanel({
 
     if (!showOverlay) return;
 
-    // Draw Static Center Crosshair (User requested 4 sections)
+    // --- SNAP CROSSHAIR TO DETECTED FIDUCIAL ---
+    let crosshairX = W / 2;
+    let crosshairY = Hh / 2;
+
+    if (visionResult && visionResult.detected && visionResult.fiducials && visionResult.fiducials.length > 0) {
+      let closestFid = null;
+      let minDist = Infinity;
+      visionResult.fiducials.forEach(fid => {
+        const dist = Math.hypot(fid.pixelPosition.x - (W / 2), fid.pixelPosition.y - (Hh / 2));
+        if (dist < minDist) {
+          minDist = dist;
+          closestFid = fid;
+        }
+      });
+      if (closestFid) {
+        crosshairX = closestFid.pixelPosition.x;
+        crosshairY = closestFid.pixelPosition.y;
+      }
+    }
+
+    // Draw Auto-Adjusting Center Crosshair (User requested 4 sections)
     ctx.strokeStyle = "rgba(0, 255, 255, 0.5)"; // Cyan transparent
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(W / 2, 0);
-    ctx.lineTo(W / 2, Hh);
-    ctx.moveTo(0, Hh / 2);
-    ctx.lineTo(W, Hh / 2);
+    ctx.moveTo(crosshairX, 0);
+    ctx.lineTo(crosshairX, Hh);
+    ctx.moveTo(0, crosshairY);
+    ctx.lineTo(W, crosshairY);
     ctx.stroke();
 
-
-
     // Calculate & Display the live Machine Coordinate of the Crosshair center
-    // The center of the camera frame represents the current physical tool position
     const cProps = latestPropsRef.current;
     if (machinePositionRef.current) {
-      const mX = machinePositionRef.current.x + (toolOffset?.dx || 0);
-      const mY = machinePositionRef.current.y + (toolOffset?.dy || 0);
+      const baseWorld = (applyXf && xf && selectedDesign) ? applyTransform(xf, selectedDesign) : (selectedDesign || { x: 0, y: 0 });
+      let pxmm = 20; // fallback 20 px/mm if not calibrated
+      // We will try to get it from H if possible
+      if (H) {
+        const center = { x: 100, y: 100 };
+        const p1 = projectPx(center);
+        const p2 = projectPx({ x: center.x + 1, y: center.y });
+        if (p1 && p2) pxmm = Math.hypot(p2.u - p1.u, p2.v - p1.v);
+      } else {
+        const measured = pxPerMmAt(baseWorld);
+        if (measured) pxmm = measured;
+      }
+
+      const pixelDx = crosshairX - (W / 2);
+      const pixelDy = (Hh / 2) - crosshairY; // Machine Y is up, Canvas Y is down
+      const dxMm = pixelDx / pxmm;
+      const dyMm = pixelDy / pxmm;
+
+      const mX = machinePositionRef.current.x + (toolOffset?.dx || 0) + dxMm;
+      const mY = machinePositionRef.current.y + (toolOffset?.dy || 0) + dyMm;
 
       ctx.fillStyle = "rgba(0, 255, 255, 0.9)";
       ctx.font = "bold 14px monospace";
-      ctx.fillText(`+ TARGET`, W / 2 + 12, Hh / 2 - 16);
+      ctx.fillText(`+ TARGET`, crosshairX + 12, crosshairY - 16);
       ctx.font = "12px monospace";
-      ctx.fillText(`X: ${mX.toFixed(3)} mm`, W / 2 + 12, Hh / 2 + 0);
-      ctx.fillText(`Y: ${mY.toFixed(3)} mm`, W / 2 + 12, Hh / 2 + 14);
+      ctx.fillText(`X: ${mX.toFixed(3)} mm`, crosshairX + 12, crosshairY + 0);
+      ctx.fillText(`Y: ${mY.toFixed(3)} mm`, crosshairX + 12, crosshairY + 14);
     }
 
     // Draw vision detection result
@@ -223,12 +258,6 @@ export default function CameraPanel({
           ctx.strokeStyle = '#00ff00';
           ctx.lineWidth = 2;
           ctx.stroke();
-
-          // Draw Isolation Zone (4mm)
-          // We need pxPerMm to draw this accurately in overlay. 
-          // We'll estimate it from the detected fiducial if we know its size, or just use the passed option if we had it.
-          // For now, let's draw a visual ring relative to the blob size.
-          // Assuming max blob is 3mm. 4mm is 1.33x the diameter (approx).
           const isoR = r + (4 * 20); // Fallback visualization if scale unknown, or usage of known scale
 
           // Better: Calculate it properly if we can.
@@ -320,27 +349,13 @@ export default function CameraPanel({
     const rect = e.currentTarget.getBoundingClientRect();
     const u = e.clientX - rect.left;
     const v = e.clientY - rect.top;
-    if (pendingPick) {
-      const fr = fidRows.find(f => f.id === pendingPick);
-      // guard: don't store if no world coords
-      if (!fr || !fr.world || !Number.isFinite(fr.world.x) || !Number.isFinite(fr.world.y)) {
-        setPendingPick(null);
-        alert("This fiducial has no world coordinates yet. Set fiducials first.");
-        return;
-      }
-      const next = [...pairs.filter(p => p.id !== pendingPick), { id: fr.id, world: fr.world, pixel: { u, v } }];
-      setPairs(next);
-      setPendingPick(null);
-      return;
-    }
 
     if (measureMode) {
       setLastClickPx({ u, v });
       return;
     }
 
-    // Default Action: Click-to-Jog
-    // Calculate distance from center of canvas to the clicked point
+    // --- STEP 1: Compute Target Pixel & Snap to Blob Center ---
     const W = rect.width;
     const Hh = rect.height;
     const centerX = W / 2;
@@ -352,7 +367,7 @@ export default function CameraPanel({
     let targetU = u;
     let targetV = v;
 
-    // Bonus Feature: Run vision algorithm to snap exactly to the absolute center of the pad!
+    // Optional Vision Snap
     if (videoRef.current && streamOn && !isBusy) {
       try {
         const result = await fiducialDetector.detectFiducialsInFrame(videoRef.current, fiducials, { pxPerMm: pxmm });
@@ -360,7 +375,6 @@ export default function CameraPanel({
           let closestDist = Infinity;
           let closestFid = null;
 
-          // Find the detected pad closest to where the user clicked
           result.fiducials.forEach(f => {
             const dist = Math.hypot(f.pixelPosition.x - u, f.pixelPosition.y - v);
             if (dist < closestDist) {
@@ -369,27 +383,53 @@ export default function CameraPanel({
             }
           });
 
-          // If the user clicked within 60 pixels of a detected solid silver pad, SNAP to its absolute center!
+          // Snap radius of 60px
           if (closestDist < 60 && closestFid) {
             targetU = closestFid.pixelPosition.x;
             targetV = closestFid.pixelPosition.y;
-            console.log("Click snapped to detected fiducial precision center!");
+            console.log("Snapped to pad centroid at:", targetU, targetV);
           }
         }
       } catch (err) {
-        console.warn("Snap-to-center vision detection failed, falling back to raw click coordinates.", err);
+        console.warn("Snap-to-center vision failed:", err);
       }
     }
 
-    // X is positive to the right. Y is positive down on screen, but positive UP on machine.
+    // --- STEP 2: Calculate Delta from Crosshair ---
+    // X is positive right, Y is positive down on screen, but machine is UP
     const pixelDx = targetU - centerX;
     const pixelDy = centerY - targetV;
 
     const dx = pixelDx / pxmm;
     const dy = pixelDy / pxmm;
 
-    // Send the diagonal jog command
-    if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
+    // --- STEP 3: Handle Action (Map Fiducial & Jog Machine) ---
+    const needsJog = (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01);
+
+    // 3A: Map Fiducial Mathematically FIRST (So UI updates instantly)
+    if (pendingPick) {
+      if (!machinePositionRef.current) {
+        alert("Machine position unknown. Cannot map physical coordinates.");
+        setPendingPick(null);
+        return;
+      }
+
+      const newX = machinePositionRef.current.x + (toolOffset?.dx || 0) + dx;
+      const newY = machinePositionRef.current.y + (toolOffset?.dy || 0) + dy;
+
+      const newFids = fiducials.map(f =>
+        f.id === pendingPick
+          ? { ...f, machine: { x: newX, y: newY }, autoDetected: false, confidence: 1.0 }
+          : f
+      );
+
+      if (onUpdateFiducials) onUpdateFiducials(newFids);
+      console.log(`Mapped ${pendingPick} to absolute Machine Pos: X${newX.toFixed(3)}, Y${newY.toFixed(3)}`);
+      setPendingPick(null);
+    }
+
+    // 3B: Physically Jog the Machine so crosshair aligns perfectly
+    if (needsJog) {
       if (isBusy) return;
       setIsBusy(true);
       try {
@@ -399,25 +439,28 @@ export default function CameraPanel({
           setIsBusy(false);
         } else {
           setIsBusy(false);
-          console.warn("Serial disconnected. Simulated Jog: ", { dx, dy });
+          console.warn("Serial mock jog: ", { dx, dy });
         }
       } catch (err) {
         setIsBusy(false);
-        console.error("Click-to-jog failed:", err);
+        console.error("Jog err:", err);
       }
     }
   }
 
   function addOrPick(fidId) {
-    const fr = fidRows.find(f => f.id === fidId);
-    if (!fr || !fr.world || !Number.isFinite(fr.world.x) || !Number.isFinite(fr.world.y)) {
-      alert("This fiducial has no world coordinates yet. Set fiducials first.");
+    const fr = fiducials.find(f => f.id === fidId);
+    if (!fr || !fr.design || !Number.isFinite(fr.design.x) || !Number.isFinite(fr.design.y)) {
+      alert("This fiducial has no Design coordinates mapped yet. Please mark it on the SVG Viewer first.");
       return;
     }
     setPendingPick(fidId);
   }
   function clearPairs() {
-    setPairs([]); setPendingPick(null); setH(null); setLastClickPx(null);
+    // Legacy support cleanup
+    setPairs([]);
+    setH(null);
+    setLastClickPx(null);
     localStorage.removeItem("camPairs"); localStorage.removeItem("camH");
   }
 
@@ -498,14 +541,38 @@ export default function CameraPanel({
         let changedBoards = false;
         let nextBoards = hasMultiBoards ? [...pBoards] : [];
 
-        result.fiducials.forEach(detected => {
-          if (!detected.machinePosition) return;
+        // 1. Convert pixel coordinates to exact machine coordinates relative to current toolhead position.
+        // We override the broken static 'homography-only' position with true dynamically calculated offsets.
+        const currentMPos = machinePositionRef.current;
+        const videoWidth = videoRef.current.videoWidth || 640;
+        const videoHeight = videoRef.current.videoHeight || 480;
+        const centerX = videoWidth / 2;
+        const centerY = videoHeight / 2;
+
+        const correctedFiducials = result.fiducials.map(detected => {
+          let actualMachinePosition = detected.machinePosition;
+          if (currentMPos) {
+            const dxPx = detected.pixelPosition.x - centerX;
+            const dyPx = centerY - detected.pixelPosition.y; // Canvas Y goes down, Machine Y goes up
+            const dxMm = dxPx / pxPerMm;
+            const dyMm = dyPx / pxPerMm;
+
+            actualMachinePosition = {
+              x: currentMPos.x + (toolOffset?.dx || 0) + dxMm,
+              y: currentMPos.y + (toolOffset?.dy || 0) + dyMm
+            };
+          }
+          return { ...detected, actualMachinePosition };
+        });
+
+        correctedFiducials.forEach(detected => {
+          if (!detected.actualMachinePosition) return;
 
           let closestFid = null;
           let minDist = Infinity;
 
           allFids.forEach(f => {
-            const dist = Math.hypot(f.design.x - detected.machinePosition.x, f.design.y - detected.machinePosition.y);
+            const dist = Math.hypot(f.design.x - detected.actualMachinePosition.x, f.design.y - detected.actualMachinePosition.y);
             if (dist < minDist) {
               minDist = dist;
               closestFid = f;
@@ -515,12 +582,15 @@ export default function CameraPanel({
           // Match if within 20mm of a design coordinate
           if (minDist < 20 && closestFid) {
             const bIdx = closestFid.bIdx;
+            console.log("bIdx", bIdx);
             const fIdx = closestFid.fIdx;
+            console.log("fIdx", fIdx);
 
             const newFiducials = [...nextBoards[bIdx].fiducials];
+            console.log("newFiducials", newFiducials);
             newFiducials[fIdx] = {
               ...newFiducials[fIdx],
-              machine: detected.machinePosition,
+              machine: detected.actualMachinePosition,
               pixelPosition: detected.pixelPosition,
               autoDetected: true,
               confidence: detected.confidence
@@ -533,14 +603,16 @@ export default function CameraPanel({
 
         if (changedBoards && setPBoards) {
           setPBoards(nextBoards);
-          console.log("Global Panel Arrays Updated:", nextBoards.map(b => ({ name: b.name, fiducials: b.fiducials })));
+          console.log("Global Panel State Updated:", nextBoards.map(b => ({ name: b.name, fiducials: b.fiducials })));
         } else {
           // Fallback legacy behavior if no design markers match
-          const updatedFiducials = result.fiducials.map((detected, idx) => {
+          const updatedFiducials = correctedFiducials.map((detected, idx) => {
             const existing = fiducials[idx] || { id: `F${idx + 1}`, color: `#${Math.floor(Math.random() * 16777215).toString(16)}` };
+            // Ensure we log the exact same corrected coordinate to the state
+            console.log("Fallback logging corrected absolute machine coordinate:", detected.actualMachinePosition);
             return {
               ...existing,
-              machine: detected.machinePosition || null,
+              machine: detected.actualMachinePosition || null,
               pixelPosition: detected.pixelPosition,
               confidence: detected.confidence,
               autoDetected: true
@@ -569,7 +641,6 @@ export default function CameraPanel({
     }
 
     if (detectionInterval) {
-      // Stop existing detection
       fiducialDetector.stopContinuousDetection(detectionInterval);
       setDetectionInterval(null);
       return;
@@ -602,18 +673,15 @@ export default function CameraPanel({
 
           const incomingCandidates = result.fiducials.map(f => {
             const dxPx = f.pixelPosition.x - centerX;
-            const dyPx = f.pixelPosition.y - centerY;
-            // Camera coordinate system might be flipped vs machine. Assuming standard alignment for now.
-            // Usually camera +Y is Down (Pixel), Machine +Y is Back (Physical). 
-            // Need to check calibration, but for crude accumulation:
+            const dyPx = centerY - f.pixelPosition.y; // Canvas Y goes down, Machine Y goes up
             const dxMm = dxPx / pxPerMm;
-            const dyMm = -dyPx / pxPerMm; // Pixel Y is down, Machine Y is usually Up? TBD.
+            const dyMm = dyPx / pxPerMm;
 
             return {
               ...f,
               estimatedWorld: {
-                x: currentMPos.x + dxMm,
-                y: currentMPos.y + dyMm
+                x: currentMPos.x + (toolOffset?.dx || 0) + dxMm,
+                y: currentMPos.y + (toolOffset?.dy || 0) + dyMm
               }
             };
           });

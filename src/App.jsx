@@ -1054,7 +1054,7 @@ export default function App() {
           centerMethod: selectedPad.centerMethod
         });
         const u = mmToCurrentUnits(markerCoords);
-        console.log('Converted to SVG units:', u);
+        // console.log('Converted to SVG units:', u);
 
         // Calculate marker radius based on actual pad dimensions
         const padWidth = selectedPad.width || 1.0;
@@ -1559,8 +1559,8 @@ export default function App() {
     console.log('Fiducial click processed. Best match:', best.id, 'Target:', targetId);
 
     if (targetId) {
-      // Update the design position for the target fiducial AND initialize machine position to match
-      setFiducials(prev => prev.map(f => f.id === targetId ? { ...f, design: mm, machine: { x: mm.x, y: mm.y } } : f));
+      // Update the design position for the target fiducial
+      setFiducials(prev => prev.map(f => f.id === targetId ? { ...f, design: mm } : f));
       setDragFid(targetId);
     }
   };
@@ -1620,7 +1620,7 @@ export default function App() {
   }, [selectedOrigin, updateOverlay]);
 
   const handleCanvasClick = useCallback((evt) => {
-    console.log('handleCanvasClick fired. PickMode:', fidPickMode);
+    // console.log('handleCanvasClick fired. PickMode:', fidPickMode);
     if (fidPickMode) return;
 
     const mm = getEventMm(evt);

@@ -13,8 +13,41 @@ export default function SerialPanel({
   const [baud, setBaud] = useState(115200);
   // const [connected, setConnected] = useState(false); // Removed local state
   const [consoleLines, setConsoleLines] = useState([]);
+  const [isHoming, setIsHoming] = useState(false);
+  const [pendingHomeZero, setPendingHomeZero] = useState(false);
 
   const inputRef = useRef(null);
+  const mPosRef = useRef(machinePosition);
+  const hasReceivedPosRef = useRef(false);
+
+  useEffect(() => {
+    mPosRef.current = machinePosition;
+
+    // Auto-clear homing status once machine actually reaches 0,0,0
+    if (isHoming && Math.abs(machinePosition.x) < 0.01 && Math.abs(machinePosition.y) < 0.01 && Math.abs(machinePosition.z) < 0.01) {
+      setIsHoming(false);
+    }
+
+    // Trigger the 0,0,0 move when the controller actually reaches the physical -3, -10 hardware offsets
+    if (pendingHomeZero) {
+      const atHardwareHome = Math.abs(machinePosition.x - (-3)) < 0.1 &&
+        Math.abs(machinePosition.y - (-10)) < 0.1 &&
+        Math.abs(machinePosition.z - 0) < 0.1;
+
+      if (atHardwareHome) {
+        setPendingHomeZero(false);
+        setTimeout(async () => {
+          try {
+            console.log("Moving to true Home (0,0,0) offset from hardware switches...");
+            await window.serial.writeLine('G90');
+            await window.serial.writeLine('G0 X0 Y0 Z0');
+          } catch (e) {
+            console.error("Home offset move failed:", e);
+          }
+        }, 100);
+      }
+    }
+  }, [machinePosition, isHoming, pendingHomeZero]);
 
   const refresh = async () => {
     try {
@@ -51,6 +84,7 @@ export default function SerialPanel({
       }
 
       if (x !== null && y !== null && z !== null) {
+        hasReceivedPosRef.current = true;
         const pos = { x, y, z };
         if (onMachinePositionUpdate) onMachinePositionUpdate(pos);
       }
@@ -60,15 +94,36 @@ export default function SerialPanel({
   const connect = async () => {
     if (!path) return alert("Select a serial port first.");
     try {
+      hasReceivedPosRef.current = false;
+      setIsHoming(false);
+      setPendingHomeZero(false);
       await window.serial.open({ path, baudRate: baud });
       // setConnected(true); // Removed
       if (onConnect) onConnect(); // Notify Parent
 
+      startStatusQuery();
+
       // Auto-Home
       setTimeout(async () => {
-        try { await window.serial.writeLine('G28'); } catch (e) { console.error(e); }
-      }, 2500);
-      startStatusQuery();
+        try {
+          const pos = mPosRef.current;
+          const isAtHome = hasReceivedPosRef.current &&
+            Math.abs(pos.x) < 0.01 &&
+            Math.abs(pos.y) < 0.01 &&
+            Math.abs(pos.z) < 0.01;
+
+          if (!isAtHome) {
+            console.log("Machine not at home (or position unknown), sending G28 auto-home...");
+            setIsHoming(true);
+            setPendingHomeZero(true);
+            await window.serial.writeLine('G28');
+          } else {
+            console.log("Machine already at home position (0,0,0). Skipping G28.");
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      }, 2000);
     } catch (e) {
       alert(`Failed to open ${path}: ${e.message}`);
     }
@@ -76,11 +131,6 @@ export default function SerialPanel({
 
   const startStatusQuery = () => {
     const interval = setInterval(async () => {
-      // Check prop instead of local state
-      // (Actually tricky inside closure, but if checking 'connected' usually works due to closure capture? 
-      // No, interval closes over initial state. 
-      // But connected logic relies on serial port being open. 'SerialPanel' unmounts? No.
-      // We can check window.serial availability or just rely on parent disconnect cleaning up)
       try {
         await window.serial.writeLine('M114');
       } catch (e) { console.error(e); }
@@ -90,6 +140,7 @@ export default function SerialPanel({
 
   const disconnect = async () => {
     try { await window.serial.close(); } catch { }
+    setIsHoming(false);
     // setConnected(false); // Removed
     if (onDisconnect) onDisconnect();
   };
@@ -126,19 +177,31 @@ export default function SerialPanel({
         </h3>
 
         {/* Machine Position Display */}
-        <div style={{
-          background: '#222',
-          color: '#0f0',
-          fontFamily: 'monospace',
-          padding: '4px 8px',
-          borderRadius: 4,
-          fontSize: '0.9em',
-          display: 'flex',
-          gap: '12px'
-        }}>
-          <span>X: {machinePosition.x.toFixed(2)}</span>
-          <span>Y: {machinePosition.y.toFixed(2)}</span>
-          <span>Z: {machinePosition.z.toFixed(2)}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {isConnected && (isHoming || !hasReceivedPosRef.current) && (
+            <span style={{ fontSize: '0.7em', fontWeight: 'bold', background: '#ffaa00', color: 'black', padding: '3px 8px', borderRadius: 4, textTransform: 'uppercase', animation: 'pulse 1.5s infinite' }}>
+              Homing...
+            </span>
+          )}
+          {isConnected && !isHoming && hasReceivedPosRef.current && Math.abs(machinePosition.x) < 0.01 && Math.abs(machinePosition.y) < 0.01 && Math.abs(machinePosition.z) < 0.01 && (
+            <span style={{ fontSize: '0.7em', fontWeight: 'bold', background: '#00c49a', color: 'black', padding: '3px 8px', borderRadius: 4, textTransform: 'uppercase' }}>
+              At Home (0,0,0)
+            </span>
+          )}
+          <div style={{
+            background: '#222',
+            color: '#0f0',
+            fontFamily: 'monospace',
+            padding: '4px 8px',
+            borderRadius: 4,
+            fontSize: '0.9em',
+            display: 'flex',
+            gap: '12px'
+          }}>
+            <span>X: {machinePosition.x.toFixed(2)}</span>
+            <span>Y: {machinePosition.y.toFixed(2)}</span>
+            <span>Z: {machinePosition.z.toFixed(2)}</span>
+          </div>
         </div>
       </div>
 
