@@ -12,7 +12,7 @@ import FiducialPanel from "./components/FiducialPanel.jsx";
 import PressurePanel from "./components/PressurePanel.jsx";
 import SpeedPanel from "./components/SpeedPanel.jsx";
 import AutomatedDispensingPanel from "./components/AutomatedDispensingPanel.jsx";
-import LivePreview from "./components/LivePreview.jsx";
+// import LivePreview from "./components/LivePreview.jsx";
 import { identifyLayers } from "./lib/gerber/identifyLayers.js";
 import { stackupToSvg } from "./lib/gerber/stackupToSvg.js";
 import { extractPadsMm } from "./lib/gerber/extractPads.js";
@@ -35,9 +35,10 @@ import { SafePathPlanner } from "./lib/automation/safePathPlanner.js";
 import { BatchProcessor } from "./lib/batch/batchProcessor.js";
 import { BatchExecutor } from "./lib/batch/batchExecutor.js";
 import { LayerDataExtractor } from "./lib/gerber/layerDataExtractor.js";
-import { debugCoordinateConversion } from "./lib/debug/coordinateDebug.js";
+// import { debugCoordinateConversion } from "./lib/debug/coordinateDebug.js";
 import BatchPanel from "./components/BatchPanel.jsx";
 import MaintenanceManager from "./components/MaintenanceManager.jsx";
+import ToolOffsetCalibration from "./components/ToolOffsetCalibration.jsx";
 
 function calculatePadCenter(p) {
   // For Gerber-extracted pads, x,y coordinates ARE the center (flash coordinates)
@@ -88,6 +89,7 @@ function parseLengthToMm(lenStr = "") {
 export default function App() {
   const [layers, setLayers] = useState([]);
   const [side, setSide] = useState("top");
+  const [, forceRender] = useState({});
   // const [mirrorBottom, setMirrorBottom] = useState(true); // User requested removal
   const [svg, setSvg] = useState("");
 
@@ -131,9 +133,6 @@ export default function App() {
   useEffect(() => {
     if (window.serial && window.serial.onData) {
       window.serial.onData((line) => {
-        // Parse Position - Robust Marlin/GRBL regex
-        // Supports: X:10.00 Y:20.00 Z:5.00
-        // Supports: MPos:10.00,20.00,5.00
         let x = null, y = null, z = null;
 
         // Try Marlin format first
@@ -161,9 +160,6 @@ export default function App() {
       if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
     };
   }, []);
-
-  // const [opencvReady, setOpencvReady] = useState(false);
-  // const [cameraStream, setCameraStream] = useState(null);
 
   const [fidPickMode, setFidPickMode] = useState(false);
   const [fidActiveId, setFidActiveId] = useState(null);
@@ -311,13 +307,7 @@ export default function App() {
       if (refIndex === 1) next.p1 = { ...currentMPos };
       if (refIndex === 2) next.p2 = { ...currentMPos };
 
-      // If both are set, compute transform
-      // We assume Ref1 is (0,0) and Ref2 is (Width, Height) of the bounding box
-      // If no board outline, we estimate from pads
       if (next.p1 && next.p2) {
-        // Calculate theoretical dimensions
-        // For simplicity, we assume the user picks Bottom-Left (Min) and Top-Right (Max)
-        // We need the design size.
         let width = 100, height = 100; // Default
 
         // Try to get from board outline
@@ -331,9 +321,6 @@ export default function App() {
           height = Math.max(...ys) - Math.min(...ys);
         }
 
-        // Ref1 (BL) -> (0,0) or (MinX, MinY)
-        // Ref2 (TR) -> (Width, Height) or (MaxX, MaxY)
-        // Construct correspondence points
         const designPts = [
           { x: 0, y: 0 },
           { x: width, y: height }
@@ -1047,12 +1034,12 @@ export default function App() {
 
         // Use original pad coordinates for drawing the marker (not transformed coordinates)
         const markerCoords = { x: selectedPad.x, y: selectedPad.y };
-        console.log('Drawing overlay for selected pad:', {
-          selectedMm,
-          selectedPad,
-          markerCoords,
-          centerMethod: selectedPad.centerMethod
-        });
+        // console.log('Drawing overlay for selected pad:', {
+        //   selectedMm,
+        //   selectedPad,
+        //   markerCoords,
+        //   centerMethod: selectedPad.centerMethod
+        // });
         const u = mmToCurrentUnits(markerCoords);
         // console.log('Converted to SVG units:', u);
 
@@ -1977,6 +1964,16 @@ export default function App() {
         </div>
 
         <MaintenanceManager manager={maintenanceManager} />
+
+        <ToolOffsetCalibration
+          toolOffset={maintenanceManager.getToolOffset()}
+          setToolOffset={(o) => {
+            maintenanceManager.setToolOffset(o);
+            forceRender({});
+          }}
+          machinePosition={livePreview.machinePosition}
+          isConnected={isSerialConnected}
+        />
 
         <div style={{ color: '#9aa0a6', margin: '0 0 12px 0', border: '1px solid #9aa0a6', padding: '4px 12px 6px 12px', borderRadius: '4px' }}>
           Components
