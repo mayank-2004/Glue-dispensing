@@ -11,6 +11,7 @@ export class NozzleMaintenanceManager {
     });
     this.reminderCallback = null;
     this.toolOffset = this.loadFromStorage('toolOffset', { dx: 0, dy: 0 });
+    this.pixelsPerMm = this.loadFromStorage('pixelsPerMm', 20);
   }
 
   getToolOffset() {
@@ -20,6 +21,15 @@ export class NozzleMaintenanceManager {
   setToolOffset(offset) {
     this.toolOffset = { ...this.toolOffset, ...offset };
     this.saveToStorage('toolOffset', this.toolOffset);
+  }
+
+  getPixelsPerMm() {
+    return this.pixelsPerMm;
+  }
+
+  setPixelsPerMm(val) {
+    this.pixelsPerMm = val;
+    this.saveToStorage('pixelsPerMm', this.pixelsPerMm);
   }
 
   // Record a dispense operation

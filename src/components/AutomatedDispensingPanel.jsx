@@ -32,7 +32,8 @@ export default function AutomatedDispensingPanel({
   applyXf,
   isConnected = false,
   machinePosition = { x: 0, y: 0, z: 0 },
-  panelBoards = []
+  panelBoards = [],
+  toolOffset = { dx: 0, dy: 0 }
 }) {
   const [isJobRunning, setIsJobRunning] = useState(false);
   const [jobMode, setJobMode] = useState('single'); // 'single' or 'batch'
@@ -44,6 +45,13 @@ export default function AutomatedDispensingPanel({
   const [regIndex, setRegIndex] = useState(0);
   // const [currentPos, setCurrentPos] = useState({ x: 0, y: 0, z: 0 }); // Replaced by prop
   const [jogStep, setJogStep] = useState(1);
+
+  // Machine Configuration State
+  const [valveOnCmd, setValveOnCmd] = useState('M106 S255');
+  const [valveOffCmd, setValveOffCmd] = useState('M107');
+  const [dispenseHeight, setDispenseHeight] = useState(0.5);
+  const [safeTravelHeight, setSafeTravelHeight] = useState(5.0);
+  const [baseDwellTime, setBaseDwellTime] = useState(120);
 
   const refPoint = referencePoint || selectedOrigin;
   const activeSequence = useSafePathPlanning ? safeSequence : dispensingSequence;
@@ -105,10 +113,8 @@ export default function AutomatedDispensingPanel({
     });
 
     try {
-      console.log('SEND:', cmd); // Debug log
-      // Send command
+      console.log('SEND:', cmd);
       await window.serial.writeLine(cmd);
-      // Wait for ACK
       await ackPromise;
       return true;
     } catch (e) {
@@ -201,7 +207,8 @@ export default function AutomatedDispensingPanel({
           }
 
           const pressure = pressureSettings.customPressure || 25;
-          const dwell = pressureSettings.customDwellTime || 120;
+          const configDwell = pressureSettings.customDwellTime || baseDwellTime;
+          const dwell = dispensingSequencer.calculateDwellTime(p, { customDwellTime: configDwell });
 
           const cmds = dispensePoint({
             x: p.x, y: p.y,
@@ -262,7 +269,17 @@ export default function AutomatedDispensingPanel({
 
   const handleDownloadGCode = () => {
     if (!activeSequence.length) return;
-    const gcode = dispensingSequencer.generateDispensingGCode(refPoint, activeSequence, { pressureSettings, speedSettings, xf: xfRef.current, applyXf });
+    const gcode = dispensingSequencer.generateDispensingGCode(refPoint, activeSequence, {
+      pressureSettings: { ...pressureSettings, customDwellTime: baseDwellTime },
+      speedSettings,
+      xf: xfRef.current,
+      applyXf,
+      valveOnCmd,
+      valveOffCmd,
+      dispenseHeight,
+      safeHeight: safeTravelHeight,
+      toolOffset
+    });
     const blob = new Blob([gcode], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -278,10 +295,34 @@ export default function AutomatedDispensingPanel({
       <div className='panel-data'>
         <div className="box">
           <h4>Settings</h4>
-          <label>
+          <label style={{ display: 'block', marginBottom: '8px' }}>
             <input type="checkbox" checked={useSafePathPlanning} onChange={e => setUseSafePathPlanning(e.target.checked)} />
             Safe Path Planning
           </label>
+          <hr style={{ borderColor: '#444', margin: '12px 0' }} />
+          <h5>G-Code Generation Config</h5>
+          <div className="grid2" style={{ gap: '8px', fontSize: '0.9em' }}>
+            <label>
+              Valve ON Cmd:
+              <input type="text" value={valveOnCmd} onChange={e => setValveOnCmd(e.target.value)} style={{ width: '100%', marginTop: '4px' }} />
+            </label>
+            <label>
+              Valve OFF Cmd:
+              <input type="text" value={valveOffCmd} onChange={e => setValveOffCmd(e.target.value)} style={{ width: '100%', marginTop: '4px' }} />
+            </label>
+            <label>
+              Dispense Z (mm):
+              <input type="number" step="0.1" value={dispenseHeight} onChange={e => setDispenseHeight(parseFloat(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
+            </label>
+            <label>
+              Safe Travel Z (mm):
+              <input type="number" step="1" value={safeTravelHeight} onChange={e => setSafeTravelHeight(parseFloat(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
+            </label>
+            <label>
+              Base Dwell (ms):
+              <input type="number" step="10" value={baseDwellTime} onChange={e => setBaseDwellTime(Number(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
+            </label>
+          </div>
         </div>
 
         {/* Board Info */}

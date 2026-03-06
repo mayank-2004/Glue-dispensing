@@ -9,8 +9,6 @@ import SerialPanel from "./components/SerialPanel.jsx";
 import ComponentList from "./components/ComponentList.jsx";
 import JogPanel from "./components/JogPanel.jsx";
 import FiducialPanel from "./components/FiducialPanel.jsx";
-import PressurePanel from "./components/PressurePanel.jsx";
-import SpeedPanel from "./components/SpeedPanel.jsx";
 import AutomatedDispensingPanel from "./components/AutomatedDispensingPanel.jsx";
 // import LivePreview from "./components/LivePreview.jsx";
 import { identifyLayers } from "./lib/gerber/identifyLayers.js";
@@ -26,17 +24,12 @@ import { PadDetector } from "./lib/vision/padDetection.js";
 import { QualityController } from "./lib/quality/qualityControl.js";
 import { NozzleMaintenanceManager } from "./lib/maintenance/nozzleMaintenance.js";
 import { generatePath } from "./lib/motion/pathGeneration.js";
-import { PressureController, VISCOSITY_TYPES } from "./lib/pressure/pressureControl.js";
-import { SpeedProfileManager } from "./lib/speed/speedProfiles.js";
 import { PasteVisualizer } from "./lib/paste/pasteVisualization.js";
 import { extractBoardOutline } from "./lib/gerber/boardOutline.js";
 import { DispensingSequencer } from "./lib/automation/dispensingSequence.js";
 import { SafePathPlanner } from "./lib/automation/safePathPlanner.js";
-import { BatchProcessor } from "./lib/batch/batchProcessor.js";
-import { BatchExecutor } from "./lib/batch/batchExecutor.js";
 import { LayerDataExtractor } from "./lib/gerber/layerDataExtractor.js";
 // import { debugCoordinateConversion } from "./lib/debug/coordinateDebug.js";
-import BatchPanel from "./components/BatchPanel.jsx";
 import MaintenanceManager from "./components/MaintenanceManager.jsx";
 import ToolOffsetCalibration from "./components/ToolOffsetCalibration.jsx";
 
@@ -230,44 +223,10 @@ export default function App() {
   const [qualityController] = useState(() => new QualityController());
   const [maintenanceManager] = useState(() => new NozzleMaintenanceManager());
   const [fiducialVisionDetector] = useState(() => new FiducialVisionDetector());
-  const [pressureController] = useState(() => new PressureController());
-  const [speedProfileManager] = useState(() => new SpeedProfileManager());
   const [pasteVisualizer] = useState(() => new PasteVisualizer());
   const [dispensingSequencer] = useState(() => new DispensingSequencer());
   const [safePathPlanner] = useState(() => new SafePathPlanner());
-  const [batchProcessor] = useState(() => new BatchProcessor());
 
-  // Serial Interface Adapter for BatchExecutor
-  const serialAdapter = useMemo(() => ({
-    onJobStart: async (gcode) => {
-      // Send G-code lines to machine
-      if (window.serial && window.serial.writeLine) {
-        // Simple line-by-line send (simulated job execution)
-        const lines = gcode.split('\n');
-        for (const line of lines) {
-          if (!line.trim() || line.startsWith(';')) continue;
-          await window.serial.writeLine(line);
-        }
-        // Simulate completion for now (since we don't have real "job done" event from firmware yet)
-        // In real implementation, this would be set by SerialPanel's queue manager
-        if (serialAdapter.onJobComplete) serialAdapter.onJobComplete();
-      } else {
-        console.warn("Serial connection not available for batch execution");
-        // Simulate for testing
-        setTimeout(() => {
-          if (serialAdapter.onJobComplete) serialAdapter.onJobComplete();
-        }, 1000);
-      }
-    },
-    onJobComplete: null, // Will be assigned by BatchExecutor
-    pauseJob: () => console.log("Pause job requested"),
-    resumeJob: () => console.log("Resume job requested"),
-    stopJob: () => console.log("Stop job requested")
-  }), []);
-
-  const [batchExecutor] = useState(() => new BatchExecutor(serialAdapter, dispensingSequencer, pressureController, speedProfileManager));
-  const [currentBatchId, setCurrentBatchId] = useState(null);
-  const [currentBatch, setCurrentBatch] = useState(null);
   const [layerData, setLayerData] = useState({});
   const [showPasteDots, setShowPasteDots] = useState(false);
   const [boardOutline, setBoardOutline] = useState(null);
@@ -393,116 +352,117 @@ export default function App() {
   //   alert(`✅ OpenCV detected ${detectedFiducials.length} fiducials!`);
   // };
 
-  useEffect(() => {
-    if (currentBatchId && batchProcessor) {
-      setCurrentBatch(batchProcessor.getBatch(currentBatchId));
-    } else {
-      setCurrentBatch(null);
-    }
-  }, [currentBatchId, batchProcessor]);
+  // useEffect(() => {
+  //   if (currentBatchId && batchProcessor) {
+  //     setCurrentBatch(batchProcessor.getBatch(currentBatchId));
+  //   } else {
+  //     setCurrentBatch(null);
+  //   }
+  // }, [currentBatchId, batchProcessor]);
 
-  // Batch processing handlers
-  const handleBatchSelect = (batchId) => {
-    setCurrentBatchId(batchId);
-  };
+  // // Batch processing handlers
+  // const handleBatchSelect = (batchId) => {
+  //   setCurrentBatchId(batchId);
+  // };
 
-  const handleStartBatch = async (batchId) => {
-    const batch = batchProcessor.getBatch(batchId);
-    if (!batch) return;
+  // const handleStartBatch = async (batchId) => {
+  //   const batch = batchProcessor.getBatch(batchId);
+  //   if (!batch) return;
 
-    if (batch.status === 'paused') {
-      // Resume paused batch
-      return handleResumeBatch(batchId);
-    }
+  //   if (batch.status === 'paused') {
+  //     // Resume paused batch
+  //     return handleResumeBatch(batchId);
+  //   }
 
-    // Start new batch
-    const success = await batchProcessor.startBatch(batchId);
-    if (success) {
-      console.log('Batch started:', batchId);
-      try {
-        await batchExecutor.executeBatch(batch, batchProcessor);
-        console.log('Batch execution completed');
-      } catch (error) {
-        console.error('Batch execution failed:', error);
-        alert('Batch execution failed: ' + error.message);
-      }
-    }
-  };
+  //   // Start new batch
+  //   const success = await batchProcessor.startBatch(batchId);
+  //   if (success) {
+  //     console.log('Batch started:', batchId);
+  //     try {
+  //       await batchExecutor.executeBatch(batch, batchProcessor);
+  //       console.log('Batch execution completed');
+  //     } catch (error) {
+  //       console.error('Batch execution failed:', error);
+  //       alert('Batch execution failed: ' + error.message);
+  //     }
+  //   }
+  // };
 
-  const handlePauseBatch = (batchId) => {
-    batchProcessor.pauseBatch(batchId);
-  };
+  // const handlePauseBatch = (batchId) => {
+  //   batchProcessor.pauseBatch(batchId);
+  // };
 
-  const handleResumeBatch = async (batchId) => {
-    const success = batchProcessor.resumeBatch(batchId);
-    if (success) {
-      try {
-        const batch = batchProcessor.getBatch(batchId);
-        await batchExecutor.executeBatch(batch, batchProcessor);
-        console.log('Batch execution resumed and completed');
-      } catch (error) {
-        console.error('Batch resume failed:', error);
-        alert('Batch resume failed: ' + error.message);
-      }
-    }
-  };
+  // const handleResumeBatch = async (batchId) => {
+  //   const success = batchProcessor.resumeBatch(batchId);
+  //   if (success) {
+  //     try {
+  //       const batch = batchProcessor.getBatch(batchId);
+  //       await batchExecutor.executeBatch(batch, batchProcessor);
+  //       console.log('Batch execution resumed and completed');
+  //     } catch (error) {
+  //       console.error('Batch resume failed:', error);
+  //       alert('Batch resume failed: ' + error.message);
+  //     }
+  //   }
+  // };
 
-  const handleAddCurrentBoard = (batchId) => {
-    if (!pads.length) {
-      alert('No pads loaded. Please load a PCB file first.');
-      return;
-    }
+  // const handleAddCurrentBoard = (batchId) => {
+  //   if (!pads.length) {
+  //     alert('No pads loaded. Please load a PCB file first.');
+  //     return;
+  //   }
 
-    const board = {
-      name: `Board ${Date.now()}`,
-      pads: pads,
-      fiducials: fiducials,
-      settings: {
-        pressure: pressureSettings,
-        speed: speedSettings
-      },
-      position: { x: 0, y: 0, rotation: 0 }
-    };
+  //   const board = {
+  //     name: `Board ${Date.now()}`,
+  //     pads: pads,
+  //     fiducials: fiducials,
+  //     settings: {
+  //       pressure: pressureSettings,
+  //       speed: speedSettings
+  //     },
+  //     position: { x: 0, y: 0, rotation: 0 }
+  //   };
 
-    batchProcessor.addBoard(batchId, board);
-    alert('Board added to batch!');
-  };
+  //   batchProcessor.addBoard(batchId, board);
+  //   alert('Board added to batch!');
+  // };
 
-  const handleDeleteBatch = (batchId) => {
-    if (currentBatchId === batchId) {
-      setCurrentBatchId(null);
-    }
-  };
+  // const handleDeleteBatch = (batchId) => {
+  //   if (currentBatchId === batchId) {
+  //     setCurrentBatchId(null);
+  //   }
+  // };
 
-  // Live preview control functions
-  const startLivePreview = () => {
-    setLivePreview({
-      isActive: true,
-      currentPadIndex: 0,
-      machinePosition: { x: 0, y: 0, z: 6 },
-      completedPads: []
-    });
-  };
+  // // Live preview control functions
+  // const startLivePreview = () => {
+  //   setLivePreview({
+  //     isActive: true,
+  //     currentPadIndex: 0,
+  //     machinePosition: { x: 0, y: 0, z: 6 },
+  //     completedPads: []
+  //   });
+  // };
 
-  const updateLivePreview = (padIndex, machinePos = null) => {
-    setLivePreview(prev => ({
-      ...prev,
-      currentPadIndex: padIndex,
-      machinePosition: machinePos || prev.machinePosition,
-      completedPads: dispensingSequence.slice(0, padIndex)
-    }));
-  };
+  // const updateLivePreview = (padIndex, machinePos = null) => {
+  //   setLivePreview(prev => ({
+  //     ...prev,
+  //     currentPadIndex: padIndex,
+  //     machinePosition: machinePos || prev.machinePosition,
+  //     completedPads: dispensingSequence.slice(0, padIndex)
+  //   }));
+  // };
 
-  const stopLivePreview = () => {
-    setLivePreview({
-      isActive: false,
-      currentPadIndex: -1,
-      machinePosition: null,
-      completedPads: []
-    });
-  };
+  // const stopLivePreview = () => {
+  //   setLivePreview({
+  //     isActive: false,
+  //     currentPadIndex: -1,
+  //     machinePosition: null,
+  //     completedPads: []
+  //   });
+  // };
   // const [visionEnabled, setVisionEnabled] = useState(false);
   // const [qualityEnabled, setQualityEnabled] = useState(false);
+
   const [maintenanceAlert, setMaintenanceAlert] = useState(null);
   const [toolOffset, setToolOffset] = useState(() => {
     try {
@@ -1880,10 +1840,7 @@ export default function App() {
     { id: 'FiducialPanel', label: 'Fiducial Panel' },
     { id: 'CameraPanel', label: 'Camera Panel' },
     { id: 'AutomatedDispensingPanel', label: 'Automated Dispensing Panel' },
-    { id: 'BatchPanel', label: 'Batch Panel' },
     // { id: 'LivePreview', label: 'Live Preview' },
-    { id: 'PressurePanel', label: 'Pressure Panel' },
-    { id: 'SpeedPanel', label: 'Speed Panel' },
   ]
 
   return (
@@ -2354,6 +2311,11 @@ export default function App() {
               selectedDesign={effectiveOrigin ? effectiveOrigin : (selectedMm ? { x: selectedMm.x, y: selectedMm.y } : null)}
               toolOffset={maintenanceManager.getToolOffset()}
               setToolOffset={(o) => maintenanceManager.setToolOffset(o)}
+              pixelsPerMm={maintenanceManager.getPixelsPerMm()}
+              setPixelsPerMm={(val) => {
+                maintenanceManager.setPixelsPerMm(val);
+                if (typeof forceRender === 'function') forceRender({});
+              }}
               nozzleDia={0.6}
               setNozzleDia={(d) => { /* update nozzle dia */ }}
               padDetector={padDetector}
@@ -2383,6 +2345,7 @@ export default function App() {
               boardOutline={boardOutline}
               useSafePathPlanning={useSafePathPlanning}
               setUseSafePathPlanning={setUseSafePathPlanning}
+              toolOffset={maintenanceManager.getToolOffset()}
               componentHeights={componentHeights}
               setComponentHeights={setComponentHeights}
 
@@ -2415,9 +2378,6 @@ export default function App() {
                 a.download = `dispensing-${Date.now()}.gcode`;
                 a.click();
               }}
-              batchProcessor={batchProcessor}
-              currentBatch={currentBatch}
-              onStartBatch={handleStartBatch}
               onJobComplete={() => {
                 console.log('Automated job finished');
                 alert('Job Complete!');
@@ -2426,42 +2386,11 @@ export default function App() {
             />
           </div>
 
-          <div style={{ display: activeComponent === 'BatchPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
-            <BatchPanel
-              batchProcessor={batchProcessor}
-              currentBatch={currentBatch}
-              onBatchSelect={handleBatchSelect}
-              onStartBatch={handleStartBatch}
-              onPauseBatch={handlePauseBatch}
-              onAddBoard={handleAddCurrentBoard}
-              onDeleteBatch={handleDeleteBatch}
-            />
-          </div>
 
-          <div style={{ display: activeComponent === 'PressurePanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
-            <PressurePanel
-              pressureController={pressureController}
-              pressureSettings={pressureSettings}
-              setPressureSettings={setPressureSettings}
-              selectedPad={selectedMm ? pads.find(p => Math.abs(p.x - selectedMm.x) < 0.1 && Math.abs(p.y - selectedMm.y) < 0.1) : null}
-            />
-          </div>
-
-          <div style={{ display: activeComponent === 'SpeedPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
-            <SpeedPanel
-              speedProfileManager={speedProfileManager}
-              speedSettings={speedSettings}
-              referencePoint={referencePoint}
-              selectedOrigin={selectedOrigin}
-              setSpeedSettings={setSpeedSettings}
-              selectedPad={selectedMm ? pads.find(p => Math.abs(p.x - selectedMm.x) < 0.1 && Math.abs(p.y - selectedMm.y) < 0.1) : null}
-              pressureSettings={pressureSettings}
-              pads={pads}
-            />
-          </div>
         </div>
+      </div>
 
-        {/* {
+      {/* {
           activeComponent === 'LivePreview' && (
             <LivePreview
               dispensingSequence={dispensingSequence}
@@ -2473,7 +2402,7 @@ export default function App() {
           )
         } */}
 
-        {/* {activeComponent === 'MotionPanel' && (
+      {/* {activeComponent === 'MotionPanel' && (
           <MotionPanel onSendLines={async (lines) => {
             if (window.serial && window.serial.writeLine) {
               for (const line of lines) await window.serial.writeLine(line);
@@ -2482,7 +2411,6 @@ export default function App() {
         )} */}
 
 
-      </div>
-    </div >
+    </div>
   );
 }

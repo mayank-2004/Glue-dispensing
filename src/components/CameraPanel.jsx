@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { applyTransform } from "../lib/utils/transform2d";
+import { fitAffine, fitSimilarity, fitTranslation, applyTransform } from "../lib/utils/transform2d.js";
+import LensCalibration from "./LensCalibration.jsx";
 import { FiducialVisionDetector } from "../lib/vision/fiducialVision.js";
 import { jogRel } from "../lib/motion/gcode";
 import "./CameraPanel.css";
@@ -23,7 +24,9 @@ export default function CameraPanel({
   onUpdateFiducials,  // function(newFiducials)
   activeBoardName,      // string for logging
   panelBoards = [],
-  setPanelBoards
+  setPanelBoards,
+  pixelsPerMm,
+  setPixelsPerMm
 }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -31,10 +34,10 @@ export default function CameraPanel({
   const machinePositionRef = useRef(machinePosition);
 
   // Ref to hold latest props for stale-closure avoidance in setInterval
-  const latestPropsRef = useRef({ fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards });
+  const latestPropsRef = useRef({ fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm });
   useEffect(() => {
-    latestPropsRef.current = { fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards };
-  }, [fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards]);
+    latestPropsRef.current = { fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm };
+  }, [fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm]);
 
   const [streamOn, setStreamOn] = useState(false);
 
@@ -108,7 +111,7 @@ export default function CameraPanel({
 
   function transpose(M) { const r = M.length, c = M[0].length, T = Array.from({ length: c }, () => new Array(r)); for (let i = 0; i < r; i++)for (let j = 0; j < c; j++)T[j][i] = M[i][j]; return T; }
   function matMul(A, B) { const r = A.length, k = A[0].length, c = B[0].length, M = Array.from({ length: r }, () => new Array(c).fill(0)); for (let i = 0; i < r; i++) { for (let j = 0; j < c; j++) { let s = 0; for (let t = 0; t < k; t++)s += A[i][t] * B[t][j]; M[i][j] = s; } } return M; }
-  function vecMul(A, v) { const r = A.length, c = A[0].length, out = new Array(r).fill(0); for (let i = 0; i < r; i++) { let s = 0; for (let j = 0; j < c; j++)s += A[i][j] * v[j]; out[i] = s; } return out; }
+  function vecMul(A, v) { const r = A.length, c = A[0].length, out = new Array(r).fill(0); for (let i = 0; i < r; i++) { let s = 0; for (let j = 0; j < c; j++)s += A[i][j] * v[j]; out[i] = s; return out; } }
   function solveSymmetric(M, b) { const n = M.length; const A = Array.from({ length: n }, (_, i) => [...M[i], b[i]]); for (let i = 0; i < n; i++) { let piv = A[i][i]; if (Math.abs(piv) < 1e-12) return null; const inv = 1 / piv; for (let j = i; j <= n; j++)A[i][j] *= inv; for (let r = 0; r < n; r++) { if (r === i) continue; const f = A[r][i]; for (let j = i; j <= n; j++)A[r][j] -= f * A[i][j]; } } return A.map(row => row[n]); }
 
   const projectPx = useCallback((pt) => {
@@ -216,7 +219,7 @@ export default function CameraPanel({
     const cProps = latestPropsRef.current;
     if (machinePositionRef.current) {
       const baseWorld = (applyXf && xf && selectedDesign) ? applyTransform(xf, selectedDesign) : (selectedDesign || { x: 0, y: 0 });
-      let pxmm = 20; // fallback 20 px/mm if not calibrated
+      let pxmm = pixelsPerMm; // Use prop directly
       // We will try to get it from H if possible
       if (H) {
         const center = { x: 100, y: 100 };
@@ -262,7 +265,7 @@ export default function CameraPanel({
 
           // Better: Calculate it properly if we can.
           // Assuming standard 20px/mm for visualization fallback
-          const scale = pxPerMmAt({ x: 0, y: 0 }) || 20;
+          const scale = pxPerMmAt({ x: 0, y: 0 }) || pixelsPerMm;
           const isoRadius = r + (4 * scale);
 
           ctx.beginPath();
@@ -276,6 +279,25 @@ export default function CameraPanel({
           ctx.fillStyle = '#00ff00';
           ctx.font = '12px Arial';
           ctx.fillText(`Fid (${fid.confidence.toFixed(2)})`, px.x + r + 5, px.y);
+
+          // Draw crosshairs on detected fiducials
+          ctx.strokeStyle = '#00ff00';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(px.x - r - 5, px.y);
+          ctx.lineTo(px.x + r + 5, px.y);
+          ctx.moveTo(px.x, px.y - r - 5);
+          ctx.lineTo(px.x, px.y + r + 5);
+          ctx.stroke();
+
+          // Display machine coordinates for detected fiducials
+          const ppxmm = latestPropsRef.current.pixelsPerMm;
+          const machX = machinePositionRef.current.x + (toolOffset?.dx || 0) + ((px.x - (W / 2)) / ppxmm);
+          const machY = machinePositionRef.current.y + (toolOffset?.dy || 0) + (((Hh / 2) - px.y) / ppxmm);
+
+          ctx.fillStyle = '#00ff00';
+          ctx.font = "12px monospace";
+          ctx.fillText(`C: ${machX.toFixed(2)}, ${machY.toFixed(2)}`, px.x + r + 5, px.y - r);
         });
       }
       // Legacy single result support
@@ -305,7 +327,7 @@ export default function CameraPanel({
 
     if (predictedPx) {
       const baseWorld = (applyXf && xf && selectedDesign) ? applyTransform(xf, selectedDesign) : (selectedDesign || { x: 0, y: 0 });
-      const pxmm = pxPerMmAt(baseWorld) || 10;
+      const pxmm = pxPerMmAt(baseWorld) || pixelsPerMm;
       const r = Math.max(2, (nozzleDia || 0.6) * 0.5 * pxmm);
 
       ctx.beginPath();
@@ -338,7 +360,7 @@ export default function CameraPanel({
       ctx.fillStyle = "#ff4d4f";
       ctx.font = "12px ui-monospace, monospace";
       const baseWorld = (applyXf && xf && selectedDesign) ? applyTransform(xf, selectedDesign) : (selectedDesign || { x: 0, y: 0 });
-      const pxmm = pxPerMmAt(baseWorld) || 10;
+      const pxmm = pxPerMmAt(baseWorld) || pixelsPerMm;
       const mm = Math.hypot(dx, dy) / pxmm;
       ctx.fillText(`${mm.toFixed(3)} mm (${dx.toFixed(1)}px, ${dy.toFixed(1)}px)`,
         predictedPx.u + 8, predictedPx.v - 8);
@@ -362,7 +384,7 @@ export default function CameraPanel({
     const centerY = Hh / 2;
 
     const baseWorld = (applyXf && xf && selectedDesign) ? applyTransform(xf, selectedDesign) : (selectedDesign || { x: 0, y: 0 });
-    const pxmm = pxPerMmAt(baseWorld) || 20; // fallback 20 px/mm if not calibrated
+    const pxmm = pixelsPerMm; // fallback 20 px/mm if not calibrated
 
     let targetU = u;
     let targetV = v;
@@ -496,7 +518,7 @@ export default function CameraPanel({
       }
     }
     // 2. Fallback or Manual Input (todo)
-    return 20; // Default fallback (approx 20px/mm)
+    return pixelsPerMm; // Default fallback (approx 20px/mm)
   };
 
   // Automated fiducial detection using camera
@@ -901,7 +923,7 @@ export default function CameraPanel({
 
         <div className="fiducial-detection-section">
           <h4>Automated Fiducial Detection</h4>
-          <div className="flex-row" style={{ gap: 8 }}>
+          <div className="flex-row" style={{ gap: 8, flexWrap: 'wrap' }}>
             <button
               className="btn"
               onClick={detectFiducialsWithCamera}
@@ -952,7 +974,15 @@ export default function CameraPanel({
       </div>
 
       <div className="camera-controls-row" style={{ marginTop: 12 }}>
-        <div className="box jog-section" style={{ flex: 1, padding: 12, background: '#1c1c1c', borderRadius: 8 }}>
+        {/* Added Lens Calibration Wizard to the sidebar */}
+        <LensCalibration
+          pixelsPerMm={pixelsPerMm}
+          setPixelsPerMm={setPixelsPerMm}
+          machinePosition={machinePosition}
+          visionResult={visionResult}
+        />
+
+        {/* <div className="section" style={{ border: '1px solid #444', borderRadius: '4px', marginBottom: '12px', padding: '12px', background: '#2c2e33' }}>
           <legend style={{ color: '#007bff', fontWeight: 'bold', marginBottom: 8 }}>Mini Jog Controls</legend>
           <div className="flex-row" style={{ gap: 16, alignItems: 'center', justifyContent: 'center' }}>
             <div className="jog-controls-mini" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 40px)', gridTemplateRows: 'repeat(3, 40px)', gap: 4, textAlign: 'center' }}>
@@ -979,11 +1009,11 @@ export default function CameraPanel({
               </div>
             </div>
           </div>
-        </div>
+        </div> */}
       </div>
 
       {/* Settings Row - Nozzle & Tool Offset */}
-      <div className="camera-controls-row" style={{ marginTop: 12 }}>
+      {/* <div className="camera-controls-row" style={{ marginTop: 12 }}> */}
         {/* Nozzle & Dispensing */}
         {/* <div className="box nozzle-section">
           <legend>Nozzle & Dispensing</legend>
@@ -1031,7 +1061,7 @@ export default function CameraPanel({
             Offsets are added to machine XY before projecting to camera. Saved in your browser.
           </small>
         </div> */}
-      </div>
+      {/* </div> */}
     </div>
   );
 }
