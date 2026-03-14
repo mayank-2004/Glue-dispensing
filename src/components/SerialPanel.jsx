@@ -14,7 +14,6 @@ export default function SerialPanel({
   // const [connected, setConnected] = useState(false); // Removed local state
   const [consoleLines, setConsoleLines] = useState([]);
   const [isHoming, setIsHoming] = useState(false);
-  const [pendingHomeZero, setPendingHomeZero] = useState(false);
 
   const inputRef = useRef(null);
   const mPosRef = useRef(machinePosition);
@@ -22,32 +21,7 @@ export default function SerialPanel({
 
   useEffect(() => {
     mPosRef.current = machinePosition;
-
-    // Auto-clear homing status once machine actually reaches 0,0,0
-    if (isHoming && Math.abs(machinePosition.x) < 0.01 && Math.abs(machinePosition.y) < 0.01 && Math.abs(machinePosition.z) < 0.01) {
-      setIsHoming(false);
-    }
-
-    // Trigger the 0,0,0 move when the controller actually reaches the physical -3, -10 hardware offsets
-    if (pendingHomeZero) {
-      const atHardwareHome = Math.abs(machinePosition.x - (-3)) < 0.1 &&
-        Math.abs(machinePosition.y - (-10)) < 0.1 &&
-        Math.abs(machinePosition.z - 0) < 0.1;
-
-      if (atHardwareHome) {
-        setPendingHomeZero(false);
-        setTimeout(async () => {
-          try {
-            console.log("Moving to true Home (0,0,0) offset from hardware switches...");
-            await window.serial.writeLine('G90');
-            await window.serial.writeLine('G0 X0 Y0 Z0');
-          } catch (e) {
-            console.error("Home offset move failed:", e);
-          }
-        }, 100);
-      }
-    }
-  }, [machinePosition, isHoming, pendingHomeZero]);
+  }, [machinePosition]);
 
   const refresh = async () => {
     try {
@@ -64,7 +38,13 @@ export default function SerialPanel({
   useEffect(() => { refresh(); }, []);
   useEffect(() => {
     window.serial.onData((line) => {
-      setConsoleLines((prev) => [...prev, line].slice(-500));
+      const ts = new Date().toISOString();
+      const isStatusPos = line.match(/X\s*:\s*([-\d.]+)/i) || line.match(/MPos:([-\d.]+)/);
+      // Optional: hide M114 responses if they spam too much, but for now we'll format them all
+      // as per request if they aren't purely repetitive. We will just format it.
+      if (!isStatusPos) {
+        setConsoleLines((prev) => [...prev, `[RECE] - ${ts} - ${line}`].slice(-500));
+      }
 
       let x = null, y = null, z = null;
       // Try Marlin format
@@ -96,7 +76,6 @@ export default function SerialPanel({
     try {
       hasReceivedPosRef.current = false;
       setIsHoming(false);
-      setPendingHomeZero(false);
       await window.serial.open({ path, baudRate: baud });
       // setConnected(true); // Removed
       if (onConnect) onConnect(); // Notify Parent
@@ -106,22 +85,14 @@ export default function SerialPanel({
       // Auto-Home
       setTimeout(async () => {
         try {
-          const pos = mPosRef.current;
-          const isAtHome = hasReceivedPosRef.current &&
-            Math.abs(pos.x) < 0.01 &&
-            Math.abs(pos.y) < 0.01 &&
-            Math.abs(pos.z) < 0.01;
-
-          if (!isAtHome) {
-            console.log("Machine not at home (or position unknown), sending G28 auto-home...");
-            setIsHoming(true);
-            setPendingHomeZero(true);
-            await window.serial.writeLine('G28');
-          } else {
-            console.log("Machine already at home position (0,0,0). Skipping G28.");
-          }
+          console.log("Sending G28 auto-home...");
+          setIsHoming(true);
+          await window.serial.writeLine('G28');
+          // Clear homing status after a reasonable time since we are no longer tracking reach
+          setTimeout(() => setIsHoming(false), 5000);
         } catch (e) {
           console.error(e);
+          setIsHoming(false);
         }
       }, 2000);
     } catch (e) {
@@ -133,7 +104,7 @@ export default function SerialPanel({
     const interval = setInterval(async () => {
       try {
         await window.serial.writeLine('M114');
-      } catch (e) { console.error(e); }
+      } catch (e) { /* ignore */ }
     }, 500);
     return interval;
   };
@@ -145,15 +116,22 @@ export default function SerialPanel({
     if (onDisconnect) onDisconnect();
   };
 
+  const sendCommand = async (cmd) => {
+    if (!isConnected) return;
+    const ts = new Date().toISOString();
+    setConsoleLines((prev) => [...prev, `[SEND] - ${ts} - ${cmd}`].slice(-500));
+    try {
+      await window.serial.writeLine(cmd);
+    } catch (e) {
+      alert(`Send failed: ${e.message || e}`);
+    }
+  };
+
   const sendLine = async () => {
-    const line = inputRef.current.value.trim();
+    const line = inputRef.current?.value.trim();
     if (!line) return;
     inputRef.current.value = '';
-    try {
-      await window.serial.writeLine(line);
-    } catch (e) {
-      alert(`Write failed: ${e.message || e}`);
-    }
+    await sendCommand(line);
   };
 
   const sendFile = async (e) => {
@@ -183,9 +161,9 @@ export default function SerialPanel({
               Homing...
             </span>
           )}
-          {isConnected && !isHoming && hasReceivedPosRef.current && Math.abs(machinePosition.x) < 0.01 && Math.abs(machinePosition.y) < 0.01 && Math.abs(machinePosition.z) < 0.01 && (
+          {isConnected && !isHoming && hasReceivedPosRef.current && (
             <span style={{ fontSize: '0.7em', fontWeight: 'bold', background: '#00c49a', color: 'black', padding: '3px 8px', borderRadius: 4, textTransform: 'uppercase' }}>
-              At Home (0,0,0)
+              Position Known
             </span>
           )}
           <div style={{
@@ -205,7 +183,7 @@ export default function SerialPanel({
         </div>
       </div>
 
-      <div className="flex-row">
+      <div className="flex-row" style={{ marginTop: 8, paddingBottom: 16, borderBottom: '1px solid #444' }}>
         <button className="btn secondary" onClick={refresh}>Refresh</button>
 
         <select value={baud} onChange={e => setBaud(Number(e.target.value))} style={{ width: 100, marginLeft: 8 }}>
@@ -228,19 +206,56 @@ export default function SerialPanel({
 
         <button className="btn" onClick={connect} disabled={!path || isConnected}>Connect</button>
         <button className="btn secondary" onClick={disconnect} disabled={!isConnected}>Disconnect</button>
-      </div>
-
-      <div className="flex-row" style={{ marginTop: 8 }}>
-        <input ref={inputRef} placeholder="G-code line..." style={{ flex: 1 }} />
-        <button className="btn" onClick={sendLine} disabled={!isConnected}>Send</button>
-        <label className="btn">
+        
+        <label className="btn" style={{ marginLeft: 8 }}>
           Send file
           <input type="file" accept=".gcode,.nc,.txt" style={{ display: 'none' }} onChange={sendFile} disabled={!isConnected} />
         </label>
       </div>
 
-      <div className="console" style={{ marginTop: 8, height: 200, overflowY: 'auto', background: '#333', color: '#0f0', padding: 4, fontSize: 12 }}>
-        {consoleLines.map((l, i) => <div key={i}>{l}</div>)}
+      <div className="serial-layout">
+        {/* Left Panel: Control Grid */}
+        <div className="control-pane">
+          <h3>Control</h3>
+          <div className="control-grid-3">
+            {/* Using generic M-codes until user provides exact machine codes */}
+            <button className="btn-dark" onClick={() => sendCommand('M8')}>Left Air On</button>
+            <button className="btn-dark" onClick={() => sendCommand('M8')}>Right Air On</button>
+            <button className="btn-dark" onClick={() => sendCommand('M8')}>Ring Lights On</button>
+            
+            <button className="btn-dark" onClick={() => sendCommand('M9')}>Left Air Off</button>
+            <button className="btn-dark" onClick={() => sendCommand('M9')}>Right Air Off</button>
+            <button className="btn-dark" onClick={() => sendCommand('M9')}>Ring Lights Off</button>
+            
+            <button className="btn-dark" onClick={() => sendCommand('M8')}>Left Vac</button>
+            <button className="btn-dark" onClick={() => sendCommand('M8')}>Right Vac</button>
+            <button className="btn-dark" onClick={() => sendCommand('M18')}>Disable<br/>Steppers</button>
+          </div>
+          
+          <div className="control-grid-5" style={{ marginTop: 'auto' }}>
+            <button className="btn-dark small" onClick={() => sendCommand('G28 X')}>Home<br/>X</button>
+            <button className="btn-dark small" onClick={() => sendCommand('G28 Y')}>Home<br/>Y</button>
+            <button className="btn-dark small" onClick={() => sendCommand('G28 Z')}>Home<br/>Z</button>
+            {/* <button className="btn-dark small" onClick={() => sendCommand('G0 X200')}>Jog<br/>Max</button>
+            <button className="btn-dark small" onClick={() => sendCommand('G0 X0')}>Jog<br/>Min</button> */}
+          </div>
+        </div>
+
+        {/* Right Panel: Formatted Console */}
+        <div className="console-pane">
+          <div className="console-window">
+            {consoleLines.map((l, i) => <div key={i}>{l}</div>)}
+          </div>
+          <div className="console-input-row">
+            <button className="btn-send" onClick={sendLine} disabled={!isConnected}>Send</button>
+            <input 
+              ref={inputRef} 
+              placeholder="G-code command..." 
+              onKeyDown={(e) => e.key === 'Enter' && sendLine()}
+              disabled={!isConnected}
+            />
+          </div>
+        </div>
       </div>
     </div>
   );

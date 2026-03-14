@@ -8,6 +8,7 @@ export default function FiducialPanel({
   pickMode,
   togglePickMode,
   onInputMachine,
+  onClearMachine,
   onClearOne,
   onClearAll,
   onSolve2,
@@ -203,11 +204,21 @@ export default function FiducialPanel({
                 {f.design ? `X ${f.design.x.toFixed(3)}, Y ${f.design.y.toFixed(3)}` : <em>— click/drag on PCB —</em>}
               </td>
               <td>
-                <div className="flex-row" style={{ gap: 6 }}>
+                <div className="flex-row" style={{ gap: 6, alignItems: 'center' }}>
                   <input className="in sm" placeholder="Mx"
                     value={f.machine?.x ?? ""} onChange={(e) => onInputMachine(f.id, { x: parseFloat(e.target.value), y: f.machine?.y })} />
                   <input className="in sm" placeholder="My"
                     value={f.machine?.y ?? ""} onChange={(e) => onInputMachine(f.id, { x: f.machine?.x, y: parseFloat(e.target.value) })} />
+                  {f.machine && onClearMachine && (
+                    <button 
+                      className="btn icon-btn" 
+                      style={{ padding: '0px 6px', fontSize: '16px', background: 'transparent', border: 'none', color: '#ff4d4f', cursor: 'pointer', lineHeight: 1 }}
+                      title="Clear Machine Coordinates" 
+                      onClick={() => onClearMachine(f.id)}
+                    >
+                      ×
+                    </button>
+                  )}
                 </div>
               </td>
               <td><button className="btn secondary" onClick={() => onClearOne(f.id)}>Clear</button></td>

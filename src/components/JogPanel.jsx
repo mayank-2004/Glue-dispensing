@@ -11,35 +11,6 @@ export default function JogPanel({
     const [feedRate, setFeedRate] = useState(2000); // mm/min
     const [safeZ, setSafeZ] = useState(-5); // mm (Machine coordinate usually negative)
     const [isBusy, setIsBusy] = useState(false);
-    const [pendingHomeZero, setPendingHomeZero] = useState(false);
-
-    // Watch for machine position to hit the hardware home offsets (-3, -10, 0)
-    React.useEffect(() => {
-        if (pendingHomeZero && machinePosition) {
-            const atHardwareHome = Math.abs(machinePosition.x - (-3)) < 0.1 &&
-                Math.abs(machinePosition.y - (-10)) < 0.1 &&
-                Math.abs(machinePosition.z - 0) < 0.1;
-
-            if (atHardwareHome) {
-                setPendingHomeZero(false);
-                // Machine has finished G28 and reached the hardware offset. Move to true (0,0,0)
-                setTimeout(async () => {
-                    try {
-                        if (onSendGcode) {
-                            await onSendGcode(["G90", "G0 X0 Y0 Z0"]);
-                        } else if (window.serial && window.serial.writeLine) {
-                            await window.serial.writeLine('G90');
-                            await window.serial.writeLine('G0 X0 Y0 Z0');
-                        }
-                    } catch (e) {
-                        console.error("Home offset move failed:", e);
-                    } finally {
-                        setIsBusy(false);
-                    }
-                }, 100); // Tiny 100ms delay to let the controller state settle
-            }
-        }
-    }, [machinePosition, pendingHomeZero, onSendGcode]);
 
     // Send a jog command
     const jog = async (axis, dir) => {
@@ -91,27 +62,17 @@ export default function JogPanel({
         if (isBusy) return;
         if (!confirm("Home all axes (G28)? Ensure area is clear.")) return;
 
-        const isAtHome = machinePosition &&
-            Math.abs(machinePosition.x) < 0.01 &&
-            Math.abs(machinePosition.y) < 0.01 &&
-            Math.abs(machinePosition.z) < 0.01;
-
-        if (!isAtHome) {
-            setIsBusy(true);
-            setPendingHomeZero(true);
-            try {
-                if (onSendGcode) {
-                    await onSendGcode(["G28"]);
-                } else if (window.serial && window.serial.writeLine) {
-                    await window.serial.writeLine("G28");
-                }
-            } catch (e) {
-                console.error("Home failed:", e);
-                setIsBusy(false);
-                setPendingHomeZero(false);
+        setIsBusy(true);
+        try {
+            if (onSendGcode) {
+                await onSendGcode(["G28"]);
+            } else if (window.serial && window.serial.writeLine) {
+                await window.serial.writeLine("G28");
             }
-        } else {
-            console.log("Machine already at home position (0,0,0). Skipping G28.");
+        } catch (e) {
+            console.error("Home failed:", e);
+        } finally {
+            setIsBusy(false);
         }
     };
 

@@ -4,7 +4,8 @@ const ToolOffsetCalibration = ({
     toolOffset,
     setToolOffset,
     machinePosition,
-    isConnected
+    isConnected,
+    onAutoDetect
 }) => {
     const [isExpanded, setIsExpanded] = useState(false);
     const [step, setStep] = useState(1);
@@ -25,6 +26,8 @@ const ToolOffsetCalibration = ({
 
     const calculateOffset = () => {
         if (!posA || !posB) return { dx: 0, dy: 0 };
+        // If needle was at (10,10) and Machine moved to (-8.40, 35.01) to look at it with camera
+        // The camera is physically +18.40 X, -25.01 Y from the needle.
         return {
             dx: posA.x - posB.x,
             dy: posA.y - posB.y
@@ -54,9 +57,9 @@ const ToolOffsetCalibration = ({
                 onClick={() => setIsExpanded(!isExpanded)}
             >
                 <div>
-                    <strong style={{ color: '#ffaa00' }}>📐 Camera-to-Nozzle Calibration Wizard</strong>
+                    <strong style={{ color: '#f39c12' }}>📐 Camera-to-Nozzle Calibration Wizard</strong>
                     <div style={{ fontSize: '0.8em', color: '#9aa0a6', marginTop: '4px' }}>
-                        Current Offset: (dx: {toolOffset?.dx.toFixed(2)} mm, dy: {toolOffset?.dy.toFixed(2)} mm)
+                        Current Offset: (dx: {toolOffset?.dx?.toFixed(2) || 0} mm, dy: {toolOffset?.dy?.toFixed(2) || 0} mm)
                     </div>
                 </div>
                 <div style={{ fontSize: '1.2em' }}>{isExpanded ? '▼' : '▶'}</div>
@@ -69,54 +72,72 @@ const ToolOffsetCalibration = ({
                     </p>
 
                     {/* Step 1 */}
-                    <div style={{ opacity: step >= 1 ? 1 : 0.4, marginBottom: '16px', borderLeft: step === 1 ? '3px solid #00c49a' : '3px solid transparent', paddingLeft: '8px' }}>
+                    <div style={{ opacity: step >= 1 ? 1 : 0.4, marginBottom: '16px', borderLeft: step === 1 ? '3px solid #f39c12' : '3px solid transparent', paddingLeft: '8px' }}>
                         <strong>Step 1: Mark Needle Position</strong>
-                        <p style={{ fontSize: '0.85em', margin: '4px 0' }}>Place a dot on scrap paper. Jog the machine until your <b>needle tip</b> is perfectly touching the dot.</p>
-                        <button
-                            className={`btn sm ${step === 1 ? 'primary' : 'secondary'}`}
-                            onClick={handleSetNeedle}
-                            disabled={!isConnected || step !== 1}
-                        >
-                            Set Needle Position (A)
-                        </button>
-                        {posA && <span style={{ marginLeft: 10, fontSize: '0.8em', color: '#00c49a' }}>Recorded: X:{posA.x.toFixed(2)} Y:{posA.y.toFixed(2)}</span>}
+                        <p style={{ fontSize: '0.85em', margin: '4px 0' }}>Place a dot on scrap paper. Jog the machine until your <strong>needle tip</strong> is perfectly touching the dot.</p>
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '8px' }}>
+                            <button
+                                className={`btn sm ${step === 1 ? 'primary' : 'secondary'}`}
+                                onClick={handleSetNeedle}
+                                disabled={!isConnected || step !== 1}
+                            >
+                                SET NEEDLE POSITION (A)
+                            </button>
+                            {posA && <span style={{ fontSize: '0.8em', color: '#00c49a' }}>Recorded: X:{posA.x.toFixed(2)} Y:{posA.y.toFixed(2)}</span>}
+                        </div>
                     </div>
 
                     {/* Step 2 */}
-                    <div style={{ opacity: step >= 2 ? 1 : 0.4, marginBottom: '16px', borderLeft: step === 2 ? '3px solid #00c49a' : '3px solid transparent', paddingLeft: '8px' }}>
+                    <div style={{ opacity: step >= 2 ? 1 : 0.4, marginBottom: '16px', borderLeft: step === 2 ? '3px solid #f39c12' : '3px solid transparent', paddingLeft: '8px' }}>
                         <strong>Step 2: Align Camera Crosshair</strong>
-                        <p style={{ fontSize: '0.85em', margin: '4px 0' }}>Now jog the machine so that the Camera's <b>center crosshair</b> is perfectly looking at that exact same dot.</p>
-                        <button
-                            className={`btn sm ${step === 2 ? 'primary' : 'secondary'}`}
-                            onClick={handleSetCamera}
-                            disabled={!isConnected || step !== 2}
-                        >
-                            Set Camera Position (B)
-                        </button>
-                        {posB && <span style={{ marginLeft: 10, fontSize: '0.8em', color: '#00c49a' }}>Recorded: X:{posB.x.toFixed(2)} Y:{posB.y.toFixed(2)}</span>}
+                        <p style={{ fontSize: '0.85em', margin: '4px 0' }}>Now jog the machine so that the Camera's <strong>center crosshair</strong> is perfectly looking at that exact same dot.</p>
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '8px' }}>
+                            <button
+                                className={`btn sm ${step === 2 ? 'primary' : 'secondary'}`}
+                                onClick={handleSetCamera}
+                                disabled={!isConnected || step !== 2}
+                            >
+                                SET CAMERA POSITION (B)
+                            </button>
+                            {onAutoDetect && (
+                                <button
+                                    className="btn sm secondary"
+                                    onClick={async () => {
+                                        const success = await onAutoDetect();
+                                        if (!success) alert("Could not auto-detect dot! Please jog manually.");
+                                    }}
+                                    disabled={!isConnected || step !== 2}
+                                    title="Uses computer vision to find the dot and jog the machine to center it perfectly"
+                                    style={{ display: 'flex', alignItems: 'center', gap: '4px' }}
+                                >
+                                    🎯 AUTO-CENTER DOT
+                                </button>
+                            )}
+                        </div>
+                        {posB && <span style={{ fontSize: '0.8em', color: '#00c49a', display: 'block', marginTop: '6px' }}>Recorded: X:{posB.x.toFixed(2)} Y:{posB.y.toFixed(2)}</span>}
                     </div>
 
                     {/* Step 3 */}
-                    <div style={{ opacity: step >= 3 ? 1 : 0.4, marginBottom: '16px', borderLeft: step === 3 ? '3px solid #00c49a' : '3px solid transparent', paddingLeft: '8px' }}>
+                    <div style={{ opacity: step >= 3 ? 1 : 0.4, marginBottom: '16px', borderLeft: step === 3 ? '3px solid #f39c12' : '3px solid transparent', paddingLeft: '8px' }}>
                         <strong>Step 3: Save Calibration</strong>
                         <p style={{ fontSize: '0.85em', margin: '4px 0' }}>
-                            {step >= 3 ? `Calculated Offset -> DX: ${offset.dx.toFixed(3)} mm, DY: ${offset.dy.toFixed(3)} mm` : 'Awaiting Positions...'}
+                            {step >= 3 ? `Calculated Offset -> DX: ${offset.dx.toFixed(3)} mm, DY: ${offset.dy.toFixed(3)} mm` : ''}
                         </p>
                         {step === 3 && (
                             <button
                                 className="btn sm primary"
-                                style={{ background: '#ffaa00', color: '#000' }}
+                                style={{ background: '#f39c12', color: '#000', marginTop: '8px' }}
                                 onClick={handleSaveOffset}
                             >
-                                ✅ Save New Offset
+                                ✅ Save Calibration
                             </button>
                         )}
-                        {step === 4 && <span style={{ fontSize: '0.85em', color: '#00c49a' }}>Calibration Saved Successfully!</span>}
+                        {step === 4 && <span style={{ fontSize: '0.85em', color: '#00c49a', display: 'block', marginTop: '8px' }}>Calibration Saved Successfully!</span>}
                     </div>
 
                     {(step > 1) && (
                         <div style={{ marginTop: '16px', borderTop: '1px solid #444', paddingTop: '12px' }}>
-                            <button className="btn sm danger" onClick={handleReset}>Restart Wizard</button>
+                            <button className="btn sm danger outline" onClick={handleReset}>RESTART WIZARD</button>
                         </div>
                     )}
                 </div>

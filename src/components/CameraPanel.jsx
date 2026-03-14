@@ -178,7 +178,7 @@ export default function CameraPanel({
     const v = videoRef.current, c = canvasRef.current;
     if (!v || !c) return;
     const W = v.clientWidth || v.videoWidth || 640;
-    const Hh = v.clientHeight || v.videoHeight || 360;
+    const Hh = v.clientHeight || v.videoHeight || 480; // Unified to 480 fallback
     c.width = W; c.height = Hh;
     const ctx = c.getContext("2d");
     ctx.clearRect(0, 0, W, Hh);
@@ -239,7 +239,18 @@ export default function CameraPanel({
       const mX = machinePositionRef.current.x + (toolOffset?.dx || 0) + dxMm;
       const mY = machinePositionRef.current.y + (toolOffset?.dy || 0) + dyMm;
 
-      ctx.fillStyle = "rgba(0, 255, 255, 0.9)";
+      // Draw a white halo behind the black text so it remains visible over dark traces
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
+      
+      ctx.font = "bold 14px monospace";
+      ctx.strokeText(`+ TARGET`, crosshairX + 12, crosshairY - 16);
+      ctx.font = "12px monospace";
+      ctx.strokeText(`X: ${mX.toFixed(3)} mm`, crosshairX + 12, crosshairY + 0);
+      ctx.strokeText(`Y: ${mY.toFixed(3)} mm`, crosshairX + 12, crosshairY + 14);
+
+      // Draw the crisp black text over the white halo
+      ctx.fillStyle = "#000000"; // Changed to pure black as requested
       ctx.font = "bold 14px monospace";
       ctx.fillText(`+ TARGET`, crosshairX + 12, crosshairY - 16);
       ctx.font = "12px monospace";
@@ -536,6 +547,7 @@ export default function CameraPanel({
       console.log('Detecting with scale:', pxPerMm, 'px/mm');
 
       const result = await fiducialDetector.detectFiducialsInFrame(videoRef.current, fiducials, { pxPerMm });
+      console.log("result is: ", result);
 
       if (result.success && result.fiducials.length > 0) {
         console.log('Auto-detected fiducials in frame:', result.fiducials);
@@ -564,10 +576,10 @@ export default function CameraPanel({
         let nextBoards = hasMultiBoards ? [...pBoards] : [];
 
         // 1. Convert pixel coordinates to exact machine coordinates relative to current toolhead position.
-        // We override the broken static 'homography-only' position with true dynamically calculated offsets.
         const currentMPos = machinePositionRef.current;
-        const videoWidth = videoRef.current.videoWidth || 640;
-        const videoHeight = videoRef.current.videoHeight || 480;
+        // MUST use clientWidth to match the physical UI canvas rendering
+        const videoWidth = videoRef.current.clientWidth || videoRef.current.videoWidth || 640;
+        const videoHeight = videoRef.current.clientHeight || videoRef.current.videoHeight || 480;
         const centerX = videoWidth / 2;
         const centerY = videoHeight / 2;
 
@@ -630,7 +642,6 @@ export default function CameraPanel({
           // Fallback legacy behavior if no design markers match
           const updatedFiducials = correctedFiducials.map((detected, idx) => {
             const existing = fiducials[idx] || { id: `F${idx + 1}`, color: `#${Math.floor(Math.random() * 16777215).toString(16)}` };
-            // Ensure we log the exact same corrected coordinate to the state
             console.log("Fallback logging corrected absolute machine coordinate:", detected.actualMachinePosition);
             return {
               ...existing,
@@ -643,9 +654,37 @@ export default function CameraPanel({
           if (onUpdateFiducials) onUpdateFiducials(updatedFiducials);
         }
 
+        // --- STEP 2: Auto-Center (Jog machine to the detected fiducial) ---
+        // If there is exactly one prominent fiducial near the center, move to it!
+        if (result.fiducials.length > 0 && currentMPos) {
+            let closestFid = null;
+            let minDist = Infinity;
+            result.fiducials.forEach(f => {
+              const dist = Math.hypot(f.pixelPosition.x - centerX, f.pixelPosition.y - centerY);
+              if (dist < minDist) { minDist = dist; closestFid = f; }
+            });
+
+            // If it's within a reasonable screen distance, snap to it automatically
+            if (minDist < Math.min(videoWidth, videoHeight) * 0.4 && closestFid) {
+                const targetU = closestFid.pixelPosition.x;
+                const targetV = closestFid.pixelPosition.y;
+
+                const dx = (targetU - centerX) / pxPerMm;
+                const dy = (centerY - targetV) / pxPerMm; // Y canvas goes down, Machine Y goes up
+
+                console.log(`Auto-Centering on fiducial: Jogging dx=${dx.toFixed(3)}, dy=${dy.toFixed(3)}`);
+                try {
+                  const cmds = jogRel({ dx, dy, feed: 3000 });
+                  if (window.serial && window.serial.writeLine) {
+                      for (const line of cmds) window.serial.writeLine(line);
+                  }
+                } catch (e) { console.error("Auto-center jog failed:", e); }
+            }
+        }
+
         // alert(`Successfully detected ${result.fiducials.length} fiducials!`);
       } else {
-        alert('No fiducials found matching constraints (Max 2.0mm dia, 4mm isolation).');
+        alert('No fiducials found matching constraints (Max 1.0mm dia, 2mm isolation).');
       }
     } catch (error) {
       console.error('Camera fiducial detection failed:', error);
@@ -685,9 +724,9 @@ export default function CameraPanel({
           }
 
           // 1. Calculate World Positions for new potential fiducials
-          // We assume center of image is currentMPos.
-          const videoWidth = videoRef.current.videoWidth || 640;
-          const videoHeight = videoRef.current.videoHeight || 480;
+          // MUST use clientWidth to match the physical UI canvas rendering
+          const videoWidth = videoRef.current.clientWidth || videoRef.current.videoWidth || 640;
+          const videoHeight = videoRef.current.clientHeight || videoRef.current.videoHeight || 480;
           const centerX = videoWidth / 2;
           const centerY = videoHeight / 2;
 
@@ -751,13 +790,51 @@ export default function CameraPanel({
               const fIdx = closestFid.fIdx;
 
               const existingMachine = nextBoards[bIdx].fiducials[fIdx].machine;
-              let skip = false;
+              // Only update if it moved significantly (more than 0.1mm) to avoid jitter
               if (existingMachine) {
-                const diff = Math.hypot(existingMachine.x - cand.estimatedWorld.x, existingMachine.y - cand.estimatedWorld.y);
-                if (diff < 0.05) skip = true; // Avoid UI jitter
-              }
+                const distChange = Math.hypot(existingMachine.x - cand.estimatedWorld.x, existingMachine.y - cand.estimatedWorld.y);
+                if (distChange > 0.1) {
+                  const newFiducials = [...nextBoards[bIdx].fiducials];
+                  newFiducials[fIdx] = {
+                    ...newFiducials[fIdx],
+                    machine: cand.estimatedWorld,
+                    pixelPosition: cand.pixelPosition,
+                    autoDetected: true,
+                    confidence: cand.confidence
+                  };
+                  nextBoards[bIdx] = { ...nextBoards[bIdx], fiducials: newFiducials };
+                  changedBoards = true;
+                  console.log(`[Continuous] Updated ${closestFid.boardName} ${closestFid.id} (Shift: ${distChange.toFixed(3)}mm)`);
 
-              if (!skip) {
+                  // Auto-Jog to center the fiducial if it isn't centered already
+                  // If the fiducial is more than 0.5mm away from the crosshair, jog the machine
+                  const distFromCenter = Math.hypot(cand.estimatedWorld.x - currentMPos.x, cand.estimatedWorld.y - currentMPos.y);
+
+                  if (distFromCenter > 0.5 && window.serial && window.serial.writeLine) {
+                      const dxPx = cand.pixelPosition.x - centerX;
+                      const dyPx = centerY - cand.pixelPosition.y;
+                      const dxMm = dxPx / pxPerMm;
+                      const dyMm = dyPx / pxPerMm;
+
+                      console.log(`[Continuous] Auto-Centering ${closestFid.id}: Jogging dx=${dxMm.toFixed(3)}, dy=${dyMm.toFixed(3)}`);
+                      try {
+                          // Note: We use the standalone jogRel utility imported at the top of CameraPanel
+                          // We pass dx, dy, and a moderate feed rate to smoothly home in
+                          const cmds = []; // We manually construct the string here to avoid dependency issues if jogRel isn't perfectly mapped
+                          // The machine moves in mm.
+                          cmds.push('G91'); // Relative positioning
+                          cmds.push(`G0 X${dxMm.toFixed(3)} Y${dyMm.toFixed(3)} F3000`); // Rapid move to the offset
+                          cmds.push('G90'); // Back to absolute
+
+                          for (const line of cmds) {
+                              window.serial.writeLine(line);
+                          }
+                      } catch (e) {
+                          console.error("Auto-center jog failed:", e);
+                      }
+                  }
+                }
+              } else { // If no existing machine position, just set it
                 const newFiducials = [...nextBoards[bIdx].fiducials];
                 newFiducials[fIdx] = {
                   ...newFiducials[fIdx],
@@ -925,32 +1002,25 @@ export default function CameraPanel({
           <h4>Automated Fiducial Detection</h4>
           <div className="flex-row" style={{ gap: 8, flexWrap: 'wrap' }}>
             <button
-              className="btn"
-              onClick={detectFiducialsWithCamera}
-              disabled={!streamOn || autoDetecting}
-            >
-              {autoDetecting ? 'Detecting...' : '📷 Detect Fiducials'}
-            </button>
-            <button
-              className={`btn ${detectionInterval ? 'secondary' : ''}`}
+              className={`btn ${detectionInterval ? 'primary' : ''}`}
               onClick={startContinuousDetection}
               disabled={!streamOn}
             >
-              {detectionInterval ? 'Stop Monitor' : '🔄 Monitor Fiducials'}
+              {detectionInterval ? 'Stop Auto-Detect' : '📷 Start Auto-Detect'}
             </button>
             <button className="btn sm secondary" onClick={clearAccumulatedFiducials} disabled={!fiducials.some(f => f.machine)}>
               Clear
             </button>
           </div>
           <small style={{ fontSize: '12px', color: '#6c757d' }}>
-            Position camera over PCB and click 'Detect Fiducials' for automatic detection
+            Start the camera and click 'Start Auto-Detect'. As you jog the machine, any fiducials seen by the camera will be instantly logged and saved to the active board automatically!
           </small>
         </div>
       </div>
 
       {/* Video Container */}
       <div style={{ position: "relative", width: "100%", aspectRatio: "16 / 9", background: "#111", borderRadius: 8, overflow: "hidden" }}>
-        <video ref={videoRef} style={{ width: "100%", height: "100%", objectFit: "cover" }} muted playsInline />
+        <video ref={videoRef} style={{ filter: 'grayscale(100%) contrast(120%) brightness(110%)', width: "100%", height: "100%", objectFit: "cover" }} muted playsInline />
         <canvas ref={canvasRef}
           onClick={onCanvasClick}
           style={{ position: "absolute", inset: 0, pointerEvents: "auto" }} />
@@ -1014,8 +1084,8 @@ export default function CameraPanel({
 
       {/* Settings Row - Nozzle & Tool Offset */}
       {/* <div className="camera-controls-row" style={{ marginTop: 12 }}> */}
-        {/* Nozzle & Dispensing */}
-        {/* <div className="box nozzle-section">
+      {/* Nozzle & Dispensing */}
+      {/* <div className="box nozzle-section">
           <legend>Nozzle & Dispensing</legend>
           <div className="settings-grid">
             <div className="settings-field">
@@ -1042,8 +1112,8 @@ export default function CameraPanel({
           </div>
         </div> */}
 
-        {/* Tool Offset */}
-        {/* <div className="box tool-offset-section">
+      {/* Tool Offset */}
+      {/* <div className="box tool-offset-section">
           <legend>Tool Offset</legend>
           <div className="offset-inputs">
             <div className="offset-field">

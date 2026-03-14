@@ -26,12 +26,11 @@ export default function Viewer({
       if (svgElement) {
         svgElement.setAttribute("preserveAspectRatio", "xMidYMid meet");
         svgElement.style.objectFit = "contain";
-        // Apply mirror transformation if needed
-        // User requested removal of mirrorBottom
-        // if (mirrorBottom && side === "bottom") {
+        // Apply mirror transformation for bottom view
+        // if (side === "bottom") {
         //   svgElement.style.transform = "scaleX(-1)";
         // } else {
-        svgElement.style.transform = "";
+        //   svgElement.style.transform = "";
         // }
       }
     }
@@ -116,7 +115,28 @@ export default function Viewer({
           </div>
         </div>
       </div>
-      <div className="viewer">
+      <div className="viewer" style={{ position: 'relative' }}>
+        {/* {side === 'bottom' && (
+          <div style={{
+            position: 'absolute',
+            top: 20,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            background: 'rgba(239, 68, 68, 0.9)',
+            color: '#fff',
+            padding: '8px 20px',
+            borderRadius: '20px',
+            fontWeight: 'bold',
+            letterSpacing: '1px',
+            boxShadow: '0 4px 6px rgba(0,0,0,0.3)',
+            zIndex: 10,
+            pointerEvents: 'none',
+            fontSize: '1.2rem',
+            border: '2px solid #ffb3b3'
+          }}>
+            ⚠️ BOTTOM VIEW (Mirrored) ⚠️
+          </div>
+        )} */}
         <div
           ref={canvasRef}
           className="canvas"

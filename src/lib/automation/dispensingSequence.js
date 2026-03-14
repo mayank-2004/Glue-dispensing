@@ -11,11 +11,22 @@ export class DispensingSequencer {
     this.dispensingSpeed = 600; // mm/min
   }
 
-  calculateOptimalSequence(referencePoint, pads) {
+  calculateOptimalSequence(referencePoint, pads, config = {}) {
     if (!pads || pads.length === 0) return [];
 
+    let expandedPads = [];
+    const { enableMultiDot = true, nozzleDia = 0.8 } = config;
+
+    if (enableMultiDot) {
+      pads.forEach(pad => {
+        expandedPads.push(...this.generateSubDots(pad, nozzleDia));
+      });
+    } else {
+      expandedPads = [...pads];
+    }
+
     // Clone pads to avoid mutating original array
-    const unvisited = [...pads];
+    const unvisited = [...expandedPads];
     const sequence = [];
     let currentPoint = referencePoint;
 
@@ -48,7 +59,83 @@ export class DispensingSequencer {
       }
     }
 
+    // --- 2-Opt TSP Optimization (removes crossing paths) ---
+    let improved = true;
+    while (improved) {
+      improved = false;
+      for (let i = 0; i < sequence.length - 1; i++) {
+        for (let k = i + 1; k < sequence.length; k++) {
+          let distBefore = this.calculateDistance(i === 0 ? referencePoint : sequence[i - 1], sequence[i]);
+          let distAfter = this.calculateDistance(i === 0 ? referencePoint : sequence[i - 1], sequence[k]);
+
+          if (k < sequence.length - 1) {
+            distBefore += this.calculateDistance(sequence[k], sequence[k + 1]);
+            distAfter += this.calculateDistance(sequence[i], sequence[k + 1]);
+          }
+
+          // If swapping these edges reduces the total distance by more than float dust
+          if (distAfter < distBefore - 0.001) {
+            const reversed = sequence.slice(i, k + 1).reverse();
+            sequence.splice(i, k - i + 1, ...reversed);
+            improved = true;
+          }
+        }
+      }
+    }
+
+    // Recalculate properties after 2-opt reordering
+    sequence.forEach((pad, index) => {
+      pad.sequenceOrder = index + 1;
+      pad.distanceFromPrevious = this.calculateDistance(
+        index === 0 ? referencePoint : sequence[index - 1],
+        pad
+      );
+    });
+
     return sequence;
+  }
+
+  /**
+   * Automatically generate multiple dispensing dots for pads larger than the nozzle
+   */
+  generateSubDots(pad, nozzleDia) {
+    if (!pad || !pad.width || !pad.height || !nozzleDia) return [pad];
+
+    // Standard pitch: step every 1.2x nozzle diameter for good overlap
+    const pitch = nozzleDia * 1.2;
+
+    const needsSplitX = pad.width > nozzleDia * 1.8;
+    const needsSplitY = pad.height > nozzleDia * 1.8;
+
+    if (!needsSplitX && !needsSplitY) {
+      return [pad];
+    }
+
+    const subDots = [];
+    const countX = needsSplitX ? Math.max(2, Math.floor(pad.width / pitch)) : 1;
+    const countY = needsSplitY ? Math.max(2, Math.floor(pad.height / pitch)) : 1;
+
+    // Calculate actual span and center it within the pad
+    const spanX = (countX - 1) * pitch;
+    const spanY = (countY - 1) * pitch;
+
+    const startX = pad.x - (spanX / 2);
+    const startY = pad.y - (spanY / 2);
+
+    for (let i = 0; i < countX; i++) {
+      for (let j = 0; j < countY; j++) {
+        subDots.push({
+          ...pad,
+          x: startX + (i * pitch),
+          y: startY + (j * pitch),
+          isSubDot: true,
+          width: pitch, // shrink pressure footprint for subdots
+          height: pitch,
+          _originalArea: pad.width * pad.height
+        });
+      }
+    }
+    return subDots;
   }
 
   /**
@@ -70,14 +157,22 @@ export class DispensingSequencer {
       toolOffset = { dx: 0, dy: 0 },
       valveOnCmd = 'M106 S255', // Default Ender-3 Fan ON
       valveOffCmd = 'M107',     // Default Ender-3 Fan OFF
-      dispenseHeight = 0.5      // mm above board to dispense
+      dispenseHeight = 0.5,     // mm above board to dispense
+      side = 'top',             // current board side
+      boardWidth = 0            // for mirroring
     } = settings;
 
     // Helper to transform coordinates and APPLY PHYSICAL NOZZLE OFFSET
     const transform = (pt) => {
       let mapped = { ...pt };
+
+      // Mirror X-axis for bottom side components
+      if (side === 'bottom' && boardWidth > 0) {
+        mapped.x = boardWidth - mapped.x;
+      }
+
       if (applyXf && xf) {
-        mapped = applyTransform(xf, pt);
+        mapped = applyTransform(xf, mapped);
       }
       // The nozzle is physically offset from the camera's assumed position.
       // If camera is at X:0, and nozzle is at dx:-30 (30mm to the left), 

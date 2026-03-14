@@ -4,6 +4,7 @@ import { applyTransform } from "../lib/utils/transform2d.js";
 import "./AutomatedDispensingPanel.css";
 
 export default function AutomatedDispensingPanel({
+  side = 'top',
   dispensingSequencer,
   dispensingSequence,
   safeSequence,
@@ -51,7 +52,25 @@ export default function AutomatedDispensingPanel({
   const [valveOffCmd, setValveOffCmd] = useState('M107');
   const [dispenseHeight, setDispenseHeight] = useState(0.5);
   const [safeTravelHeight, setSafeTravelHeight] = useState(5.0);
+  const [viscosity, setViscosity] = useState('medium'); // low, medium, high
   const [baseDwellTime, setBaseDwellTime] = useState(120);
+
+  // Apply viscosity presets automatically when changed
+  useEffect(() => {
+    if (viscosity === 'low') {
+      setBaseDwellTime(60);
+      setDispenseHeight(0.3);
+      setSafeTravelHeight(4.0);
+    } else if (viscosity === 'high') {
+      setBaseDwellTime(200);
+      setDispenseHeight(0.6);
+      setSafeTravelHeight(6.0);
+    } else {
+      setBaseDwellTime(120);
+      setDispenseHeight(0.5);
+      setSafeTravelHeight(5.0);
+    }
+  }, [viscosity]);
 
   const refPoint = referencePoint || selectedOrigin;
   const activeSequence = useSafePathPlanning ? safeSequence : dispensingSequence;
@@ -201,6 +220,12 @@ export default function AutomatedDispensingPanel({
           setJobProgress({ current: globalPointCount, total: totalPoints });
 
           let p = seq[i];
+
+          // Mirror X-axis for bottom side components BEFORE applying alignment transform
+          if (side === 'bottom' && currentBoardSize?.width) {
+            p = { ...p, x: currentBoardSize.width - p.x };
+          }
+
           if (transform) {
             const tp = applyTransform(transform, p);
             p = { ...p, x: tp.x, y: tp.y };
@@ -278,7 +303,9 @@ export default function AutomatedDispensingPanel({
       valveOffCmd,
       dispenseHeight,
       safeHeight: safeTravelHeight,
-      toolOffset
+      toolOffset,
+      side,
+      boardWidth: currentBoardSize?.width || 0
     });
     const blob = new Blob([gcode], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
@@ -302,6 +329,14 @@ export default function AutomatedDispensingPanel({
           <hr style={{ borderColor: '#444', margin: '12px 0' }} />
           <h5>G-Code Generation Config</h5>
           <div className="grid2" style={{ gap: '8px', fontSize: '0.9em' }}>
+            <label style={{ gridColumn: '1 / -1' }}>
+              Glue Viscosity (Presets):
+              <select value={viscosity} onChange={e => setViscosity(e.target.value)} style={{ width: '100%', marginTop: '4px', padding: '4px' }}>
+                <option value="low">Thin / Low (Superglue, UV)</option>
+                <option value="medium">Medium (Standard Paste/Glue)</option>
+                <option value="high">Thick / High (Solder Paste, Thermal)</option>
+              </select>
+            </label>
             <label>
               Valve ON Cmd:
               <input type="text" value={valveOnCmd} onChange={e => setValveOnCmd(e.target.value)} style={{ width: '100%', marginTop: '4px' }} />

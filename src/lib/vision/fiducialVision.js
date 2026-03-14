@@ -52,6 +52,7 @@ export class FiducialVisionDetector {
 
       // 3. Filter Blobs based on Advanced Constraints
       const validFiducials = this.filterBlobs(blobs, labels, gray, imageData, canvas.width, canvas.height, pxPerMm);
+      // console.log("pxPerMm value: ", pxPerMm);
 
       const mappedFiducials = validFiducials.map((blob, idx) => ({
         id: `F${idx + 1}`,
@@ -84,201 +85,194 @@ export class FiducialVisionDetector {
     }
   }
 
-  /**
-   * Advanced Blob Detection
-   * Returns blobs and the label map buffer for further analysis
-   */
   findBlobs(imageData, width, height) {
     const { data } = imageData;
     const gray = new Uint8Array(width * height);
     const binarized = new Uint8Array(width * height);
 
-    // Step A & B & C: Color-based Segmentation
-    // The user's fiducial features a Silver/Tin pad surrounded by a Yellow ring on a Green board.
-    // Yellow = High R, High G, Low B.
-    // Green = Low R, High G, Low B.
-    // Silver/Tin = R, G, B are roughly equal (grey), and usually quite bright. 
-    // To isolate the Silver pad (Foreground = 1) from the Yellow/Green background (0):
-    // We look for pixels where the Blue channel is relatively high compared to Red/Green
-    // (meaning it's NOT yellow and NOT green), AND it has decent overall brightness.
+    // 1. Convert to pure Grayscale
     for (let i = 0; i < data.length; i += 4) {
       const r = data[i];
       const g = data[i + 1];
       const b = data[i + 2];
-
       const lum = (r * 0.299 + g * 0.587 + b * 0.114) | 0;
-      gray[i >> 2] = lum; // Keep gray for edge detection later
-
-      // Without a ring light, "Silver/Tin" often looks like a dark, shadowy grey or almost black blob.
-      // It will NOT be bright (`lum > 60`) and its RGB channels might be skewed by room lighting.
-
-      // However, the Yellow/FR4 clearing ring is much more reliable!
-      // Even in low light, Yellow has (Red + Green) significantly higher than Blue.
-      const yellowScore = ((r + g) / 2) - b;
-
-      // Let's invert the binarization:
-      // We will actually look for the "Dark/Grey center" by explicitly REJECTING the yellow/green board.
-      // 1. Is it Yellowish? (Yellow clearing ring) -> yellowScore > 15
-      // 2. Is it Greenish? (Solder mask) -> G > R and G > B by a decent margin.
-
-      const isGreen = (g > r + 10) && (g > b + 10);
-      const isYellow = yellowScore > 10;
-
-      // If it is NOT Green and NOT Yellow, it is likely the Dark/Grey metallic pad!
-      // We will mark the PAD as Foreground (1) and everything else as Background (0).
-      if (!isGreen && !isYellow) {
-        binarized[i >> 2] = 1; // It's part of the darker/grey metallic pad
-      } else {
-        binarized[i >> 2] = 0; // It's the yellow mask or green board
-      }
+      gray[i >> 2] = lum; 
     }
 
-    // Step D: Connected Components (Two-Pass with Moments)
-    const labels = new Int32Array(width * height).fill(0);
-    const parent = [];
-    let nextLabel = 1;
+    // 2. Determine an automatic threshold (Otsu's method) to separate distinct contrast zones
+    const threshold = this.getOtsuThreshold(gray, width, height);
+    
+    // We assume the fiducial (the bare silver/copper pad) reflects light differently 
+    // than the surrounding solder mask. Depending on lighting and oxidation, the copper 
+    // might be BRIGHTER than the green mask, or DARKER than the green mask.
+    // We will build TWO binarized maps and find blobs in both to guarantee we catch it.
+    const binarizedDark = new Uint8Array(width * height);
+    const binarizedBright = new Uint8Array(width * height);
+    
+    for (let i = 0; i < gray.length; i++) {
+        binarizedDark[i] = gray[i] < threshold ? 1 : 0;
+        binarizedBright[i] = gray[i] > threshold ? 1 : 0;
+    }
 
-    const findRoot = (i) => {
-      while (parent[i] !== i) i = parent[i];
-      return i;
+    // Helper to find blobs in a specific binarized array
+    const extractBlobsFromArray = (binArray) => {
+        const labels = new Int32Array(width * height).fill(0);
+        const parent = [];
+        let nextLabel = 1;
+
+        const findRoot = (i) => {
+          while (parent[i] !== i) i = parent[i];
+          return i;
+        };
+        const union = (i, j) => {
+          const rootI = findRoot(i);
+          const rootJ = findRoot(j);
+          if (rootI !== rootJ) parent[rootJ] = rootI;
+        };
+
+        // First Pass
+        for (let y = 0; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            const idx = y * width + x;
+            if (binArray[idx] === 0) continue;
+
+            const left = (x > 0) ? labels[idx - 1] : 0;
+            const top = (y > 0) ? labels[idx - width] : 0;
+
+            if (left === 0 && top === 0) {
+              labels[idx] = nextLabel;
+              parent[nextLabel] = nextLabel;
+              nextLabel++;
+            } else if (left !== 0 && top === 0) {
+              labels[idx] = left;
+            } else if (left === 0 && top !== 0) {
+              labels[idx] = top;
+            } else {
+              labels[idx] = Math.min(left, top);
+              union(left, top);
+            }
+          }
+        }
+
+        // Second Pass
+        const blobsMap = new Map();
+        for (let y = 0; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            const idx = y * width + x;
+            if (labels[idx] === 0) continue;
+
+            const root = findRoot(labels[idx]);
+            labels[idx] = root; // Normalize label
+
+            if (!blobsMap.has(root)) {
+              blobsMap.set(root, {
+                id: root,
+                minX: x, maxX: x, minY: y, maxY: y,
+                m00: 0, m10: 0, m01: 0, m20: 0, m02: 0, m11: 0,
+                perimeter: 0
+              });
+            }
+            const blob = blobsMap.get(root);
+
+            blob.m00++;
+            blob.m10 += x;
+            blob.m01 += y;
+            blob.m20 += x * x;
+            blob.m02 += y * y;
+            blob.m11 += x * y;
+
+            if (x < blob.minX) blob.minX = x;
+            if (x > blob.maxX) blob.maxX = x;
+            if (y < blob.minY) blob.minY = y;
+            if (y > blob.maxY) blob.maxY = y;
+
+            let isBorder = false;
+            if (x === 0 || x === width - 1 || y === 0 || y === height - 1) isBorder = true;
+            else if (
+              binArray[idx - 1] === 0 || binArray[idx + 1] === 0 ||
+              binArray[idx - width] === 0 || binArray[idx + width] === 0
+            ) {
+              isBorder = true;
+            }
+            if (isBorder) blob.perimeter++;
+          }
+        }
+        return { blobsMap, labels };
     };
-    const union = (i, j) => {
-      const rootI = findRoot(i);
-      const rootJ = findRoot(j);
-      if (rootI !== rootJ) parent[rootJ] = rootI;
-    };
 
-    // First Pass
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const idx = y * width + x;
-        if (binarized[idx] === 0) continue;
+    const darkData = extractBlobsFromArray(binarizedDark);
+    const brightData = extractBlobsFromArray(binarizedBright);
 
-        const left = (x > 0) ? labels[idx - 1] : 0;
-        const top = (y > 0) ? labels[idx - width] : 0;
-
-        if (left === 0 && top === 0) {
-          labels[idx] = nextLabel;
-          parent[nextLabel] = nextLabel;
-          nextLabel++;
-        } else if (left !== 0 && top === 0) {
-          labels[idx] = left;
-        } else if (left === 0 && top !== 0) {
-          labels[idx] = top;
-        } else {
-          labels[idx] = Math.min(left, top);
-          union(left, top);
-        }
-      }
-    }
-
-    // Second Pass: Accumulate Moments
-    // m00=area, m10=x, m01=y, m20=x^2, m02=y^2, m11=xy 
-    const blobsMap = new Map();
-
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const idx = y * width + x;
-        if (labels[idx] === 0) continue;
-
-        const root = findRoot(labels[idx]);
-        labels[idx] = root; // Normalize label
-
-        if (!blobsMap.has(root)) {
-          blobsMap.set(root, {
-            id: root,
-            minX: x, maxX: x, minY: y, maxY: y,
-            m00: 0, m10: 0, m01: 0, m20: 0, m02: 0, m11: 0,
-            perimeter: 0
-          });
-        }
-        const blob = blobsMap.get(root);
-
-        // Moments
-        blob.m00++;
-        blob.m10 += x;
-        blob.m01 += y;
-        blob.m20 += x * x;
-        blob.m02 += y * y;
-        blob.m11 += x * y;
-
-        // BBox
-        if (x < blob.minX) blob.minX = x;
-        if (x > blob.maxX) blob.maxX = x;
-        if (y < blob.minY) blob.minY = y;
-        if (y > blob.maxY) blob.maxY = y;
-
-        // Perimeter (Simple check)
-        let isBorder = false;
-        // Check 4-neighbors
-        if (x === 0 || x === width - 1 || y === 0 || y === height - 1) isBorder = true;
-        else if (
-          binarized[idx - 1] === 0 || binarized[idx + 1] === 0 ||
-          binarized[idx - width] === 0 || binarized[idx + width] === 0
-        ) {
-          isBorder = true;
-        }
-
-        if (isBorder) blob.perimeter++;
-      }
-    }
-
+    // Combine results
     const results = [];
-    blobsMap.forEach(blob => {
-      if (blob.m00 < 10) return; // filter noise
+    let combinedLabels = new Int32Array(width * height).fill(0); // We only use labels for contour/convexity mapping, so we'll merge them safely
+    let blobCounter = 1;
 
-      const area = blob.m00;
-      const cx = blob.m10 / area;
-      const cy = blob.m01 / area;
+    const processMap = (map, srcLabels) => {
+        map.forEach(blob => {
+          if (blob.m00 < 10) return; // filter noise
 
-      // Central Moments
-      const mu20 = blob.m20 - (blob.m10 * blob.m10 / area);
-      const mu02 = blob.m02 - (blob.m01 * blob.m01 / area);
-      const mu11 = blob.m11 - (blob.m10 * blob.m01 / area);
+          const area = blob.m00;
+          const cx = blob.m10 / area;
+          const cy = blob.m01 / area;
 
-      // Circularity = (4 * PI * Area) / (Perimeter^2)
-      const circularity = (4 * Math.PI * area) / (blob.perimeter * blob.perimeter);
+          const mu20 = blob.m20 - (blob.m10 * blob.m10 / area);
+          const mu02 = blob.m02 - (blob.m01 * blob.m01 / area);
+          const mu11 = blob.m11 - (blob.m10 * blob.m01 / area);
 
-      // Inertia Ratio
-      const common = Math.sqrt(4 * mu11 * mu11 + (mu20 - mu02) * (mu20 - mu02));
-      const lambda1 = (mu20 + mu02 + common) / 2;
-      const lambda2 = (mu20 + mu02 - common) / 2;
-      const inertiaRatio = lambda2 / lambda1;
+          const circularity = (4 * Math.PI * area) / (blob.perimeter * blob.perimeter);
 
-      results.push({
-        id: blob.id,
-        x: cx,
-        y: cy,
-        w: blob.maxX - blob.minX + 1,
-        h: blob.maxY - blob.minY + 1,
-        minX: blob.minX, maxX: blob.maxX, minY: blob.minY, maxY: blob.maxY,
-        area: area,
-        radius: Math.sqrt(area / Math.PI),
-        circularity: circularity,
-        inertiaRatio: inertiaRatio || 0,
-        perimeter: blob.perimeter
-      });
-    });
+          const common = Math.sqrt(4 * mu11 * mu11 + (mu20 - mu02) * (mu20 - mu02));
+          const lambda1 = (mu20 + mu02 + common) / 2;
+          const lambda2 = (mu20 + mu02 - common) / 2;
+          const inertiaRatio = lambda2 / lambda1;
 
-    return { blobs: results, labels, gray };
+          // Re-map the labels for this specific valid blob so we can contour it later
+          const newId = blobCounter++;
+          for (let y = blob.minY; y <= blob.maxY; y++) {
+            for (let x = blob.minX; x <= blob.maxX; x++) {
+               const idx = y * width + x;
+               if (srcLabels[idx] === blob.id) {
+                   combinedLabels[idx] = newId;
+               }
+            }
+          }
+
+          results.push({
+            id: newId,
+            x: cx,
+            y: cy,
+            w: blob.maxX - blob.minX + 1,
+            h: blob.maxY - blob.minY + 1,
+            minX: blob.minX, maxX: blob.maxX, minY: blob.minY, maxY: blob.maxY,
+            area: area,
+            radius: Math.sqrt(area / Math.PI),
+            circularity: circularity,
+            inertiaRatio: inertiaRatio || 0,
+            perimeter: blob.perimeter
+          });
+        });
+    };
+
+    processMap(darkData.blobsMap, darkData.labels);
+    processMap(brightData.blobsMap, brightData.labels);
+
+    return { blobs: results, labels: combinedLabels, gray };
+
   }
 
-  /**
-   * Filter blobs based on Physical AND Advanced Shape Constraints
-   * Now includes Convexity and Gradient checks
-   */
   filterBlobs(blobs, labels, gray, imageData, width, height, pxPerMm) {
-    const MAX_DIAMETER_MM = 2.0; // 2mm max
-    const MIN_ISOLATION_MM = 4.0; // 4mm isolation
+    const MAX_DIAMETER_MM = 1.0; // 1mm max
+    const MIN_ISOLATION_MM = 2.0; // 2mm isolation
 
     const maxRadiusPx = (MAX_DIAMETER_MM / 2) * pxPerMm;
     const limitRadiusPx = maxRadiusPx * 1.25;
 
     // Thresholds
-    const MIN_CIRCULARITY = 0.6; // Relaxed for shadow distortion
-    const MIN_INERTIA_RATIO = 0.4;
-    const MIN_CONVEXITY = 0.80; // Relaxed for unlit reflections
-    const MIN_EDGE_STRENGTH = 20; // Lowered significantly for unlit camera
+    const MIN_CIRCULARITY = 0.6; // Increased to reject lines/traces
+    const MIN_INERTIA_RATIO = 0.45; // Increased to enforce perfect circles
+    const MIN_CONVEXITY = 0.80; // Increased to reject complex text like 'N'
+    const MIN_EDGE_STRENGTH = 15; // Lowered because copper vs green mask in grayscale can have weak edges
 
     const validBlobs = [];
 
@@ -295,22 +289,21 @@ export class FiducialVisionDetector {
       const convexity = hullArea > 0 ? blob.area / hullArea : 0;
 
       if (convexity < MIN_CONVEXITY) {
-        // console.log(`Rejected ${blob.id}: Low convexity ${convexity.toFixed(2)}`);
+        console.log(`Rejected ${blob.id}: Low convexity ${convexity.toFixed(2)}`);
         continue;
       }
 
       // 3. Gradient / Edge Strength Check (Medium cost)
       // Sample radial points to ensure high contrast at the edge
       const edgeStrength = this.calculateEdgeStrength(blob, gray, width, height);
-      if (edgeStrength < 20) { // Lowered to 20 for unlit camera
-        // console.log(`Rejected ${blob.id}: Weak edge ${edgeStrength.toFixed(1)}`);
+      if (edgeStrength < MIN_EDGE_STRENGTH) { 
+        // Weak edges usually mean shadow artifacts or out-of-focus background
         continue;
       }
 
-      // 4. Structure Check (Critical: 'Silver/Dark Center' + 'Yellow/Bright Ring')
-      // This implicitly checks isolation too, as it verifies the ring is bright.
-      const { data } = imageData; // Access RGB data
-      const isStructured = this.checkStructureAndColor(blob, data, width, height, pxPerMm);
+      // 4. Structure Check (Critical: 'Dark Center' + 'Bright Ring')
+      // This verifies isolation and contrast
+      const isStructured = this.checkStructureAndColor(blob, gray, width, height, pxPerMm);
 
       if (isStructured) {
         validBlobs.push({
@@ -325,9 +318,6 @@ export class FiducialVisionDetector {
 
     return validBlobs;
   }
-
-  // --- Helper Methods ---
-
   extractContour(blob, labels, width) {
     // Scan the bounding box to find border pixels
     const points = [];
@@ -422,20 +412,19 @@ export class FiducialVisionDetector {
 
 
   /**
-   * Check for "Silver/Dark Center" enclosed in "Yellow/Bright Ring" structure
-   * Validates both Contrast and Color (Yellowish Ring)
+   * Check for "Dark Center" enclosed in "Bright Ring" structure
+   * Validates Contrast in Grayscale (Ignores Color completely)
    */
-  checkStructureAndColor(blob, data, width, height, pxPerMm) {
+  checkStructureAndColor(blob, gray, width, height, pxPerMm) {
     const { x, y, radius } = blob;
 
     // Regions
-    const rInner = radius * 0.7;  // Inside Blob
-    const rRingInner = radius * 1.2; // Start of Ring
-    const rRingOuter = radius + (4.0 * pxPerMm); // End of Ring (4mm isolation zone)
+    const rInner = radius * 0.5;  // Inside Blob
+    const rRingInner = radius * 1.0; // Start of Ring
+    const rRingOuter = radius + (2.0 * pxPerMm); // End of Ring (2mm isolation zone)
 
     let centerLumSum = 0, centerCount = 0;
     let ringLumSum = 0, ringCount = 0;
-    let ringYellowScoreSum = 0;
 
     // check Step
     const step = Math.max(1, Math.round(width / 200));
@@ -447,34 +436,22 @@ export class FiducialVisionDetector {
         const dist = Math.hypot(px - x, py - y);
         if (dist > rInner) continue;
 
-        const idx = (py * width + px) * 4;
-        const lum = (data[idx] * 0.299 + data[idx + 1] * 0.587 + data[idx + 2] * 0.114);
-        centerLumSum += lum;
+        const val = gray[py * width + px];
+        centerLumSum += val;
         centerCount++;
       }
     }
 
     // 2. Sample Ring (Isolation Zone)
-    // We want to check if this zone is BRIGHT (Yellow/Mask Clearance)
+    // We want to check if this zone is BRIGHTER than the center
     for (let py = Math.floor(y - rRingOuter); py <= Math.ceil(y + rRingOuter); py += step) {
       for (let px = Math.floor(x - rRingOuter); px <= Math.ceil(x + rRingOuter); px += step) {
         if (px < 0 || px >= width || py < 0 || py >= height) continue;
         const dist = Math.hypot(px - x, py - y);
         if (dist < rRingInner || dist > rRingOuter) continue;
 
-        const idx = (py * width + px) * 4;
-        const r = data[idx];
-        const g = data[idx + 1];
-        const b = data[idx + 2];
-        const lum = (r * 0.299 + g * 0.587 + b * 0.114);
-
-        ringLumSum += lum;
-
-        // Yellow Score: High Red + High Green, Low Blue
-        // Normalize (r+g)/2 - b
-        const yellowScore = ((r + g) / 2) - b;
-        ringYellowScoreSum += yellowScore;
-
+        const val = gray[py * width + px];
+        ringLumSum += val;
         ringCount++;
       }
     }
@@ -483,41 +460,15 @@ export class FiducialVisionDetector {
 
     const avgCenterLum = centerLumSum / centerCount;
     const avgRingLum = ringLumSum / ringCount;
-    const avgRingYellow = ringYellowScoreSum / ringCount;
 
-    // Removed strict Contrast checks that required the center to be darker.
-    // In this color-based approach, the Silver pad (center) might actually be 
-    // BRIGHTER or equal luminance to the Yellow ring, just a different color.
-
-    // Instead, just verify the ring actually looks Yellow-ish!
-    // The user explicitly showed a yellow clearing.
-    // Yellow Score: High Red + High Green, Low Blue
-    if (avgRingYellow < 10) {
-      return false; // Ring is not yellow enough to be the clearance zone
-    }
-
-    // Criteria 2: Ring Brightness (Isolation)
-    // The Ring is the Soldermask Clearance, usually bright substrate or Gold/Copper
-    // Without a ring light, the ring might be very dark too.
-    if (avgRingLum < 40) {
-      return false; // Ring is too dark to be a clearance
-    }
-
-    // Criteria 3: Color (Optional - "Yellow Circle")
-    // If substrate is FR4, it's often Yellowish. 
-    // If it's White Silk, Blue is high too.
-    // Yellow: R~200, G~200, B~50 -> Score ~150
-    // White: R~200, G~200, B~200 -> Score ~0
-    // Green Mask: R~50, G~150, B~50 -> Score ~50
-    // We want to favor Yellow/Gold/Copper over White Silk or Black.
-    // Let's be lenient: Score > 10 (Just means it's warmer than it is cool/neutral)
-    // This helps distinguish Gold/Copper from White Silk.
-    if (avgRingYellow < 10) {
-      // Not strictly failing, as lighting might be blue-ish.
-      // But detecting "Yellow Circle" implies warmer tones.
-      // Let's just use it as a confidence booster or weak filter?
-      // User said "Yellow Circle", implies color is visible.
-      // pass for now, but maybe penalize?
+    // Criteria 1: Absolute Contrast
+    // In grayscale, shiny copper fiducials might appear BRIGHTER than the green mask ring.
+    // Or, oxidized copper might appear DARKER. We just need to know there is a distinct contrast boundary.
+    const contrastDiff = Math.abs(avgRingLum - avgCenterLum);
+    
+    // Require a noticeable contrast to prevent picking up subtle board texture variations
+    if (contrastDiff < 15) {
+      return false; // Not enough contrast to be a distinct bare fiducial point
     }
 
     return true;
@@ -551,6 +502,9 @@ export class FiducialVisionDetector {
         threshold = t;
       }
     }
+    // Try to find the optimal threshold to separate the image into foreground/background.
+    // Note: If the image is mostly green mask and bright copper, Otsu might pick a high number,
+    // so we don't cap it anymore since the copper might be the bright element.
     return threshold;
   }
 

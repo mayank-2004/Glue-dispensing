@@ -1,4 +1,4 @@
-﻿import { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import JSZip from "jszip";
 import "./App.css";
 
@@ -93,6 +93,8 @@ export default function App() {
   const [padDistances, setPadDistances] = useState([]);
   const [generatedPath, setGeneratedPath] = useState(null);
   const [pathType, setPathType] = useState('direct');
+
+  const cameraPanelRef = useRef(null);
 
   // Serial State lifted from SerialPanel
   const [isSerialConnected, setIsSerialConnected] = useState(false);
@@ -600,7 +602,7 @@ export default function App() {
       if (outline) {
         setBoardOutline(outline);
         console.log('Board outline detected:', outline);
-        console.log(`PCB Board Size: ${outline.width.toFixed(2)}mm x ${outline.height.toFixed(2)}mm`);
+        console.log(`PCB Board Size: ${outline.width}mm x ${outline.height}mm`);
       } else {
         console.warn('Failed to parse board dimensions from outline layer.');
       }
@@ -659,8 +661,6 @@ export default function App() {
     // Don't clear origin candidates and selectedOrigin here - they were just set above
 
     queueMicrotask(() => { updateOverlay(); });
-
-    queueMicrotask(() => { updateOverlay(); });
   }
 
   async function rebuild(nextLayers = layers, s = side) {
@@ -678,8 +678,22 @@ export default function App() {
     console.log(`New state for index ${idx}: ${next[idx].enabled}. Rebuilding for view-side: ${side}`);
     setLayers(next); await rebuild(next, side);
   };
-  const changeSide = async (s) => {
+  const changeSide = async (s, skipPadSwitch = false) => {
     setSide(s);
+
+    if (!skipPadSwitch) {
+      const newPasteIdx = layers.findIndex(x => x.type === "solderpaste" && x.side === s);
+      if (newPasteIdx >= 0) {
+        setPasteIdx(newPasteIdx);
+        const padData = extractPadsMm(layers[newPasteIdx].text).map(padCenter);
+        setPads(processPads(padData));
+        console.log(`Switched to ${s} solderpaste layer:`, padData.length, 'pads');
+      } else {
+        setPasteIdx(null);
+        setPads([]);
+      }
+    }
+
     await rebuild(layers, s);
   };
 
@@ -1194,7 +1208,7 @@ export default function App() {
       const start = mmToCurrentUnits({ x: activeRef.x, y: activeRef.y });
       const end = mmToCurrentUnits(selectedMm);
       const midX = (start.x + end.x) / 2, midY = (start.y + end.y) / 2 - start.r * 0.6;
-      drawText(gp, midX, midY, `${generatedPath.totalDistance.toFixed(2)} mm`, start.r * 1.2, "#222", "#fffb");
+      drawText(gp, midX, midY, `${generatedPath.totalDistance.toFixed(3)} mm`, start.r * 1.2, "#222", "#fffb");
     } else {
       // CLEAR generated path overlay if not active or in multi-select mode
       ensureGroup("overlay-path");
@@ -1229,7 +1243,7 @@ export default function App() {
       const dist = Math.hypot(dx, dy);
       console.log('Distance calculation:', { dx, dy, dist, selectedMm, activeRef });
       const midX = (uh.x + uf.x) / 2, midY = (uh.y + uf.y) / 2 - uh.r * 0.6;
-      drawText(gm, midX, midY, `${dist.toFixed(2)} mm`, uh.r * 1.2, "#222", "#fffb");
+      drawText(gm, midX, midY, `${dist.toFixed(3)} mm`, uh.r * 1.2, "#222", "#fffb");
     }
 
     const gf = ensureGroup("overlay-fids");
@@ -1366,7 +1380,6 @@ export default function App() {
     const refPoint = referencePoint || selectedOrigin;
 
     // Choose which pads to sequence: Multi-selection or All
-    // If indices are selected, use them in their specific order (important for optimization)
     const padsToUse = selectedPadIndices.length > 0
       ? selectedPadIndices.map(i => pads[i]).filter(Boolean)
       : pads;
@@ -1380,16 +1393,18 @@ export default function App() {
 
         const stats = {
           totalPads: safeSeq.length,
-          totalDistance: safeSeq.reduce((sum, pad) => sum + (pad.pathDistance || 0), 0).toFixed(2),
+          totalDistance: safeSeq.reduce((sum, pad) => sum + (pad.pathDistance || 0), 0).toFixed(3),
           estimatedTime: Math.ceil(safeSeq.length * 3 + safeSeq.reduce((sum, pad) => sum + (pad.pathDistance || 0), 0) / 50),
-          averageDistance: safeSeq.length > 0 ? (safeSeq.reduce((sum, pad) => sum + (pad.pathDistance || 0), 0) / safeSeq.length).toFixed(2) : "0.00",
+          averageDistance: safeSeq.length > 0 ? (safeSeq.reduce((sum, pad) => sum + (pad.pathDistance || 0), 0) / safeSeq.length).toFixed(3) : "0.000",
           safePathsUsed: safeSeq.filter(p => !p.requiresHighClearance).length,
           highClearancePaths: safeSeq.filter(p => p.requiresHighClearance).length
         };
         setJobStatistics(stats);
       } else {
-        // Use simple nearest neighbor
-        const sequence = dispensingSequencer.calculateOptimalSequence(refPoint, padsToUse);
+        const sequence = dispensingSequencer.calculateOptimalSequence(refPoint, padsToUse, {
+          nozzleDia: parseFloat(nozzleDia) || 0.8,
+          enableMultiDot: true
+        });
         setDispensingSequence(sequence);
         setSafeSequence([]);
 
@@ -1414,18 +1429,10 @@ export default function App() {
     let mmX = local.x * geom.mmPerUnit;
 
     // Handle X-inversion for Bottom View
-    // Standard "Bottom View" is mirrored horizontally. 
-    // To make Visual Bottom-Left = (0,0), we need to flip the X coordinate relative to board width.
     if (side === 'bottom') {
-      // local.x goes 0 -> Width (Left to Right visually)
-      // Physical X goes Width -> 0 (Right to Left visually because it's mirrored)
-      // So we want: PhysicalX = (MinX + Width) - LocalX
-      mmX = (geom.minX + geom.vbW - local.x) * geom.mmPerUnit;
+      mmX = (2 * geom.minX + geom.vbW - local.x) * geom.mmPerUnit;
     }
 
-    // Y: FLIP relative to Board Bounds (MinY + MaxY - Y)
-    // MaxY = minY + vbH
-    // GerberY = (minY + (minY + vbH)) - local.y
     const mmY = (2 * geom.minY + geom.vbH - local.y) * geom.mmPerUnit;
     return { x: mmX, y: mmY };
   };
@@ -1668,9 +1675,9 @@ export default function App() {
       const refName = refPoint === selectedOrigin ? 'PCB Origin' : `Fiducial ${refPoint.id || ''}`;
       const show = window.confirm(
         `Distance from ${refName}:\n` +
-        `ΔX: ${dx.toFixed(2)} mm\n` +
-        `ΔY: ${dy.toFixed(2)} mm\n` +
-        `Distance: ${dist.toFixed(2)} mm\n\n` +
+        `ΔX: ${dx.toFixed(3)} mm\n` +
+        `ΔY: ${dy.toFixed(3)} mm\n` +
+        `Distance: ${dist.toFixed(3)} mm\n\n` +
         `Show measurement line?`
       );
       if (show) {
@@ -1690,6 +1697,7 @@ export default function App() {
   const onInputMachine = (id, partial) => {
     setFiducials(prev => prev.map(f => f.id === id ? { ...f, machine: { x: (partial.x ?? f.machine?.x ?? null), y: (partial.y ?? f.machine?.y ?? null) } } : f));
   };
+  const onClearMachine = (id) => setFiducials(prev => prev.map(f => f.id === id ? { ...f, machine: null } : f));
   const onClearOne = (id) => setFiducials(prev => prev.map(f => f.id === id ? { ...f, design: null, machine: null } : f));
   const onClearAll = () => { setFiducials(prev => prev.map(f => ({ ...f, design: null, machine: null }))); setXf(null); };
 
@@ -1736,11 +1744,8 @@ export default function App() {
 
       setFiducials(autoFiducials);
     } else {
-      // No fiducials detected, keep current fiducials but clear design positions
       setFiducials(prev => prev.map(f => ({ ...f, design: null })));
     }
-
-    // Clear transform since fiducials changed
     setXf(null);
   };
 
@@ -1840,7 +1845,6 @@ export default function App() {
     { id: 'FiducialPanel', label: 'Fiducial Panel' },
     { id: 'CameraPanel', label: 'Camera Panel' },
     { id: 'AutomatedDispensingPanel', label: 'Automated Dispensing Panel' },
-    // { id: 'LivePreview', label: 'Live Preview' },
   ]
 
   return (
@@ -1859,17 +1863,6 @@ export default function App() {
             onChange={pickFiles}
             className="d-none"
           />
-
-          {/* <div className="row">
-            <button className="btn primary w-100" onClick={() => document.getElementById("fileInput").click()}>
-              📂 Open Gerber / ZIP
-            </button>
-          </div> */}
-          {/* <div className="row" style={{ marginTop: 8 }}>
-            <button className="btn w-100" onClick={exportAllSvgsZip}>
-              Export SVGs
-            </button>
-          </div> */}
         </div>
 
         <div className="section">
@@ -1885,18 +1878,16 @@ export default function App() {
               setPasteIdx(idx);
               if (idx != null) {
                 const selectedLayer = layers[idx];
-
                 if (selectedLayer.type === "solderpaste") {
-                  // Use solderpaste layer - contains only actual pad areas for dispensing
                   const padData = extractPadsMm(selectedLayer.text).map(padCenter);
                   setPads(processPads(padData));
                   console.log('Solderpaste layer loaded:', padData.length, 'pads');
 
                   // Auto-switch view side
                   if (selectedLayer.side === 'top') {
-                    changeSide('top');
+                    changeSide('top', true);
                   } else if (selectedLayer.side === 'bottom') {
-                    changeSide('bottom');
+                    changeSide('bottom', true);
                   }
                 } else {
                   setPads([]);
@@ -1930,6 +1921,12 @@ export default function App() {
           }}
           machinePosition={livePreview.machinePosition}
           isConnected={isSerialConnected}
+          onAutoDetect={async () => {
+            if (cameraPanelRef.current) {
+              return await cameraPanelRef.current.autoDetectTarget();
+            }
+            return false;
+          }}
         />
 
         <div style={{ color: '#9aa0a6', margin: '0 0 12px 0', border: '1px solid #9aa0a6', padding: '4px 12px 6px 12px', borderRadius: '4px' }}>
@@ -2047,7 +2044,7 @@ export default function App() {
               onClick={async () => {
                 let targetDesign = null;
                 if (referenceType === 'origin') {
-                  targetDesign = effectiveOrigin; // Use effective origin (with offset)
+                  targetDesign = effectiveOrigin;
                 } else if (referencePoint) {
                   targetDesign = { x: referencePoint.x, y: referencePoint.y };
                 }
@@ -2058,8 +2055,6 @@ export default function App() {
                   if (applyXf && xf) {
                     targetMachine = applyTransform(xf, targetDesign);
                   } else {
-                    // Fallback: Assume Machine Zero is at Bottom-Left Origin
-                    // Machine = Design - BottomLeftOrigin
                     targetMachine = {
                       x: targetDesign.x - effectiveOrigin.x,
                       y: targetDesign.y - effectiveOrigin.y
@@ -2106,7 +2101,7 @@ export default function App() {
               }}>
                 <option value="">(select fiducial)</option>
                 {fiducials.filter(f => f.design).map(f => (
-                  <option key={f.id} value={f.id}>{f.id} ({f.design.x.toFixed(1)}, {f.design.y.toFixed(1)})</option>
+                  <option key={f.id} value={f.id}>{f.id} ({f.design.x.toFixed(2)}, {f.design.y.toFixed(2)})</option>
                 ))}
               </select>
             </div>
@@ -2206,7 +2201,10 @@ export default function App() {
                   if (selectedPadIndices.length < 2) return;
                   const refPoint = referencePoint || effectiveOrigin || { x: 0, y: 0 };
                   const currentPads = selectedPadIndices.map(i => pads[i]);
-                  const sortedPads = dispensingSequencer.calculateOptimalSequence(refPoint, currentPads);
+                  const sortedPads = dispensingSequencer.calculateOptimalSequence(refPoint, currentPads, {
+                    nozzleDia: parseFloat(nozzleDia) || 0.8,
+                    enableMultiDot: true
+                  });
                   const sortedIndices = sortedPads.map(p => pads.findIndex(orig => orig === p || (orig.x === p.x && orig.y === p.y)));
                   setSelectedPadIndices(sortedIndices);
                 }}
@@ -2226,9 +2224,9 @@ export default function App() {
                     <span className="badge active">FROM: {referencePoint ? `FID ${referencePoint.id}` : 'ORIGIN'}</span>
                   </div>
                   <div className="kvs">
-                    <span>DX: <span className="lcd-text">{(selectedMm.x - (referencePoint || effectiveOrigin).x).toFixed(2)}mm </span></span>
-                    <span>DY: <span className="lcd-text">{(selectedMm.y - (referencePoint || effectiveOrigin).y).toFixed(2)}mm </span></span>
-                    <span>DIST: <span className="lcd-text">{Math.hypot(selectedMm.x - (referencePoint || effectiveOrigin).x, selectedMm.y - (referencePoint || effectiveOrigin).y).toFixed(2)}mm</span></span>
+                    <span>DX: <span className="lcd-text">{(selectedMm.x - (referencePoint || effectiveOrigin).x).toFixed(3)}mm </span></span>
+                    <span>DY: <span className="lcd-text">{(selectedMm.y - (referencePoint || effectiveOrigin).y).toFixed(3)}mm </span></span>
+                    <span>DIST: <span className="lcd-text">{Math.hypot(selectedMm.x - (referencePoint || effectiveOrigin).x, selectedMm.y - (referencePoint || effectiveOrigin).y).toFixed(3)}mm</span></span>
                   </div>
                 </div>
               )}
@@ -2270,6 +2268,7 @@ export default function App() {
                 pickMode={fidPickMode}
                 togglePickMode={() => setFidPickMode(v => !v)}
                 onInputMachine={onInputMachine}
+                onClearMachine={onClearMachine}
                 onClearOne={onClearOne}
                 onClearAll={onClearAll}
                 onSolve2={onSolve2}
@@ -2305,6 +2304,7 @@ export default function App() {
 
           <div style={{ display: activeComponent === 'CameraPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
             <CameraPanel
+              ref={cameraPanelRef}
               fiducials={fiducials}
               xf={xf}
               applyXf={applyXf}
@@ -2334,6 +2334,7 @@ export default function App() {
 
           <div style={{ display: activeComponent === 'AutomatedDispensingPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
             <AutomatedDispensingPanel
+              side={side}
               dispensingSequencer={dispensingSequencer}
               dispensingSequence={dispensingSequence}
               safeSequence={safeSequence}
@@ -2348,24 +2349,19 @@ export default function App() {
               toolOffset={maintenanceManager.getToolOffset()}
               componentHeights={componentHeights}
               setComponentHeights={setComponentHeights}
-
-              // Alignment Props
               fiducials={fiducials}
               onInputMachine={onInputMachine}
               onAutoAlign={onAutoAlign}
               onSolve2={onSolve2}
               onSolve3={onSolve3}
-
               panelBoards={panelBoards}
               setPanelBoards={setPanelBoards}
               activeBoardIndex={activeBoardIndexState}
               setActiveBoardIndex={setActiveBoardIndex}
-
               xf={xf}
               applyXf={applyXf}
               isConnected={isSerialConnected}
               machinePosition={machinePos}
-
               onStartJob={(gcode, mode) => {
                 console.log(`Job started in ${mode} mode`);
                 maintenanceManager.recordDispense();
@@ -2385,32 +2381,8 @@ export default function App() {
               layerData={layerData}
             />
           </div>
-
-
         </div>
       </div>
-
-      {/* {
-          activeComponent === 'LivePreview' && (
-            <LivePreview
-              dispensingSequence={dispensingSequence}
-              isJobRunning={livePreview.isActive}
-              currentPadIndex={livePreview.currentPadIndex}
-              machinePosition={livePreview.machinePosition}
-              onUpdateOverlay={updateOverlay}
-            />
-          )
-        } */}
-
-      {/* {activeComponent === 'MotionPanel' && (
-          <MotionPanel onSendLines={async (lines) => {
-            if (window.serial && window.serial.writeLine) {
-              for (const line of lines) await window.serial.writeLine(line);
-            }
-          }} />
-        )} */}
-
-
     </div>
   );
 }

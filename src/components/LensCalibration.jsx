@@ -2,95 +2,37 @@ import React, { useState } from 'react';
 
 const LensCalibration = ({
     pixelsPerMm,
-    setPixelsPerMm,
-    machinePosition,
-    visionResult
+    setPixelsPerMm
 }) => {
     const [isExpanded, setIsExpanded] = useState(false);
-    const [step, setStep] = useState(1);
-    const [dataA, setDataA] = useState(null); // { mPos, pPos }
-    const [dataB, setDataB] = useState(null); // { mPos, pPos }
+    const [dpiInput, setDpiInput] = useState(96); // Default Windows/Web standard
 
-    const getCenterBlob = () => {
-        if (!visionResult || !visionResult.detected || !visionResult.fiducials || visionResult.fiducials.length === 0) {
-            return null;
-        }
-        // Assume the blob closest to center, or just the first one if there's only one
-        let closestFid = null;
-        let minDist = Infinity;
-        // The vision panel runs at 640x360 default mostly, but we just use the raw circle coordinates
-        visionResult.fiducials.forEach(fid => {
-            const dist = Math.hypot(fid.pixelPosition.x - 320, fid.pixelPosition.y - 180);
-            if (dist < minDist) {
-                minDist = dist;
-                closestFid = fid;
-            }
-        });
-        return closestFid;
+    // Common standard presets from user's image
+    const presets = [
+        { dpi: 72, label: "72 DPI (Older Mac/Web)" },
+        { dpi: 96, label: "96 DPI (Modern Standard)" },
+        { dpi: 150, label: "150 DPI (Medium Quality)" },
+        { dpi: 300, label: "300 DPI (High Quality)" },
+        { dpi: 600, label: "600 DPI (HD Scanning)" }
+    ];
+
+    const applyDPI = (dpi) => {
+        // Formula: Pixels in 1 mm = Resolution (DPI) / 25.4
+        // (Since 1 inch = 25.4 millimeters)
+        const calculatedPxPerMm = dpi / 25.4;
+        setPixelsPerMm(calculatedPxPerMm);
     };
 
-    const handleLockA = () => {
-        if (!machinePosition) return alert("Machine position unknown! Please connect and home.");
-        const blob = getCenterBlob();
-        if (!blob) return alert("No circular target detected by OpenCV. Please jog until a circle is visible.");
-
-        setDataA({
-            mPos: { ...machinePosition },
-            pPos: { ...blob.pixelPosition }
-        });
-        setStep(2);
+    const handlePresetChange = (e) => {
+        const val = Number(e.target.value);
+        setDpiInput(val);
+        applyDPI(val);
     };
 
-    const handleLockB = () => {
-        if (!machinePosition) return alert("Machine position unknown!");
-        const blob = getCenterBlob();
-        if (!blob) return alert("No circular target detected! Jog back until the original circle is visible.");
-
-        setDataB({
-            mPos: { ...machinePosition },
-            pPos: { ...blob.pixelPosition }
-        });
-        setStep(3);
+    const handleManualSubmit = (e) => {
+        e.preventDefault();
+        applyDPI(dpiInput);
     };
-
-    const calculateRatio = () => {
-        if (!dataA || !dataB) return 20;
-
-        const physicalDx = dataB.mPos.x - dataA.mPos.x;
-        const physicalDy = dataB.mPos.y - dataA.mPos.y;
-        const distanceMm = Math.hypot(physicalDx, physicalDy);
-
-        const pixelDx = dataB.pPos.x - dataA.pPos.x;
-        const pixelDy = dataB.pPos.y - dataA.pPos.y;
-        const distancePx = Math.hypot(pixelDx, pixelDy);
-
-        if (distanceMm < 0.2) {
-            // Distance too small, bad calibration
-            return -1;
-        }
-
-        return distancePx / distanceMm;
-    };
-
-    const handleSave = () => {
-        const ratio = calculateRatio();
-        if (ratio === -1) {
-            alert("Error: You didn't jog the machine far enough. Please jog at least 0.5 millimeters before locking point B.");
-            return;
-        }
-        if (window.confirm(`Save new optical ratio?\n\nCalculated: ${ratio.toFixed(2)} pixels per mm`)) {
-            setPixelsPerMm(ratio);
-            setStep(4);
-        }
-    };
-
-    const handleReset = () => {
-        setDataA(null);
-        setDataB(null);
-        setStep(1);
-    };
-
-    const previewRatio = calculateRatio();
 
     return (
         <div style={{ border: '1px solid #444', borderRadius: '4px', marginBottom: '12px' }}>
@@ -99,9 +41,9 @@ const LensCalibration = ({
                 onClick={() => setIsExpanded(!isExpanded)}
             >
                 <div>
-                    <strong style={{ color: '#00c49a' }}>🔍 Camera Lens Calibration</strong>
+                    <strong style={{ color: '#00c49a' }}>🔍 Camera Lens Scaling (DPI)</strong>
                     <div style={{ fontSize: '0.8em', color: '#9aa0a6', marginTop: '4px' }}>
-                        Current Ratio: {pixelsPerMm?.toFixed(2) || 20.00} px/mm
+                        Current Scale: {pixelsPerMm?.toFixed(2) || (96 / 25.4).toFixed(2)} px/mm
                     </div>
                 </div>
                 <div style={{ fontSize: '1.2em' }}>{isExpanded ? '▼' : '▶'}</div>
@@ -109,61 +51,43 @@ const LensCalibration = ({
 
             {isExpanded && (
                 <div style={{ padding: '12px', background: '#1d1f24' }}>
-                    <p style={{ fontSize: '0.9em', color: '#ccc', marginBottom: '16px' }}>
-                        Calculate the exact pixels-to-millimeters optical scaling of your specific camera lens to prevent placement scaling errors.
+                    <p style={{ fontSize: '0.85em', color: '#ccc', marginBottom: '16px' }}>
+                        Select or enter your camera's resolution density (DPI/PPI) to mathematically calculate the exact number of pixels in 1 millimeter using the standard formula <code>(DPI / 25.4)</code>.
                     </p>
 
-                    {/* Step 1 */}
-                    <div style={{ opacity: step >= 1 ? 1 : 0.4, marginBottom: '16px', borderLeft: step === 1 ? '3px solid #00c49a' : '3px solid transparent', paddingLeft: '8px' }}>
-                        <strong>Step 1: Lock Target</strong>
-                        <p style={{ fontSize: '0.85em', margin: '4px 0' }}>Place a dot or pad under the camera. Wait until a green circle appears on it.</p>
-                        <button
-                            className={`btn sm ${step === 1 ? 'primary' : 'secondary'}`}
-                            onClick={handleLockA}
-                            disabled={step !== 1}
+                    <div style={{ marginBottom: '16px' }}>
+                        <label style={{ display: 'block', fontSize: '0.85em', fontWeight: 'bold', marginBottom: '4px' }}>Preset Resolutions</label>
+                        <select 
+                            value={dpiInput} 
+                            onChange={handlePresetChange}
+                            style={{ width: '100%', padding: '6px', background: '#111', color: '#fff', border: '1px solid #444', borderRadius: '4px' }}
                         >
-                            Lock Initial Point (A)
-                        </button>
-                        {dataA && <span style={{ marginLeft: 10, fontSize: '0.8em', color: '#00c49a' }}>Locked.</span>}
+                            {presets.map(p => (
+                                <option key={p.dpi} value={p.dpi}>{p.label} (≈{(p.dpi / 25.4).toFixed(2)} px/mm)</option>
+                            ))}
+                            <option value="custom">-- Custom DPI --</option>
+                        </select>
                     </div>
 
-                    {/* Step 2 */}
-                    <div style={{ opacity: step >= 2 ? 1 : 0.4, marginBottom: '16px', borderLeft: step === 2 ? '3px solid #00c49a' : '3px solid transparent', paddingLeft: '8px' }}>
-                        <strong>Step 2: Jog Machine</strong>
-                        <p style={{ fontSize: '0.85em', margin: '4px 0' }}>Jog the machine approx 1mm to 2mm (ensure the dot stays inside the camera view).</p>
-                        <button
-                            className={`btn sm ${step === 2 ? 'primary' : 'secondary'}`}
-                            onClick={handleLockB}
-                            disabled={step !== 2}
-                        >
-                            Lock New Point (B)
-                        </button>
-                        {dataB && <span style={{ marginLeft: 10, fontSize: '0.8em', color: '#00c49a' }}>Locked.</span>}
-                    </div>
-
-                    {/* Step 3 */}
-                    <div style={{ opacity: step >= 3 ? 1 : 0.4, marginBottom: '16px', borderLeft: step === 3 ? '3px solid #00c49a' : '3px solid transparent', paddingLeft: '8px' }}>
-                        <strong>Step 3: Save Scaling</strong>
-                        <p style={{ fontSize: '0.85em', margin: '4px 0' }}>
-                            {step >= 3 ? `Result: ${previewRatio > 0 ? previewRatio.toFixed(3) : 'ERR'} px/mm` : 'Awaiting data...'}
-                        </p>
-                        {step === 3 && (
-                            <button
-                                className="btn sm primary"
-                                style={{ background: '#00c49a', color: '#000' }}
-                                onClick={handleSave}
-                            >
-                                ✅ Save Optical Ratio
-                            </button>
-                        )}
-                        {step === 4 && <span style={{ fontSize: '0.85em', color: '#00c49a' }}>Lens Ratio Saved!</span>}
-                    </div>
-
-                    {(step > 1) && (
-                        <div style={{ marginTop: '16px', borderTop: '1px solid #444', paddingTop: '12px' }}>
-                            <button className="btn sm danger" onClick={handleReset}>Restart Wizard</button>
+                    <form onSubmit={handleManualSubmit} style={{ display: 'flex', gap: '8px', alignItems: 'flex-end' }}>
+                        <div style={{ flex: 1 }}>
+                            <label style={{ display: 'block', fontSize: '0.85em', fontWeight: 'bold', marginBottom: '4px' }}>Custom DPI</label>
+                            <input 
+                                type="number" 
+                                value={dpiInput} 
+                                onChange={(e) => setDpiInput(Number(e.target.value))}
+                                style={{ width: '100%', padding: '6px', background: '#111', color: '#fff', border: '1px solid #444', borderRadius: '4px' }}
+                            />
                         </div>
-                    )}
+                        <button type="submit" className="btn sm primary">Apply DPI</button>
+                    </form>
+
+                    <div style={{ marginTop: '16px', padding: '12px', background: 'rgba(0, 196, 154, 0.1)', borderLeft: '3px solid #00c49a', borderRadius: '2px' }}>
+                        <strong>Active Calculation:</strong>
+                        <p style={{ margin: '4px 0 0 0', fontSize: '0.9em', fontFamily: 'monospace' }}>
+                            {dpiInput} / 25.4 = <span style={{ color: '#00c49a', fontWeight: 'bold' }}>{(dpiInput / 25.4).toFixed(3)} px/mm</span>
+                        </p>
+                    </div>
                 </div>
             )}
         </div>
