@@ -565,6 +565,7 @@ export default function App() {
 
     const read = await Promise.all(expanded.map(async f => ({ name: f.name, text: await f.text() })));
     const ls = identifyLayers(read);
+    console.log("layers: ", ls);
     setLayers(ls);
 
     // Extract useful data from each layer
@@ -617,7 +618,7 @@ export default function App() {
     if (origins.length > 0) {
       const origin = { ...origins[0], id: 'O1' };
       console.log('Setting selected origin:', origin);
-      setSelectedOrigin(origin); // Auto-select bottom-left origin
+      setSelectedOrigin(origin);
       setPcbOriginOffset({ x: origin.x, y: origin.y });
     }
 
@@ -627,7 +628,7 @@ export default function App() {
       const autoFiducials = detectedFiducials.slice(0, 3).map((fid, idx) => ({
         id: fid.id || `F${idx + 1}`,
         design: { x: fid.x, y: fid.y },
-        machine: { x: fid.x, y: fid.y }, // Initialize machine coords to match design
+        machine: { x: fid.x, y: fid.y },
         color: colors[idx % colors.length],
         confidence: fid.confidence
       }));
@@ -1989,14 +1990,32 @@ export default function App() {
               </div>
             </div>
           )}
-          <div className="flex-row" style={{ marginLeft: 8 }}>
-            <label>X (mm) <input type="number" step="0.1" value={pcbOriginOffset?.x || 0}
-              onChange={(e) => setPcbOriginOffset({ x: +e.target.value || 0, y: pcbOriginOffset?.y || 0 })}
-              style={{ width: 80 }} /></label>
-            <label>Y (mm) <input type="number" step="0.1" value={pcbOriginOffset?.y || 0}
-              onChange={(e) => setPcbOriginOffset({ x: pcbOriginOffset?.x || 0, y: +e.target.value || 0 })}
-              style={{ width: 80 }} /></label>
-          </div>
+            <button className="btn secondary" 
+              onClick={() => {
+                if (!selectedOrigin) {
+                  alert("Please load a Gerber file and 'Detect Origins' first.");
+                  return;
+                }
+                if (!livePreview.machinePosition) {
+                  alert("Machine position unknown. Please ensure the machine is connected.");
+                  return;
+                }
+                const mPos = livePreview.machinePosition;
+                const tOff = maintenanceManager.getToolOffset(); // dx, dy
+
+                // Formula: Crosshair = Machine + ToolOffset + selectedOrigin(Gerber0,0) + pcbOriginOffset
+                // We want Crosshair to equal selectedOrigin (so UI reads 0,0 locally)  
+                // Therefore: selectedOrigin = Machine + ToolOffset + selectedOrigin + pcbOriginOffset
+                // Result: pcbOriginOffset = - (Machine + ToolOffset)
+                
+                const newOffsetX = -(mPos.x + (tOff?.dx || 0));
+                const newOffsetY = -(mPos.y + (tOff?.dy || 0));
+
+                setPcbOriginOffset({ x: newOffsetX, y: newOffsetY });
+              }}
+              style={{ width: '100%', marginBottom: '8px' }}>
+              🎯 Set Camera Origin Here
+            </button>
           <div className="flex-row" style={{ gap: 8, marginTop: 8 }}>
             <button className="btn sm secondary" onClick={onDetectOrigins} disabled={layers.length === 0}>
               🎯 Detect Origins

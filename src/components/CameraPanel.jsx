@@ -52,8 +52,19 @@ export default function CameraPanel({
   const [pendingPick, setPendingPick] = useState(null);
   const [showOverlay, setShowOverlay] = useState(true);
   const [measureMode, setMeasureMode] = useState(false);
-  const [lastClickPx, setLastClickPx] = useState(null);
-  const [visionResult, setVisionResult] = useState(null);
+  const [isConnected, setIsConnected] = useState(false);
+  
+  // Use a Ref for vision results so the 60fps Animation Loop can always read the latest data without stale closures
+  const visionResultRef = useRef(null);
+  
+  const [visionResult, setVisionResultState] = useState(null);
+  const setVisionResult = (val) => {
+    // Both update React state (for UI) and the ref (for the 60fps Canvas Loop)
+    let finalVal = typeof val === 'function' ? val(visionResultRef.current) : val;
+    visionResultRef.current = finalVal;
+    setVisionResultState(finalVal);
+  };
+
   const [qualityResult, setQualityResult] = useState(null);
   const [autoDetecting, setAutoDetecting] = useState(false);
 
@@ -132,6 +143,7 @@ export default function CameraPanel({
   }, [H, projectPx]);
 
   const predictedPx = useMemo(() => {
+    console.log("selected design: ", selectedDesign);
     if (!selectedDesign) return null;
     const m = (applyXf && xf) ? applyTransform(xf, selectedDesign) : { ...selectedDesign };
     const withTool = { x: m.x + (toolOffset?.dx || 0), y: m.y + (toolOffset?.dy || 0) };
@@ -185,6 +197,8 @@ export default function CameraPanel({
 
     if (!showOverlay) return;
 
+
+
     // --- SNAP CROSSHAIR TO DETECTED FIDUCIAL ---
     let crosshairX = W / 2;
     let crosshairY = Hh / 2;
@@ -192,6 +206,7 @@ export default function CameraPanel({
     if (visionResult && visionResult.detected && visionResult.fiducials && visionResult.fiducials.length > 0) {
       let closestFid = null;
       let minDist = Infinity;
+      console.log("vision result: ", visionResult);
       visionResult.fiducials.forEach(fid => {
         const dist = Math.hypot(fid.pixelPosition.x - (W / 2), fid.pixelPosition.y - (Hh / 2));
         if (dist < minDist) {
@@ -217,27 +232,12 @@ export default function CameraPanel({
 
     // Calculate & Display the live Machine Coordinate of the Crosshair center
     const cProps = latestPropsRef.current;
-    if (machinePositionRef.current) {
-      const baseWorld = (applyXf && xf && selectedDesign) ? applyTransform(xf, selectedDesign) : (selectedDesign || { x: 0, y: 0 });
-      let pxmm = pixelsPerMm; // Use prop directly
-      // We will try to get it from H if possible
-      if (H) {
-        const center = { x: 100, y: 100 };
-        const p1 = projectPx(center);
-        const p2 = projectPx({ x: center.x + 1, y: center.y });
-        if (p1 && p2) pxmm = Math.hypot(p2.u - p1.u, p2.v - p1.v);
-      } else {
-        const measured = pxPerMmAt(baseWorld);
-        if (measured) pxmm = measured;
-      }
-
-      const pixelDx = crosshairX - (W / 2);
-      const pixelDy = (Hh / 2) - crosshairY; // Machine Y is up, Canvas Y is down
-      const dxMm = pixelDx / pxmm;
-      const dyMm = pixelDy / pxmm;
-
-      const mX = machinePositionRef.current.x + (toolOffset?.dx || 0) + dxMm;
-      const mY = machinePositionRef.current.y + (toolOffset?.dy || 0) + dyMm;
+    
+    // We pass the canvas boundaries (W, Hh) to ensure the center point matches exactly what the user sees
+    const matchData = getMachineCoordinateFromPixel(crosshairX, crosshairY, W, Hh);
+    
+    if (matchData) {
+      const { x: mX, y: mY } = matchData;
 
       // Draw a white halo behind the black text so it remains visible over dark traces
       ctx.lineWidth = 3;
@@ -258,11 +258,14 @@ export default function CameraPanel({
       ctx.fillText(`Y: ${mY.toFixed(3)} mm`, crosshairX + 12, crosshairY + 14);
     }
 
+    // Pull directly from the Ref so we never get a stale closure inside RequestAnimationFrame
+    const latestVisionResult = visionResultRef.current;
+
     // Draw vision detection result
-    if (visionResult && visionResult.detected) {
+    if (latestVisionResult && latestVisionResult.detected) {
       // Draw Blobs
-      if (visionResult.fiducials) {
-        visionResult.fiducials.forEach(fid => {
+      if (latestVisionResult.fiducials) {
+        latestVisionResult.fiducials.forEach((fid, fIdx) => {
           const px = fid.pixelPosition;
           const r = fid.radius || 5;
 
@@ -281,15 +284,22 @@ export default function CameraPanel({
 
           ctx.beginPath();
           ctx.arc(px.x, px.y, isoRadius, 0, Math.PI * 2);
-          ctx.strokeStyle = 'cyan';
+          ctx.strokeStyle = '#00ffff';
           ctx.lineWidth = 1;
           ctx.setLineDash([4, 4]);
           ctx.stroke();
           ctx.setLineDash([]);
 
-          ctx.fillStyle = '#00ff00';
-          ctx.font = '12px Arial';
-          ctx.fillText(`Fid (${fid.confidence.toFixed(2)})`, px.x + r + 5, px.y);
+          // DRAW A SOLID COLOR MARKER AT THE EXACT CENTER AS REQUESTED
+          ctx.beginPath();
+          ctx.arc(px.x, px.y, 3, 0, Math.PI * 2);
+          ctx.fillStyle = '#ff00ff'; // Bright magenta center dot
+          ctx.fill();
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+
+          ctx.fillText(`F${fIdx + 1}`, px.x + isoRadius + 5, px.y + 4);
 
           // Draw crosshairs on detected fiducials
           ctx.strokeStyle = '#00ff00';
@@ -311,9 +321,38 @@ export default function CameraPanel({
           ctx.fillText(`C: ${machX.toFixed(2)}, ${machY.toFixed(2)}`, px.x + r + 5, px.y - r);
         });
       }
+
+      // Draw Rejected Blobs (Visual Debugging Feedback)
+      if (latestVisionResult.rejectedBlobs) {
+        latestVisionResult.rejectedBlobs.forEach(blob => {
+          const px = blob.pixelPosition;
+          const r = blob.radius || 5;
+
+          // Draw small red dot at center
+          ctx.beginPath();
+          ctx.arc(px.x, px.y, 2, 0, Math.PI * 2);
+          ctx.fillStyle = '#ff0000';
+          ctx.fill();
+
+          // Draw red dashed bounding circle
+          ctx.beginPath();
+          ctx.arc(px.x, px.y, r, 0, Math.PI * 2);
+          ctx.strokeStyle = 'rgba(255, 0, 0, 0.6)';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([2, 2]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          // Draw Rejection Reason
+          ctx.fillStyle = 'rgba(255, 0, 0, 0.8)';
+          ctx.font = '10px monospace';
+          ctx.fillText(`✗ ${blob.reason}`, px.x + r + 4, px.y);
+        });
+      }
+
       // Legacy single result support
-      else if (visionResult.position) {
-        const detectedPx = projectPx(visionResult.position);
+      if (latestVisionResult.position) {
+        const detectedPx = projectPx(latestVisionResult.position);
         if (detectedPx) {
           ctx.beginPath();
           ctx.arc(detectedPx.u, detectedPx.v, 8, 0, Math.PI * 2);
@@ -322,7 +361,7 @@ export default function CameraPanel({
           ctx.stroke();
           ctx.fillStyle = '#00ff00';
           ctx.font = '12px Arial';
-          ctx.fillText(`Detected (${visionResult.confidence.toFixed(2)})`, detectedPx.u + 10, detectedPx.v - 10);
+          ctx.fillText(`Detected (${latestVisionResult.confidence.toFixed(2)})`, detectedPx.u + 10, detectedPx.v - 10);
         }
       }
     }
@@ -532,6 +571,37 @@ export default function CameraPanel({
     return pixelsPerMm; // Default fallback (approx 20px/mm)
   };
 
+  // Helper to standardise all coordinate math in one place so the Crosshair, Auto-Detect console log, and physical jog command never disagree
+  const getMachineCoordinateFromPixel = (pxX, pxY, width, height) => {
+    if (!machinePositionRef.current) return null;
+
+    const centerX = width / 2;
+    const centerY = height / 2;
+
+    const baseWorld = (applyXf && xf && selectedDesign) ? applyTransform(xf, selectedDesign) : (selectedDesign || { x: 0, y: 0 });
+    let pxmm = pixelsPerMm;
+    if (H) {
+      const center = { x: 100, y: 100 };
+      const p1 = projectPx(center);
+      const p2 = projectPx({ x: center.x + 1, y: center.y });
+      if (p1 && p2) pxmm = Math.hypot(p2.u - p1.u, p2.v - p1.v);
+    } else {
+      const measured = pxPerMmAt(baseWorld);
+      if (measured) pxmm = measured;
+    }
+
+    const pixelDx = pxX - centerX;
+    const pixelDy = centerY - pxY; // Machine Y is up, Canvas Y is down
+    const dxMm = pixelDx / pxmm;
+    const dyMm = pixelDy / pxmm;
+
+    return {
+      x: machinePositionRef.current.x + (toolOffset?.dx || 0) + dxMm,
+      y: machinePositionRef.current.y + (toolOffset?.dy || 0) + dyMm,
+      pxmm, dxMm, dyMm
+    };
+  };
+
   // Automated fiducial detection using camera
   const detectFiducialsWithCamera = async () => {
     if (!videoRef.current || !streamOn) {
@@ -550,11 +620,54 @@ export default function CameraPanel({
       console.log("result is: ", result);
 
       if (result.success && result.fiducials.length > 0) {
-        console.log('Auto-detected fiducials in frame:', result.fiducials);
+        
+        // --- ONLY ACCEPT THE FIDUCIAL UNDER THE CROSSHAIRS ---
+        // MUST use clientWidth to match the physical UI canvas rendering
+        const videoWidth = videoRef.current.clientWidth || videoRef.current.videoWidth || 640;
+        const videoHeight = videoRef.current.clientHeight || videoRef.current.videoHeight || 480;
+        const centerX = videoWidth / 2;
+        const centerY = (videoHeight - 60) / 2; // Subtract height of control panel at bottom
+        
+        let closestDist = Infinity;
+        let selectedFiducial = null;
+        const newlyRejected = [];
+
+        result.fiducials.forEach(fid => {
+           const dist = Math.hypot(fid.pixelPosition.x - centerX, fid.pixelPosition.y - centerY);
+           if (dist < closestDist) {
+               // Move previous champion to rejected pile (if any)
+               if (selectedFiducial) {
+                   newlyRejected.push({ ...selectedFiducial, reason: 'Off-Center' });
+               }
+               closestDist = dist;
+               selectedFiducial = fid;
+           } else {
+               // Too far away from the new champion, reject it
+               newlyRejected.push({ ...fid, reason: 'Off-Center' });
+           }
+        });
+
+        // Enforce a strict "must be near crosshairs" radius limit (e.g. within 60-80 pixels)
+        const SNAP_RADIUS_PX = 80;
+        
+        let finalFiducials = [];
+        let finalRejected = [...(result.rejectedBlobs || []), ...newlyRejected];
+
+        if (selectedFiducial && closestDist <= SNAP_RADIUS_PX) {
+            finalFiducials = [selectedFiducial]; // Lock onto the single, centered pad
+        } else if (selectedFiducial) {
+            // It was the closest, but still too far away from the physical crosshairs
+            finalRejected.push({ ...selectedFiducial, reason: 'Too Far from Crosshair' });
+        }
+
+        console.log('Auto-detected fiducial:', finalFiducials);
+        console.log('Rejected shapes:', finalRejected);
+        
         setVisionResult({
           detected: true,
-          fiducials: result.fiducials,
-          confidence: result.fiducials[0].confidence
+          fiducials: finalFiducials,
+          rejectedBlobs: finalRejected,
+          confidence: finalFiducials.length > 0 ? finalFiducials[0].confidence : 0
         });
 
         const cProps = latestPropsRef.current;
@@ -578,23 +691,19 @@ export default function CameraPanel({
         // 1. Convert pixel coordinates to exact machine coordinates relative to current toolhead position.
         const currentMPos = machinePositionRef.current;
         // MUST use clientWidth to match the physical UI canvas rendering
-        const videoWidth = videoRef.current.clientWidth || videoRef.current.videoWidth || 640;
-        const videoHeight = videoRef.current.clientHeight || videoRef.current.videoHeight || 480;
-        const centerX = videoWidth / 2;
-        const centerY = videoHeight / 2;
+        // const videoWidth = videoRef.current.clientWidth || videoRef.current.videoWidth || 640;
+        // const videoHeight = videoRef.current.clientHeight || videoRef.current.videoHeight || 480;
+        // const centerX = videoWidth / 2;
+        // const centerY = videoHeight / 2;
 
-        const correctedFiducials = result.fiducials.map(detected => {
+        const correctedFiducials = finalFiducials.map(detected => {
           let actualMachinePosition = detected.machinePosition;
           if (currentMPos) {
-            const dxPx = detected.pixelPosition.x - centerX;
-            const dyPx = centerY - detected.pixelPosition.y; // Canvas Y goes down, Machine Y goes up
-            const dxMm = dxPx / pxPerMm;
-            const dyMm = dyPx / pxPerMm;
-
-            actualMachinePosition = {
-              x: currentMPos.x + (toolOffset?.dx || 0) + dxMm,
-              y: currentMPos.y + (toolOffset?.dy || 0) + dyMm
-            };
+            // We use the same VideoWidth/Height as the canvas fallback array so it aligns perfectly with the visual overlay
+            const matchData = getMachineCoordinateFromPixel(detected.pixelPosition.x, detected.pixelPosition.y, videoWidth, videoHeight);
+            if (matchData) {
+                actualMachinePosition = { x: matchData.x, y: matchData.y };
+            }
           }
           return { ...detected, actualMachinePosition };
         });
@@ -654,13 +763,13 @@ export default function CameraPanel({
           if (onUpdateFiducials) onUpdateFiducials(updatedFiducials);
         }
 
-        // --- STEP 2: Auto-Center (Jog machine to the detected fiducial) ---
+        // Auto-Center (Jog machine to the detected fiducial)
         // If there is exactly one prominent fiducial near the center, move to it!
         if (result.fiducials.length > 0 && currentMPos) {
             let closestFid = null;
             let minDist = Infinity;
             result.fiducials.forEach(f => {
-              const dist = Math.hypot(f.pixelPosition.x - centerX, f.pixelPosition.y - centerY);
+              const dist = Math.hypot(f.pixelPosition.x - centerX, f.pixelPosition.y - centerY); // Uses corrected centerY
               if (dist < minDist) { minDist = dist; closestFid = f; }
             });
 
@@ -711,38 +820,73 @@ export default function CameraPanel({
       videoRef.current,
       (result) => {
         if (result.success && result.fiducials.length > 0) {
+          const videoWidth = videoRef.current.clientWidth || videoRef.current.videoWidth || 640;
+          const videoHeight = videoRef.current.clientHeight || videoRef.current.videoHeight || 480;
+          const centerX = videoWidth / 2;
+          const centerY = (videoHeight - 60) / 2; // Subtract height of control panel at bottom
+
+          // --- ONLY ACCEPT THE FIDUCIAL UNDER THE CROSSHAIRS ---
+          let closestDist = Infinity;
+          let selectedFiducial = null;
+          const newlyRejected = [];
+
+          result.fiducials.forEach(fid => {
+             const dist = Math.hypot(fid.pixelPosition.x - centerX, fid.pixelPosition.y - centerY);
+             if (dist < closestDist) {
+                 if (selectedFiducial) {
+                     newlyRejected.push({ ...selectedFiducial, reason: 'Off-Center' });
+                 }
+                 closestDist = dist;
+                 selectedFiducial = fid;
+             } else {
+                 newlyRejected.push({ ...fid, reason: 'Off-Center' });
+             }
+          });
+
+          // Enforce 80px radius limit
+          const SNAP_RADIUS_PX = 80;
+          let finalFiducials = [];
+          let finalRejected = [...(result.rejectedBlobs || []), ...newlyRejected];
+
+          if (selectedFiducial && closestDist <= SNAP_RADIUS_PX) {
+              finalFiducials = [selectedFiducial];
+          } else if (selectedFiducial) {
+              finalRejected.push({ ...selectedFiducial, reason: 'Too Far from Crosshair' });
+          }
+
           // Accumulation Logic
           const currentMPos = machinePositionRef.current;
           if (!currentMPos) {
             // Just show visual feedback if no MPos involved
-            setVisionResult({
+            setVisionResult(prev => ({
               detected: true,
-              fiducials: result.fiducials,
-              confidence: result.fiducials[0].confidence
-            });
+              fiducials: finalFiducials,
+              rejectedBlobs: finalRejected,
+              confidence: finalFiducials.length > 0 ? finalFiducials[0].confidence : 0
+            }));
             return;
           }
 
+          setVisionResult(prev => ({
+              detected: true,
+              fiducials: finalFiducials,
+              rejectedBlobs: finalRejected,
+              confidence: finalFiducials.length > 0 ? finalFiducials[0].confidence : 0
+          }));
+
           // 1. Calculate World Positions for new potential fiducials
           // MUST use clientWidth to match the physical UI canvas rendering
-          const videoWidth = videoRef.current.clientWidth || videoRef.current.videoWidth || 640;
-          const videoHeight = videoRef.current.clientHeight || videoRef.current.videoHeight || 480;
-          const centerX = videoWidth / 2;
-          const centerY = videoHeight / 2;
-
           const pxPerMm = getScale(); // Approximate
 
-          const incomingCandidates = result.fiducials.map(f => {
-            const dxPx = f.pixelPosition.x - centerX;
-            const dyPx = centerY - f.pixelPosition.y; // Canvas Y goes down, Machine Y goes up
-            const dxMm = dxPx / pxPerMm;
-            const dyMm = dyPx / pxPerMm;
+          const incomingCandidates = finalFiducials.map(f => {
+            const matchData = getMachineCoordinateFromPixel(f.pixelPosition.x, f.pixelPosition.y, videoWidth, videoHeight);
+            if (!matchData) return f;
 
             return {
               ...f,
               estimatedWorld: {
-                x: currentMPos.x + (toolOffset?.dx || 0) + dxMm,
-                y: currentMPos.y + (toolOffset?.dy || 0) + dyMm
+                x: matchData.x,
+                y: matchData.y
               }
             };
           });
@@ -1020,7 +1164,7 @@ export default function CameraPanel({
 
       {/* Video Container */}
       <div style={{ position: "relative", width: "100%", aspectRatio: "16 / 9", background: "#111", borderRadius: 8, overflow: "hidden" }}>
-        <video ref={videoRef} style={{ filter: 'grayscale(100%) contrast(120%) brightness(110%)', width: "100%", height: "100%", objectFit: "cover" }} muted playsInline />
+        <video ref={videoRef} style={{ width: "100%", height: "100%", objectFit: "cover" }} muted playsInline />
         <canvas ref={canvasRef}
           onClick={onCanvasClick}
           style={{ position: "absolute", inset: 0, pointerEvents: "auto" }} />

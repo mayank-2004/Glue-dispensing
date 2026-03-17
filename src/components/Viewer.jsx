@@ -47,7 +47,7 @@ export default function Viewer({
     }
   }, [zoomLevel, svg]); // Re-apply if SVG or zoom changes
 
-  const handleZoomIn = () => setZoomLevel(prev => Math.min(prev + 1, 4));
+  const handleZoomIn = () => setZoomLevel(prev => Math.min(prev + 1, 6));
   const handleZoomOut = () => setZoomLevel(prev => Math.max(prev - 1, 1));
 
   const handleCanvasClick = (evt) => {
@@ -107,7 +107,7 @@ export default function Viewer({
             <button
               className="viewer-btn"
               onClick={handleZoomIn}
-              disabled={zoomLevel >= 4}
+              disabled={zoomLevel >= 6}
               title="Zoom In"
             >
               +

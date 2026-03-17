@@ -53,7 +53,9 @@ export default function FiducialPanel({
           const maxY = Math.max(...ys);
 
           const width = maxX - minX;
+          // console.log("Width: ", width)
           const height = maxY - minY;
+          // console.log("height: ", height);
           const diag = Math.hypot(width, height);
 
           content = (
