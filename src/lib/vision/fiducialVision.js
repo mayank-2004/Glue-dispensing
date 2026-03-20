@@ -49,11 +49,22 @@ export class FiducialVisionDetector {
       // 2. Process Image (Blob Detection + Feature Extraction)
       // 2. Determine an automatic threshold (Otsu's method) to separate distinct contrast zones
       // Now returns { blobs, labels, gray } so we can do advanced post-processing
+      const debug = options?.debug === true;
       const { blobs, labels, gray } = this.findBlobs(imageData, canvas.width, canvas.height);
 
       // 3. Filter Blobs based on Advanced Constraints
       const { validBlobs, rejectedBlobs } = this.filterBlobs(blobs, labels, gray, imageData, canvas.width, canvas.height, pxPerMm);
-      // console.log("pxPerMm value: ", pxPerMm);
+
+      if (debug) {
+        console.log(`[FiducialVision DEBUG] pxPerMm=${pxPerMm.toFixed(2)}, frame=${cw}x${ch}`);
+        console.log(`[FiducialVision DEBUG] Raw blobs: ${blobs.length}, Valid: ${validBlobs.length}, Rejected: ${rejectedBlobs.length}`);
+        rejectedBlobs.forEach(b => {
+          console.log(`  REJECTED r=${b.radius.toFixed(1)}px d=${(b.radius*2/pxPerMm).toFixed(2)}mm circ=${(b.circularity||0).toFixed(2)} | ${b.rejectReason}`);
+        });
+        validBlobs.forEach(b => {
+          console.log(`  VALID    r=${b.radius.toFixed(1)}px d=${(b.radius*2/pxPerMm).toFixed(2)}mm circ=${(b.circularity||0).toFixed(2)}`);
+        });
+      }
 
       const mappedFiducials = validBlobs.map((blob, idx) => ({
         id: `F${idx + 1}`,
@@ -251,17 +262,18 @@ export class FiducialVisionDetector {
   }
 
   filterBlobs(blobs, labels, gray, imageData, width, height, pxPerMm) {
-    const MAX_DIAMETER_MM = 1.8; // Reject huge pads or mounting holes
-    const MIN_DIAMETER_MM = 0.3; // Reject specks of dust
+    const MAX_DIAMETER_MM = 5.0; // Wide range - let structure check do the real work
+    const MIN_DIAMETER_MM = 0.1; // Very small floor - pxPerMm may be miscalibrated
 
     const maxRadiusPx = (MAX_DIAMETER_MM / 2) * pxPerMm;
     const minRadiusPx = (MIN_DIAMETER_MM / 2) * pxPerMm;
 
-    // Thresholds - Relaxed for messy HASL finishes and low-res cameras
-    const MIN_CIRCULARITY = 0.50; // Relaxed to allow slightly oval or messy edges
-    const MIN_INERTIA_RATIO = 0.40; // Relaxed to allow non-perfect circles
-    const MIN_CONVEXITY = 0.70; // Relaxed to handle drill holes or uneven plating
-    const MIN_EDGE_STRENGTH = 8; // Lowered because copper vs green mask in grayscale can have weak edges
+    // Thresholds - balanced for HASL pads while rejecting text/letters
+    const MIN_CIRCULARITY = 0.60;  // Letters like N/R score ~0.1-0.3; round pads score 0.7+
+    const MIN_INERTIA_RATIO = 0.50; // Penalises elongated blobs (text is elongated)
+    const MIN_CONVEXITY = 0.70;    // Text has jagged edges
+    const MIN_EDGE_STRENGTH = 8;
+    const MAX_ASPECT_RATIO = 1.8;  // width/height must be close to 1 for round pad
 
     const validBlobs = [];
     const rejectedBlobs = [];
@@ -275,7 +287,16 @@ export class FiducialVisionDetector {
       if (blob.radius > maxRadiusPx) { reject(blob, 'Too Large'); continue; }
       if (blob.radius < minRadiusPx) { reject(blob, 'Too Small'); continue; }
 
-      // 1. Cheap Geometric Filters
+      // 0. Aspect Ratio check (very cheap, catches text immediately)
+      const blobW = blob.maxX - blob.minX + 1;
+      const blobH = blob.maxY - blob.minY + 1;
+      const aspectRatio = blobW > blobH ? blobW / blobH : blobH / blobW;
+      if (aspectRatio > MAX_ASPECT_RATIO) {
+        reject(blob, `Elongated (AR=${aspectRatio.toFixed(2)})`);
+        continue;
+      }
+
+      // 1. Circularity and Inertia (catches remaining irregular shapes)
       if (blob.circularity < MIN_CIRCULARITY) { reject(blob, 'Not Round (Circularity)'); continue; }
       if (blob.inertiaRatio < MIN_INERTIA_RATIO) { reject(blob, 'Not Round (Inertia)'); continue; }
 

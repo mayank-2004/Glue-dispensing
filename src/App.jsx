@@ -2017,10 +2017,10 @@ export default function App() {
               🎯 Set Camera Origin Here
             </button>
           <div className="flex-row" style={{ gap: 8, marginTop: 8 }}>
-            <button className="btn sm secondary" onClick={onDetectOrigins} disabled={layers.length === 0}>
+            <button className="btn sm secondary" style={{ width: '100%', marginBottom: '8px' }} onClick={onDetectOrigins} disabled={layers.length === 0}>
               🎯 Detect Origins
             </button>
-            <button className="btn sm secondary" onClick={() => {
+            {/* <button className="btn sm secondary" onClick={() => {
               // Test origin at (0,0)
               const testOrigin = { id: 'O1', x: 0, y: 0, confidence: 0.9, description: 'True Gerber Origin (test)' };
               setSelectedOrigin(testOrigin);
@@ -2028,8 +2028,8 @@ export default function App() {
               setTimeout(() => updateOverlay(), 100);
             }}>
               Test Origin (0,0)
-            </button>
-            <button className="btn sm secondary" onClick={() => {
+            </button> */}
+            <button className="btn sm secondary" style={{ width: '100%' }} onClick={() => {
               setSelectedOrigin(null);
               setPcbOriginOffset({ x: 0, y: 0 });
             }}>

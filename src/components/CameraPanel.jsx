@@ -53,10 +53,10 @@ export default function CameraPanel({
   const [showOverlay, setShowOverlay] = useState(true);
   const [measureMode, setMeasureMode] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
-  
+
   // Use a Ref for vision results so the 60fps Animation Loop can always read the latest data without stale closures
   const visionResultRef = useRef(null);
-  
+
   const [visionResult, setVisionResultState] = useState(null);
   const setVisionResult = (val) => {
     // Both update React state (for UI) and the ref (for the 60fps Canvas Loop)
@@ -197,8 +197,6 @@ export default function CameraPanel({
 
     if (!showOverlay) return;
 
-
-
     // --- SNAP CROSSHAIR TO DETECTED FIDUCIAL ---
     let crosshairX = W / 2;
     let crosshairY = Hh / 2;
@@ -232,17 +230,17 @@ export default function CameraPanel({
 
     // Calculate & Display the live Machine Coordinate of the Crosshair center
     const cProps = latestPropsRef.current;
-    
+
     // We pass the canvas boundaries (W, Hh) to ensure the center point matches exactly what the user sees
     const matchData = getMachineCoordinateFromPixel(crosshairX, crosshairY, W, Hh);
-    
+
     if (matchData) {
       const { x: mX, y: mY } = matchData;
 
       // Draw a white halo behind the black text so it remains visible over dark traces
       ctx.lineWidth = 3;
       ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
-      
+
       ctx.font = "bold 14px monospace";
       ctx.strokeText(`+ TARGET`, crosshairX + 12, crosshairY - 16);
       ctx.font = "12px monospace";
@@ -616,53 +614,53 @@ export default function CameraPanel({
       const pxPerMm = getScale();
       console.log('Detecting with scale:', pxPerMm, 'px/mm');
 
-      const result = await fiducialDetector.detectFiducialsInFrame(videoRef.current, fiducials, { pxPerMm });
+      const result = await fiducialDetector.detectFiducialsInFrame(videoRef.current, fiducials, { pxPerMm, debug: true });
       console.log("result is: ", result);
 
       if (result.success && result.fiducials.length > 0) {
-        
+
         // --- ONLY ACCEPT THE FIDUCIAL UNDER THE CROSSHAIRS ---
         // MUST use clientWidth to match the physical UI canvas rendering
         const videoWidth = videoRef.current.clientWidth || videoRef.current.videoWidth || 640;
         const videoHeight = videoRef.current.clientHeight || videoRef.current.videoHeight || 480;
         const centerX = videoWidth / 2;
         const centerY = (videoHeight - 60) / 2; // Subtract height of control panel at bottom
-        
+
         let closestDist = Infinity;
         let selectedFiducial = null;
         const newlyRejected = [];
 
         result.fiducials.forEach(fid => {
-           const dist = Math.hypot(fid.pixelPosition.x - centerX, fid.pixelPosition.y - centerY);
-           if (dist < closestDist) {
-               // Move previous champion to rejected pile (if any)
-               if (selectedFiducial) {
-                   newlyRejected.push({ ...selectedFiducial, reason: 'Off-Center' });
-               }
-               closestDist = dist;
-               selectedFiducial = fid;
-           } else {
-               // Too far away from the new champion, reject it
-               newlyRejected.push({ ...fid, reason: 'Off-Center' });
-           }
+          const dist = Math.hypot(fid.pixelPosition.x - centerX, fid.pixelPosition.y - centerY);
+          if (dist < closestDist) {
+            // Move previous champion to rejected pile (if any)
+            if (selectedFiducial) {
+              newlyRejected.push({ ...selectedFiducial, reason: 'Off-Center' });
+            }
+            closestDist = dist;
+            selectedFiducial = fid;
+          } else {
+            // Too far away from the new champion, reject it
+            newlyRejected.push({ ...fid, reason: 'Off-Center' });
+          }
         });
 
         // Enforce a strict "must be near crosshairs" radius limit (e.g. within 60-80 pixels)
         const SNAP_RADIUS_PX = 80;
-        
+
         let finalFiducials = [];
         let finalRejected = [...(result.rejectedBlobs || []), ...newlyRejected];
 
         if (selectedFiducial && closestDist <= SNAP_RADIUS_PX) {
-            finalFiducials = [selectedFiducial]; // Lock onto the single, centered pad
+          finalFiducials = [selectedFiducial]; // Lock onto the single, centered pad
         } else if (selectedFiducial) {
-            // It was the closest, but still too far away from the physical crosshairs
-            finalRejected.push({ ...selectedFiducial, reason: 'Too Far from Crosshair' });
+          // It was the closest, but still too far away from the physical crosshairs
+          finalRejected.push({ ...selectedFiducial, reason: 'Too Far from Crosshair' });
         }
 
         console.log('Auto-detected fiducial:', finalFiducials);
         console.log('Rejected shapes:', finalRejected);
-        
+
         setVisionResult({
           detected: true,
           fiducials: finalFiducials,
@@ -698,11 +696,13 @@ export default function CameraPanel({
 
         const correctedFiducials = finalFiducials.map(detected => {
           let actualMachinePosition = detected.machinePosition;
+          console.log("actualMachinePosition", actualMachinePosition);
           if (currentMPos) {
             // We use the same VideoWidth/Height as the canvas fallback array so it aligns perfectly with the visual overlay
             const matchData = getMachineCoordinateFromPixel(detected.pixelPosition.x, detected.pixelPosition.y, videoWidth, videoHeight);
+            console.log("matchData", matchData);
             if (matchData) {
-                actualMachinePosition = { x: matchData.x, y: matchData.y };
+              actualMachinePosition = { x: matchData.x, y: matchData.y };
             }
           }
           return { ...detected, actualMachinePosition };
@@ -763,33 +763,26 @@ export default function CameraPanel({
           if (onUpdateFiducials) onUpdateFiducials(updatedFiducials);
         }
 
-        // Auto-Center (Jog machine to the detected fiducial)
-        // If there is exactly one prominent fiducial near the center, move to it!
-        if (result.fiducials.length > 0 && currentMPos) {
-            let closestFid = null;
-            let minDist = Infinity;
-            result.fiducials.forEach(f => {
-              const dist = Math.hypot(f.pixelPosition.x - centerX, f.pixelPosition.y - centerY); // Uses corrected centerY
-              if (dist < minDist) { minDist = dist; closestFid = f; }
-            });
+        // // AUTO-CENTER: Jog machine so camera crosshair aligns perfectly with fiducial center
+        // if (selectedFiducial) {
+        //   const dx = (selectedFiducial.pixelPosition.x - centerX) / pxPerMm;
+        //   const dy = (centerY - selectedFiducial.pixelPosition.y) / pxPerMm; // Y flipped
 
-            // If it's within a reasonable screen distance, snap to it automatically
-            if (minDist < Math.min(videoWidth, videoHeight) * 0.4 && closestFid) {
-                const targetU = closestFid.pixelPosition.x;
-                const targetV = closestFid.pixelPosition.y;
-
-                const dx = (targetU - centerX) / pxPerMm;
-                const dy = (centerY - targetV) / pxPerMm; // Y canvas goes down, Machine Y goes up
-
-                console.log(`Auto-Centering on fiducial: Jogging dx=${dx.toFixed(3)}, dy=${dy.toFixed(3)}`);
-                try {
-                  const cmds = jogRel({ dx, dy, feed: 3000 });
-                  if (window.serial && window.serial.writeLine) {
-                      for (const line of cmds) window.serial.writeLine(line);
-                  }
-                } catch (e) { console.error("Auto-center jog failed:", e); }
-            }
-        }
+        //   if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
+        //     const cmds = jogRel({ dx, dy, feed: 3000 });
+        //     console.log('[AutoCenter] Sending jog commands:', cmds);
+        //     if (window.serial && window.serial.writeLine) {
+        //       for (const line of cmds) {
+        //         console.log('  > ', line);
+        //         window.serial.writeLine(line);
+        //       }
+        //     } else {
+        //       console.warn('[AutoCenter] window.serial.writeLine not available — machine not connected?');
+        //     }
+        //   } else {
+        //     console.log('[AutoCenter] Already centered, no jog needed');
+        //   }
+        // }
 
         // alert(`Successfully detected ${result.fiducials.length} fiducials!`);
       } else {
@@ -831,16 +824,16 @@ export default function CameraPanel({
           const newlyRejected = [];
 
           result.fiducials.forEach(fid => {
-             const dist = Math.hypot(fid.pixelPosition.x - centerX, fid.pixelPosition.y - centerY);
-             if (dist < closestDist) {
-                 if (selectedFiducial) {
-                     newlyRejected.push({ ...selectedFiducial, reason: 'Off-Center' });
-                 }
-                 closestDist = dist;
-                 selectedFiducial = fid;
-             } else {
-                 newlyRejected.push({ ...fid, reason: 'Off-Center' });
-             }
+            const dist = Math.hypot(fid.pixelPosition.x - centerX, fid.pixelPosition.y - centerY);
+            if (dist < closestDist) {
+              if (selectedFiducial) {
+                newlyRejected.push({ ...selectedFiducial, reason: 'Off-Center' });
+              }
+              closestDist = dist;
+              selectedFiducial = fid;
+            } else {
+              newlyRejected.push({ ...fid, reason: 'Off-Center' });
+            }
           });
 
           // Enforce 80px radius limit
@@ -849,9 +842,9 @@ export default function CameraPanel({
           let finalRejected = [...(result.rejectedBlobs || []), ...newlyRejected];
 
           if (selectedFiducial && closestDist <= SNAP_RADIUS_PX) {
-              finalFiducials = [selectedFiducial];
+            finalFiducials = [selectedFiducial];
           } else if (selectedFiducial) {
-              finalRejected.push({ ...selectedFiducial, reason: 'Too Far from Crosshair' });
+            finalRejected.push({ ...selectedFiducial, reason: 'Too Far from Crosshair' });
           }
 
           // Accumulation Logic
@@ -868,10 +861,10 @@ export default function CameraPanel({
           }
 
           setVisionResult(prev => ({
-              detected: true,
-              fiducials: finalFiducials,
-              rejectedBlobs: finalRejected,
-              confidence: finalFiducials.length > 0 ? finalFiducials[0].confidence : 0
+            detected: true,
+            fiducials: finalFiducials,
+            rejectedBlobs: finalRejected,
+            confidence: finalFiducials.length > 0 ? finalFiducials[0].confidence : 0
           }));
 
           // 1. Calculate World Positions for new potential fiducials
@@ -949,34 +942,6 @@ export default function CameraPanel({
                   nextBoards[bIdx] = { ...nextBoards[bIdx], fiducials: newFiducials };
                   changedBoards = true;
                   console.log(`[Continuous] Updated ${closestFid.boardName} ${closestFid.id} (Shift: ${distChange.toFixed(3)}mm)`);
-
-                  // Auto-Jog to center the fiducial if it isn't centered already
-                  // If the fiducial is more than 0.5mm away from the crosshair, jog the machine
-                  const distFromCenter = Math.hypot(cand.estimatedWorld.x - currentMPos.x, cand.estimatedWorld.y - currentMPos.y);
-
-                  if (distFromCenter > 0.5 && window.serial && window.serial.writeLine) {
-                      const dxPx = cand.pixelPosition.x - centerX;
-                      const dyPx = centerY - cand.pixelPosition.y;
-                      const dxMm = dxPx / pxPerMm;
-                      const dyMm = dyPx / pxPerMm;
-
-                      console.log(`[Continuous] Auto-Centering ${closestFid.id}: Jogging dx=${dxMm.toFixed(3)}, dy=${dyMm.toFixed(3)}`);
-                      try {
-                          // Note: We use the standalone jogRel utility imported at the top of CameraPanel
-                          // We pass dx, dy, and a moderate feed rate to smoothly home in
-                          const cmds = []; // We manually construct the string here to avoid dependency issues if jogRel isn't perfectly mapped
-                          // The machine moves in mm.
-                          cmds.push('G91'); // Relative positioning
-                          cmds.push(`G0 X${dxMm.toFixed(3)} Y${dyMm.toFixed(3)} F3000`); // Rapid move to the offset
-                          cmds.push('G90'); // Back to absolute
-
-                          for (const line of cmds) {
-                              window.serial.writeLine(line);
-                          }
-                      } catch (e) {
-                          console.error("Auto-center jog failed:", e);
-                      }
-                  }
                 }
               } else { // If no existing machine position, just set it
                 const newFiducials = [...nextBoards[bIdx].fiducials];
@@ -1033,6 +998,29 @@ export default function CameraPanel({
             fiducials: result.fiducials,
             confidence: result.fiducials.length > 0 ? result.fiducials[0].confidence : 0
           });
+
+          // // AUTO-CENTER (Magnetic Snap): If a valid fiducial is clearly in view, snap to it
+          // // We rate limit to avoid flooding the serial buffer while the machine is already moving
+          // window._lastAutoJogTime = window._lastAutoJogTime || 0;
+          // const now = Date.now();
+
+          // if (selectedFiducial && (now - window._lastAutoJogTime > 1500)) {
+          //     const dxPx = selectedFiducial.pixelPosition.x - centerX;
+          //     const dyPx = centerY - selectedFiducial.pixelPosition.y; // Canvas Y is down
+          //     const dxMm = dxPx / pxPerMm;
+          //     const dyMm = dyPx / pxPerMm;
+
+          //     // Only jog if the error is greater than a tiny threshold (0.05mm)
+          //     if (Math.abs(dxMm) > 0.05 || Math.abs(dyMm) > 0.05) {
+          //         window._lastAutoJogTime = now;
+          //         const cmds = jogRel({ dx: dxMm, dy: dyMm, feed: 3000 });
+          //         console.log('[Continuous AutoCenter] Magnetic snap sending jog:', cmds);
+
+          //         if (window.serial && window.serial.writeLine) {
+          //             for (const line of cmds) window.serial.writeLine(line);
+          //         }
+          //     }
+          // }
         }
       },
       1000 // Check every 1 second

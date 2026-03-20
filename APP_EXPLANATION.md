@@ -193,12 +193,17 @@ Interactive PCB visualization:
 - **Tool Offset**: Compensates for camera-to-nozzle offset
 
 #### **Vision Features** (`lib/vision/`)
-- **Fiducial Vision Detector**: Camera-based fiducial detection
-- **Pad Detector**: Vision-guided pad detection
-- **Quality Controller**: Paste quality analysis
-  - Coverage analysis
-  - Volume estimation
-  - Pass/fail criteria
+- **100% Local Frontend Processing**: The entire vision system runs in-browser using pure JavaScript and the HTML5 `<canvas>` API, avoiding any backend dependencies or Python/C++ binaries.
+- **Classical Computer Vision Pipeline** (Blob Detection & Feature Extraction):
+  1. **Grayscale Conversion**: Extracts raw RGBA pixels and converts them to a lightweight luminance array.
+  2. **Rule-Based Binarization**: Skips Otsu's method in favor of absolute color rules tailored to PCBs (e.g., rejecting highly-saturated green soldermask, preserving bright HASL pads).
+  3. **Connected Component Labeling (CCA)**: Fast flood-fill algorithm grouping white pixels into distinct blobs.
+  4. **Feature Extraction**: Calculates Bounding Box, Radius, Circularity, and Inertia Ratio mathematically.
+  5. **Multi-Stage Matrix Filtering**: Eliminates false positives (dust, via holes, white silkscreen text) using strict aspect-ratio and a "dark ring" structural isolation check.
+  6. **Crosshair Centric Auto-Center**: Picks the single fiducial closest to the UI crosshairs and generates precise relative G-code (`G91 G0`) to jog the machine into perfect alignment.
+- **Legacy Analysers**:
+  - Pad Detector (Vision-guided pad detection)
+  - Quality Controller (Paste coverage analysis and pass/fail volume estimation)
 
 ---
 
@@ -437,7 +442,7 @@ Interactive PCB visualization:
 
 ## Future Enhancements (Commented Code)
 
-- OpenCV integration for advanced vision
+- Advanced blob tracking algorithms for non-circular optical targets
 - Linear move panel with manual control
 - Enhanced path optimization algorithms
 - Real-time quality monitoring
