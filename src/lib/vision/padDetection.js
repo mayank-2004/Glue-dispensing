@@ -7,18 +7,26 @@ export class PadDetector {
   }
 
   // Detect pad in camera image at expected position
-  async detectPad(expectedPos, padSize = { width: 1, height: 1 }) {
-    if (!this.canvas || !this.homography) return null;
+  async detectPad(expectedPos, padSize = { width: 1, height: 1 }, fallbackPxPerMm = 20) {
+    if (!this.canvas) return null;
     
     const ctx = this.canvas.getContext('2d');
     const imageData = ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
     
     // Project expected position to pixel coordinates
-    const expectedPx = this.projectToPixels(expectedPos);
-    if (!expectedPx) return null;
+    let expectedPx;
+    if (this.homography && expectedPos) {
+      expectedPx = this.projectToPixels(expectedPos);
+      if (!expectedPx) return null;
+    } else {
+      // Fallback: assume the machine has driven to the expected position, so the pad is dead center
+      expectedPx = { u: this.canvas.width / 2, v: this.canvas.height / 2 };
+    }
     
     // Search area around expected position
-    const searchRadius = Math.max(padSize.width, padSize.height) * 2;
+    // Default fallback search radius is generous if no homography
+    const searchRadiusRadiusMm = Math.max(padSize.width, padSize.height) * 1.5;
+    const searchRadius = this.homography ? searchRadiusRadiusMm * 20 : searchRadiusRadiusMm * fallbackPxPerMm;
     const searchArea = this.extractSearchArea(imageData, expectedPx, searchRadius);
     
     // Find pad using edge detection
@@ -26,16 +34,35 @@ export class PadDetector {
     if (!detectedPx) return null;
     
     // Convert back to world coordinates
-    const worldPos = this.pixelsToWorld(detectedPx);
+    let worldPos, offset;
+    
+    if (this.homography && expectedPos) {
+      worldPos = this.pixelsToWorld(detectedPx);
+      offset = {
+        x: worldPos.x - expectedPos.x,
+        y: worldPos.y - expectedPos.y
+      };
+    } else {
+      // Fallback: estimate offset based on pixel difference and pxPerMm
+      const pxDx = detectedPx.u - expectedPx.u;
+      const pxDy = expectedPx.v - detectedPx.v; // Inverted Y: canvas Y is down, machine Y is up
+      
+      offset = {
+        x: pxDx / fallbackPxPerMm,
+        y: pxDy / fallbackPxPerMm
+      };
+      
+      worldPos = expectedPos 
+        ? { x: expectedPos.x + offset.x, y: expectedPos.y + offset.y }
+        : { x: offset.x, y: offset.y };
+    }
     
     return {
       detected: true,
       position: worldPos,
       confidence: this.calculateConfidence(searchArea, detectedPx),
-      offset: {
-        x: worldPos.x - expectedPos.x,
-        y: worldPos.y - expectedPos.y
-      }
+      offset: offset,
+      pixelPos: detectedPx
     };
   }
 

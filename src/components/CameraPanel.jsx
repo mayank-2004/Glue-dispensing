@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fitAffine, fitSimilarity, fitTranslation, applyTransform } from "../lib/utils/transform2d.js";
 import LensCalibration from "./LensCalibration.jsx";
 import { FiducialVisionDetector } from "../lib/vision/fiducialVision.js";
+import { PadDetector } from "../lib/vision/padDetection.js";
 import { jogRel } from "../lib/motion/gcode";
 import "./CameraPanel.css";
 
@@ -10,13 +11,11 @@ export default function CameraPanel({
   xf,
   applyXf,
   selectedDesign,
+  effectiveOrigin,
   toolOffset,
   setToolOffset,
   nozzleDia,
   setNozzleDia,
-  // visionEnabled = false,
-  // qualityEnabled = false,
-  padDetector,
   qualityController,
   onCaptureAlignment, // function(index: 1|2)
   alignmentInfo,      // { p1: {x,y}, p2: {x,y}, status: '...' }
@@ -34,10 +33,10 @@ export default function CameraPanel({
   const machinePositionRef = useRef(machinePosition);
 
   // Ref to hold latest props for stale-closure avoidance in setInterval
-  const latestPropsRef = useRef({ fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm });
+  const latestPropsRef = useRef({ fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin });
   useEffect(() => {
-    latestPropsRef.current = { fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm };
-  }, [fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm]);
+    latestPropsRef.current = { fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin };
+  }, [fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin]);
 
   const [streamOn, setStreamOn] = useState(false);
 
@@ -53,6 +52,12 @@ export default function CameraPanel({
   const [showOverlay, setShowOverlay] = useState(true);
   const [measureMode, setMeasureMode] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
+
+  // const [invertCameraX, setInvertCameraX] = useState(() => localStorage.getItem("camInvertX") === "true");
+  // const [invertCameraY, setInvertCameraY] = useState(() => localStorage.getItem("camInvertY") === "true");
+
+  // useEffect(() => { localStorage.setItem("camInvertX", invertCameraX); }, [invertCameraX]);
+  // useEffect(() => { localStorage.setItem("camInvertY", invertCameraY); }, [invertCameraY]);
 
   // Use a Ref for vision results so the 60fps Animation Loop can always read the latest data without stale closures
   const visionResultRef = useRef(null);
@@ -71,11 +76,65 @@ export default function CameraPanel({
   const [visionEnabled, setVisionEnabled] = useState(false);
   const [qualityEnabled, setQualityEnabled] = useState(false);
   const [fiducialDetector] = useState(() => new FiducialVisionDetector());
-  // const [autoDetecting, setAutoDetecting] = useState(false);
+  const [padDetector, setPadDetector] = useState(null);
+
+  useEffect(() => {
+    if (canvasRef.current && !padDetector) {
+      setPadDetector(new PadDetector(canvasRef.current, H));
+    } else if (padDetector && H) {
+      padDetector.updateHomography(H);
+    }
+  }, [canvasRef.current, H, padDetector]);
+
   const [detectionInterval, setDetectionInterval] = useState(null);
 
   const [jogStep, setJogStep] = useState(1);
   const [isBusy, setIsBusy] = useState(false);
+
+  // Auto-Align Window Event Listener
+  useEffect(() => {
+    const handleAutoAlign = async (e) => {
+      const { targetMachine, padCenter } = e.detail;
+      
+      // 1. Wait a moment for the G0 move to fully finish physically 
+      await new Promise(r => setTimeout(r, 1200));
+
+      if (!padDetector || !streamOn) return;
+      setAutoDetecting(true);
+      try {
+        // Find the pad near the crosshair
+        const pxmm = pixelsPerMm || 20; // fallback scale
+        const result = await padDetector.detectPad(padCenter, { width: 1, height: 1 }, pxmm);
+        setVisionResult(result);
+
+        if (result && result.detected && result.offset) {
+          console.log('[Auto-Align] Pad detected at offset:', result.offset);
+          
+          const dxMm = result.offset.x;
+          // IMPORTANT: If offset > 3mm, it's likely a false positive (detecting neighboring pad)
+          const distMm = Math.hypot(dxMm, result.offset.y);
+          if (distMm > 0.02 && distMm < 3.0) {
+             const cmds = jogRel({ dx: dxMm, dy: result.offset.y, feed: 500 });
+             if (window.serial && window.serial.writeLine) {
+               for (const line of cmds) await window.serial.writeLine(line);
+               console.log('[Auto-Align] Corrected precision by:', dxMm.toFixed(3), result.offset.y.toFixed(3));
+             }
+          } else {
+             console.warn('[Auto-Align] Pad correction rejected due to out-of-bounds distance:', distMm);
+          }
+        } else {
+          console.warn('[Auto-Align] No valid rectangular pad contours detected near crosshair.');
+        }
+      } catch (err) {
+        console.error('[Auto-Align] Vision failed:', err);
+      } finally {
+        setAutoDetecting(false);
+      }
+    };
+
+    window.addEventListener('camera-auto-align-pad', handleAutoAlign);
+    return () => window.removeEventListener('camera-auto-align-pad', handleAutoAlign);
+  }, [padDetector, streamOn, pixelsPerMm]);
 
   // helpers for safe formatting
   const f3 = (v) => (Number.isFinite(v) ? v.toFixed(3) : "—");
@@ -197,26 +256,13 @@ export default function CameraPanel({
 
     if (!showOverlay) return;
 
-    // --- SNAP CROSSHAIR TO DETECTED FIDUCIAL ---
+    // --- CROSSHAIR REMAINS FIXED AT CENTER ---
     let crosshairX = W / 2;
     let crosshairY = Hh / 2;
 
-    if (visionResult && visionResult.detected && visionResult.fiducials && visionResult.fiducials.length > 0) {
-      let closestFid = null;
-      let minDist = Infinity;
-      console.log("vision result: ", visionResult);
-      visionResult.fiducials.forEach(fid => {
-        const dist = Math.hypot(fid.pixelPosition.x - (W / 2), fid.pixelPosition.y - (Hh / 2));
-        if (dist < minDist) {
-          minDist = dist;
-          closestFid = fid;
-        }
-      });
-      if (closestFid) {
-        crosshairX = closestFid.pixelPosition.x;
-        crosshairY = closestFid.pixelPosition.y;
-      }
-    }
+    // (Visual magnetic snapping removed per user request: The target crosshair must always represent the true center of the camera view)
+    // if (visionResult && visionResult.detected && visionResult.fiducials && visionResult.fiducials.length > 0) { ... }
+
 
     // Draw Auto-Adjusting Center Crosshair (User requested 4 sections)
     ctx.strokeStyle = "rgba(0, 255, 255, 0.5)"; // Cyan transparent
@@ -236,6 +282,9 @@ export default function CameraPanel({
 
     if (matchData) {
       const { x: mX, y: mY } = matchData;
+      const originOffset = latestPropsRef.current.effectiveOrigin || { x: 0, y: 0 };
+      const displayX = mX - originOffset.x;
+      const displayY = mY - originOffset.y;
 
       // Draw a white halo behind the black text so it remains visible over dark traces
       ctx.lineWidth = 3;
@@ -244,16 +293,16 @@ export default function CameraPanel({
       ctx.font = "bold 14px monospace";
       ctx.strokeText(`+ TARGET`, crosshairX + 12, crosshairY - 16);
       ctx.font = "12px monospace";
-      ctx.strokeText(`X: ${mX.toFixed(3)} mm`, crosshairX + 12, crosshairY + 0);
-      ctx.strokeText(`Y: ${mY.toFixed(3)} mm`, crosshairX + 12, crosshairY + 14);
+      ctx.strokeText(`X: ${displayX.toFixed(3)} mm`, crosshairX + 12, crosshairY + 0);
+      ctx.strokeText(`Y: ${displayY.toFixed(3)} mm`, crosshairX + 12, crosshairY + 14);
 
       // Draw the crisp black text over the white halo
       ctx.fillStyle = "#000000"; // Changed to pure black as requested
       ctx.font = "bold 14px monospace";
       ctx.fillText(`+ TARGET`, crosshairX + 12, crosshairY - 16);
       ctx.font = "12px monospace";
-      ctx.fillText(`X: ${mX.toFixed(3)} mm`, crosshairX + 12, crosshairY + 0);
-      ctx.fillText(`Y: ${mY.toFixed(3)} mm`, crosshairX + 12, crosshairY + 14);
+      ctx.fillText(`X: ${displayX.toFixed(3)} mm`, crosshairX + 12, crosshairY + 0);
+      ctx.fillText(`Y: ${displayY.toFixed(3)} mm`, crosshairX + 12, crosshairY + 14);
     }
 
     // Pull directly from the Ref so we never get a stale closure inside RequestAnimationFrame
@@ -311,12 +360,16 @@ export default function CameraPanel({
 
           // Display machine coordinates for detected fiducials
           const ppxmm = latestPropsRef.current.pixelsPerMm;
+          const originOffset = latestPropsRef.current.effectiveOrigin || { x: 0, y: 0 };
           const machX = machinePositionRef.current.x + (toolOffset?.dx || 0) + ((px.x - (W / 2)) / ppxmm);
           const machY = machinePositionRef.current.y + (toolOffset?.dy || 0) + (((Hh / 2) - px.y) / ppxmm);
 
+          const displayX = machX - originOffset.x;
+          const displayY = machY - originOffset.y;
+
           ctx.fillStyle = '#00ff00';
           ctx.font = "12px monospace";
-          ctx.fillText(`C: ${machX.toFixed(2)}, ${machY.toFixed(2)}`, px.x + r + 5, px.y - r);
+          ctx.fillText(`C: ${displayX.toFixed(2)}, ${displayY.toFixed(2)}`, px.x + r + 5, px.y - r);
         });
       }
 
@@ -457,7 +510,8 @@ export default function CameraPanel({
           if (closestDist < 60 && closestFid) {
             targetU = closestFid.pixelPosition.x;
             targetV = closestFid.pixelPosition.y;
-            console.log("Snapped to pad centroid at:", targetU, targetV);
+            // console.log("Snapped to pad centroid at:", targetU, targetV);
+            // console.log("Snapped to pad centroid at:", closestFid);
           }
         }
       } catch (err) {
@@ -590,6 +644,8 @@ export default function CameraPanel({
 
     const pixelDx = pxX - centerX;
     const pixelDy = centerY - pxY; // Machine Y is up, Canvas Y is down
+    // const dxMm = (invertCameraX ? -1 : 1) * (pixelDx / pxmm);
+    // const dyMm = (invertCameraY ? -1 : 1) * (pixelDy / pxmm);
     const dxMm = pixelDx / pxmm;
     const dyMm = pixelDy / pxmm;
 
@@ -809,6 +865,7 @@ export default function CameraPanel({
       return;
     }
 
+    const pxmm = pixelsPerMm || 20;
     const intervalId = fiducialDetector.startContinuousDetection(
       videoRef.current,
       (result) => {
@@ -816,7 +873,7 @@ export default function CameraPanel({
           const videoWidth = videoRef.current.clientWidth || videoRef.current.videoWidth || 640;
           const videoHeight = videoRef.current.clientHeight || videoRef.current.videoHeight || 480;
           const centerX = videoWidth / 2;
-          const centerY = (videoHeight - 60) / 2; // Subtract height of control panel at bottom
+          const centerY = videoHeight / 2;
 
           // --- ONLY ACCEPT THE FIDUCIAL UNDER THE CROSSHAIRS ---
           let closestDist = Infinity;
@@ -999,31 +1056,21 @@ export default function CameraPanel({
             confidence: result.fiducials.length > 0 ? result.fiducials[0].confidence : 0
           });
 
-          // // AUTO-CENTER (Magnetic Snap): If a valid fiducial is clearly in view, snap to it
-          // // We rate limit to avoid flooding the serial buffer while the machine is already moving
-          // window._lastAutoJogTime = window._lastAutoJogTime || 0;
-          // const now = Date.now();
-
-          // if (selectedFiducial && (now - window._lastAutoJogTime > 1500)) {
-          //     const dxPx = selectedFiducial.pixelPosition.x - centerX;
-          //     const dyPx = centerY - selectedFiducial.pixelPosition.y; // Canvas Y is down
-          //     const dxMm = dxPx / pxPerMm;
-          //     const dyMm = dyPx / pxPerMm;
-
-          //     // Only jog if the error is greater than a tiny threshold (0.05mm)
-          //     if (Math.abs(dxMm) > 0.05 || Math.abs(dyMm) > 0.05) {
-          //         window._lastAutoJogTime = now;
-          //         const cmds = jogRel({ dx: dxMm, dy: dyMm, feed: 3000 });
-          //         console.log('[Continuous AutoCenter] Magnetic snap sending jog:', cmds);
-
-          //         if (window.serial && window.serial.writeLine) {
-          //             for (const line of cmds) window.serial.writeLine(line);
-          //         }
-          //     }
+          // AUTO-CENTER (Magnetic Snap) — DISABLED: direction issue needs physical debugging
+          // Uncomment once camera axis orientation is verified with the diagnostic log below.
+          // if (selectedFiducial) {
+          //   const matchData = getMachineCoordinateFromPixel(selectedFiducial.pixelPosition.x, selectedFiducial.pixelPosition.y, videoWidth, videoHeight);
+          //   if (matchData) {
+          //     console.log('[AutoCenter DEBUG] fiducial px:', selectedFiducial.pixelPosition,
+          //       'center:', { x: centerX, y: centerY },
+          //       'dxMm:', matchData.dxMm.toFixed(3), 'dyMm:', matchData.dyMm.toFixed(3),
+          //       '→ To fix: if machine moves RIGHT but fiducial is LEFT, toggle Invert Camera X. Same logic for Y.');
+          //   }
           // }
         }
       },
-      1000 // Check every 1 second
+      1000,
+      { pxPerMm: pxmm, debug: true }
     );
 
     setDetectionInterval(intervalId);
@@ -1129,6 +1176,16 @@ export default function CameraPanel({
             </button>
           )}
         </div>
+        {/* <div className="advanced-features-checkboxes" style={{ marginTop: 8 }}>
+          <label>
+            <input type="checkbox" checked={invertCameraX} onChange={e => setInvertCameraX(e.target.checked)} />
+            Invert Camera X Axis
+          </label>
+          <label>
+            <input type="checkbox" checked={invertCameraY} onChange={e => setInvertCameraY(e.target.checked)} />
+            Invert Camera Y Axis
+          </label>
+        </div> */}
 
         <div className="fiducial-detection-section">
           <h4>Automated Fiducial Detection</h4>

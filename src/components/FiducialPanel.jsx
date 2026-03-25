@@ -26,7 +26,8 @@ export default function FiducialPanel({
   panelBoards = [],
   setPanelBoards,
   activeBoardIndex = 0,
-  setActiveBoardIndex
+  setActiveBoardIndex,
+  boardOutline
 }) {
   const ready2 = fiducials.filter(f => f.design && f.machine).length >= 2;
   const ready3 = fiducials.filter(f => f.design && f.machine).length >= 3;
@@ -35,27 +36,16 @@ export default function FiducialPanel({
     <div className="section">
       {/* Panel Size Calculation (Moved to Top) */}
       {(() => {
-        const machineFids = fiducials.filter(f => f.machine && typeof f.machine.x === 'number' && typeof f.machine.y === 'number');
-
         let content;
-        if (machineFids.length < 2) {
+        if (!boardOutline || !boardOutline.width || !boardOutline.height) {
           content = (
             <div style={{ fontSize: '0.9em', color: '#666', fontStyle: 'italic' }}>
-              Waiting for at least 2 detected fiducials to calculate size...
+              Waiting for Gerber board outline to compute true PCB size...
             </div>
           );
         } else {
-          const xs = machineFids.map(f => f.machine.x);
-          const ys = machineFids.map(f => f.machine.y);
-          const minX = Math.min(...xs);
-          const maxX = Math.max(...xs);
-          const minY = Math.min(...ys);
-          const maxY = Math.max(...ys);
-
-          const width = maxX - minX;
-          // console.log("Width: ", width)
-          const height = maxY - minY;
-          // console.log("height: ", height);
+          const width = boardOutline.width;
+          const height = boardOutline.height;
           const diag = Math.hypot(width, height);
 
           content = (
@@ -71,7 +61,7 @@ export default function FiducialPanel({
 
         return (
           <div className="info" style={{ marginBottom: 16, background: '#e3f2fd', border: '1px solid #90caf9' }}>
-            <strong style={{ color: "black" }}>Detected PCB Size</strong>
+            <strong style={{ color: "black" }}>Detected PCB Size (Board Outline)</strong>
             {content}
           </div>
         );
@@ -223,7 +213,7 @@ export default function FiducialPanel({
                   )}
                 </div>
               </td>
-              <td><button className="btn secondary" onClick={() => onClearOne(f.id)}>Clear</button></td>
+              <td><button className="btn secondary" onClick={() => onClearOne(f.id)}>Clear</button></td>  
             </tr>
           ))}
         </tbody>

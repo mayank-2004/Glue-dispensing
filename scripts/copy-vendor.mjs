@@ -18,6 +18,10 @@ const copies = [
   {
     from: join(__dirname, '..', 'node_modules', 'pcb-stackup', 'dist', 'pcb-stackup.min.js'),
     to: join(vendorDir, 'pcb-stackup.min.js')
+  },
+  {
+    from: join(__dirname, '..', 'node_modules', '@techstark', 'opencv-js', 'dist', 'opencv.js'),
+    to: join(vendorDir, 'opencv.js')
   }
 ];
 

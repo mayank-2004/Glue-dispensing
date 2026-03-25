@@ -11,7 +11,7 @@ export class FiducialVisionDetector {
     const pxPerMm = options.pxPerMm || 20;
 
     try {
-      const canvas = document.createElement('canvas'); // Recycling could improve perf
+      const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
       const cw = videoElement.clientWidth || videoElement.videoWidth || 640;
@@ -44,45 +44,110 @@ export class FiducialVisionDetector {
       }
 
       ctx.drawImage(videoElement, startX, startY, drawW, drawH, 0, 0, cw, ch);
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-
-      // 2. Process Image (Blob Detection + Feature Extraction)
-      // 2. Determine an automatic threshold (Otsu's method) to separate distinct contrast zones
-      // Now returns { blobs, labels, gray } so we can do advanced post-processing
-      const debug = options?.debug === true;
-      const { blobs, labels, gray } = this.findBlobs(imageData, canvas.width, canvas.height);
-
-      // 3. Filter Blobs based on Advanced Constraints
-      const { validBlobs, rejectedBlobs } = this.filterBlobs(blobs, labels, gray, imageData, canvas.width, canvas.height, pxPerMm);
-
-      if (debug) {
-        console.log(`[FiducialVision DEBUG] pxPerMm=${pxPerMm.toFixed(2)}, frame=${cw}x${ch}`);
-        console.log(`[FiducialVision DEBUG] Raw blobs: ${blobs.length}, Valid: ${validBlobs.length}, Rejected: ${rejectedBlobs.length}`);
-        rejectedBlobs.forEach(b => {
-          console.log(`  REJECTED r=${b.radius.toFixed(1)}px d=${(b.radius*2/pxPerMm).toFixed(2)}mm circ=${(b.circularity||0).toFixed(2)} | ${b.rejectReason}`);
-        });
-        validBlobs.forEach(b => {
-          console.log(`  VALID    r=${b.radius.toFixed(1)}px d=${(b.radius*2/pxPerMm).toFixed(2)}mm circ=${(b.circularity||0).toFixed(2)}`);
-        });
+      
+      // Check if OpenCV is loaded
+      if (!window.cv || typeof window.cv.Mat !== 'function') {
+        console.warn('OpenCV.js is not loaded yet');
+        return { success: false, error: 'OpenCV not loaded' };
       }
 
+      // OpenCV Processing
+      const src = window.cv.imread(canvas);
+      const gray = new window.cv.Mat();
+      window.cv.cvtColor(src, gray, window.cv.COLOR_RGBA2GRAY, 0);
+
+      // Median blur is mathematically ideal for HoughCircles, 
+      // as it obliterates salt-and-pepper noise and specular glares without blurring edges
+      const blurred = new window.cv.Mat();
+      window.cv.medianBlur(gray, blurred, 5);
+
+      const circles = new window.cv.Mat();
+
+      const MIN_DIAMETER_MM = 0.3;
+      const MAX_DIAMETER_MM = 3.0;
+      
+      // Calculate dynamic radius limits based on zoom level calibration
+      const minRadiusPx = Math.floor((MIN_DIAMETER_MM / 2) * pxPerMm * 0.8);
+      const maxRadiusPx = Math.ceil((MAX_DIAMETER_MM / 2) * pxPerMm * 1.5);
+      
+      // Minimum distance between circle centers (stops overlapping duplicates)
+      const minDist = maxRadiusPx * 1.5;
+
+      // param1: Canny edge detection high threshold
+      // param2: Accumulator threshold for circle centers (lower = more false circles). 
+      // 20 is a highly tuned strict threshold for small/sharp holes
+      window.cv.HoughCircles(
+        blurred, 
+        circles, 
+        window.cv.HOUGH_GRADIENT, 
+        1, // dp (inverse ratio of accumulator resolution)
+        minDist, 
+        100, // Canny high threshold
+        22,  // Accumulator threshold
+        Math.max(3, minRadiusPx), 
+        Math.min(minRadiusPx * 10, maxRadiusPx)
+      );
+
+      const validBlobs = [];
+      const rejectedBlobs = [];
+
+      if (circles.cols > 0) {
+        for (let i = 0; i < circles.cols; ++i) {
+          const x = circles.data32F[i * 3];
+          const y = circles.data32F[i * 3 + 1];
+          const radius = circles.data32F[i * 3 + 2];
+          
+          const diameterMm = (radius * 2) / pxPerMm;
+
+          // Only accept if strictly inside dimensions (avoid border noise circles)
+          if (x >= radius && x <= cw - radius && y >= radius && y <= ch - radius) {
+            
+            // Extract the center pixel brightness from the blurred image
+            // Fiducial pads MUST be somewhat bright (copper/HASL).
+            // Reject dark circles which might just be shadows or green mask patterns.
+            let centerLum = 0;
+            if (x >= 0 && x < cw && y >= 0 && y < ch) {
+               centerLum = blurred.ucharPtr(Math.round(y), Math.round(x))[0];
+            }
+
+            const blob = { 
+              x, y, radius, 
+              circularity: 1.0, // Hough circles are perfect
+              area: Math.PI * radius * radius,
+              confidence: 0.90 + (Math.min(centerLum, 255) / 2550) // Bonus confidence for bright centers
+            };
+
+            if (centerLum > 60) {
+              validBlobs.push(blob);
+            } else {
+              blob.rejectReason = 'Too Dark (Not Copper)';
+              rejectedBlobs.push(blob);
+            }
+          }
+        }
+      }
+
+      // Sort by confidence
+      validBlobs.sort((a, b) => b.confidence - a.confidence);
+
+      const debug = options?.debug === true;
+      if (debug) {
+        console.log(`[OpenCV DEBUG] HoughCircles found: ${circles.cols}`);
+        console.log(`[OpenCV DEBUG] Valid: ${validBlobs.length}, Rejected: ${rejectedBlobs.length}`);
+      }
+
+      // Format for CameraPanel
       const mappedFiducials = validBlobs.map((blob, idx) => ({
         id: `F${idx + 1}`,
         pixelPosition: { x: blob.x, y: blob.y },
         radius: blob.radius,
         diameterMm: (blob.radius * 2) / pxPerMm,
-        confidence: blob.confidence,
+        confidence: blob.confidence,  
         machinePosition: this.pixelToMachine(blob.x, blob.y),
         autoDetected: true,
-        stats: {
-          circularity: blob.circularity,
-          inertiaRatio: blob.inertiaRatio,
-          convexity: blob.convexity,
-          edgeStrength: blob.edgeStrength
-        }
+        stats: { circularity: blob.circularity }
       }));
 
-      // Plumb through the rejected blobs for visual debugging on the UI
       const mappedRejected = rejectedBlobs.map((blob) => ({
         pixelPosition: { x: blob.x, y: blob.y },
         radius: blob.radius,
@@ -90,6 +155,12 @@ export class FiducialVisionDetector {
         circularity: blob.circularity,
         diameterMm: (blob.radius * 2) / pxPerMm
       }));
+
+      // Cleanup OpenCV memory
+      src.delete();
+      gray.delete();
+      blurred.delete();
+      circles.delete();
 
       return {
         success: true,
@@ -100,12 +171,16 @@ export class FiducialVisionDetector {
       };
 
     } catch (error) {
-      console.error('Advanced fiducial detection failed:', error);
+      console.error('OpenCV fiducial detection failed:', error);
       return { success: false, error: error.message, fiducials: [] };
     } finally {
       this.isDetecting = false;
     }
   }
+
+  /* =========================================================================
+   * LEGACY VANILLA JS DETECTION CODE
+   * =========================================================================
 
   findBlobs(imageData, width, height) {
     const { data } = imageData;
@@ -137,8 +212,14 @@ export class FiducialVisionDetector {
       const minC = Math.min(r, g, b);
       const saturation = maxC > 0 ? (maxC - minC) / maxC : 0;
 
-      // Allow pad pixels: bright enough, not a pure specular flash, not over-saturated (vivid color)
-      binarizedSilver[i >> 2] = (lum >= brightnessThreshold && lum < 250 && saturation < 0.75) ? 1 : 0;
+      // Allow pad pixels that are:
+      // 1. Bright enough (above adaptive threshold) 
+      // 2. Not blown-out specular (< 250)
+      // 3. Not over-saturated / vivid color (sat < 0.75)
+      // 4. NOT white background: white table/paper has ALL channels high (minC > 180).
+      //    Copper/HASL metallic has warm tone: R > B, so minC (usually B) stays below ~180.
+      const isNotWhiteBackground = minC < 180;
+      binarizedSilver[i >> 2] = (lum >= brightnessThreshold && lum < 250 && saturation < 0.75 && isNotWhiteBackground) ? 1 : 0;
     }
 
     // --- Connected Components ---
@@ -262,18 +343,18 @@ export class FiducialVisionDetector {
   }
 
   filterBlobs(blobs, labels, gray, imageData, width, height, pxPerMm) {
-    const MAX_DIAMETER_MM = 5.0; // Wide range - let structure check do the real work
-    const MIN_DIAMETER_MM = 0.1; // Very small floor - pxPerMm may be miscalibrated
+    const MAX_DIAMETER_MM = 3.0; // Fiducials are 0.5–2mm. Rejects large mounting holes/rings.
+    const MIN_DIAMETER_MM = 0.3; // Slightly raised to reject noise dots
 
     const maxRadiusPx = (MAX_DIAMETER_MM / 2) * pxPerMm;
     const minRadiusPx = (MIN_DIAMETER_MM / 2) * pxPerMm;
 
-    // Thresholds - balanced for HASL pads while rejecting text/letters
-    const MIN_CIRCULARITY = 0.60;  // Letters like N/R score ~0.1-0.3; round pads score 0.7+
-    const MIN_INERTIA_RATIO = 0.50; // Penalises elongated blobs (text is elongated)
-    const MIN_CONVEXITY = 0.70;    // Text has jagged edges
+    // Thresholds - original working values
+    const MIN_CIRCULARITY = 0.60;
+    const MIN_INERTIA_RATIO = 0.50;
+    const MIN_CONVEXITY = 0.70;
     const MIN_EDGE_STRENGTH = 8;
-    const MAX_ASPECT_RATIO = 1.8;  // width/height must be close to 1 for round pad
+    const MAX_ASPECT_RATIO = 1.8;
 
     const validBlobs = [];
     const rejectedBlobs = [];
@@ -433,11 +514,9 @@ export class FiducialVisionDetector {
     return count > 0 ? sumDiff / count : 0;
   }
 
-
-  /**
-   * Check for "Dark Center" enclosed in "Bright Ring" structure
-   * Validates Contrast in Grayscale (Ignores Color completely)
-   */
+  // checkStructureAndColor documentation
+  // Check for "Dark Center" enclosed in "Bright Ring" structure
+  // Validates Contrast in Grayscale (Ignores Color completely)
   checkStructureAndColor(blob, gray, width, height, pxPerMm) {
     const { x, y, radius } = blob;
 
@@ -479,14 +558,12 @@ export class FiducialVisionDetector {
     const avgCenterLum = centerLumSum / centerCount;
     const avgRingLum = ringLumSum / ringCount;
 
-    // REJECT DRILL HOLES: Holes appear dark in center (low avgCenterLum) and 
-    // bright at the edges. Explicitly reject if center is darker than the ring.
+    // REJECT DRILL HOLES: Holes appear dark in center and bright at edges.
     if (avgCenterLum < avgRingLum - 15) {
       return false; // This is a hole, not a fiducial pad
     }
 
-    // REQUIRE BRIGHT CENTER: Fiducial pads are bright silver/copper discs.
-    // The center MUST be noticeably brighter than the surrounding soldermask ring.
+    // REQUIRE BRIGHT CENTER: The center MUST be noticeably brighter than surrounding soldermask.
     if (avgCenterLum <= avgRingLum + 8) {
       return false; // Center is not clearly brighter - not a fiducial
     }
@@ -527,6 +604,8 @@ export class FiducialVisionDetector {
     // so we don't cap it anymore since the copper might be the bright element.
     return threshold;
   }
+  
+  ========================================================================= */
 
   pixelToMachine(pixelX, pixelY) {
     if (!this.homography) return null;
@@ -547,9 +626,9 @@ export class FiducialVisionDetector {
   /**
    * Start continuous fiducial monitoring
    */
-  startContinuousDetection(videoElement, callback, interval = 1000) {
+  startContinuousDetection(videoElement, callback, interval = 1000, options = {}) {
     const detect = async () => {
-      const result = await this.detectFiducialsInFrame(videoElement);
+      const result = await this.detectFiducialsInFrame(videoElement, [], options);
       if (callback) callback(result);
     };
 

@@ -1664,28 +1664,40 @@ export default function App() {
       console.warn('Pad center calculation may be inaccurate:', hit.pos.centerMethod);
     }
 
-    // Show distance from reference to clicked pad
-    const refPoint = referencePoint || selectedOrigin;
-    if (refPoint) {
-      // Calculate true center (Gerber pads are already centered)
-      const trueCenterY = padCenter.y;
+    // Select the pad immediately for Visual Feedback
+    setSelectedMm(padCenter);
 
+    // Calculate distance from reference if valid
+    const refPoint = referencePoint || selectedOrigin;
+    let distInfo = "";
+    if (refPoint) {
       const dx = padCenter.x - refPoint.x;
-      const dy = trueCenterY - refPoint.y;
+      const dy = padCenter.y - refPoint.y;
       const dist = Math.hypot(dx, dy);
       const refName = refPoint === selectedOrigin ? 'PCB Origin' : `Fiducial ${refPoint.id || ''}`;
-      const show = window.confirm(
-        `Distance from ${refName}:\n` +
-        `ΔX: ${dx.toFixed(3)} mm\n` +
-        `ΔY: ${dy.toFixed(3)} mm\n` +
-        `Distance: ${dist.toFixed(3)} mm\n\n` +
-        `Show measurement line?`
-      );
-      if (show) {
-        setSelectedMm(padCenter);
-      }
-    } else {
-      setSelectedMm(padCenter);
+      distInfo = `\n\nDistance from ${refName}: ${dist.toFixed(3)} mm (ΔX: ${dx.toFixed(2)}, ΔY: ${dy.toFixed(2)})`;
+    }
+
+    // Direct machine to move to pad (Camera Crosshair alignment)
+    if (window.serial && window.serial.writeLine && xf && applyXf) {
+      setTimeout(() => {
+        const targetMachine = applyTransform(xf, padCenter);
+        const move = window.confirm(
+          `Pad Selected.${distInfo}\n\n` +
+          `Drive camera perfectly to this pad now?\n` +
+          `Machine Target: X${targetMachine.x.toFixed(3)} Y${targetMachine.y.toFixed(3)}`
+        );
+        
+        if (move) {
+          // Send movement command (Safe height assumption: user handles Z height manually before clicking)
+          window.serial.writeLine(`G0 X${targetMachine.x.toFixed(3)} Y${targetMachine.y.toFixed(3)} F3000`);
+          
+          // Trigger vision-based micro-alignment. CameraPanel will catch this and wait for motion to finish.
+          window.dispatchEvent(new CustomEvent('camera-auto-align-pad', {
+             detail: { targetMachine, padCenter }
+          }));
+        }
+      }, 50); // Small timeout to allow React to render the selection first
     }
   }, [
     fidPickMode,
@@ -1728,7 +1740,7 @@ export default function App() {
       const autoFiducials = detectedFiducials.slice(0, 3).map((fid, idx) => ({
         id: fid.id || `F${idx + 1}`,
         design: { x: fid.x, y: fid.y },
-        machine: { x: fid.x, y: fid.y }, // Initialize machine coords to match design
+        machine: { x: fid.x, y: fid.y }, 
         color: colors[idx % colors.length],
         confidence: fid.confidence
       }));
@@ -2301,6 +2313,7 @@ export default function App() {
                 onAutoDetectCamera={onAutoDetectCamera}
                 alignmentInfo={alignment}
                 onCaptureAlignment={handleAlignmentCapture}
+                boardOutline={boardOutline}
 
                 panelBoards={panelBoards}
                 setPanelBoards={setPanelBoards}
@@ -2328,6 +2341,7 @@ export default function App() {
               xf={xf}
               applyXf={applyXf}
               selectedDesign={effectiveOrigin ? effectiveOrigin : (selectedMm ? { x: selectedMm.x, y: selectedMm.y } : null)}
+              effectiveOrigin={effectiveOrigin}
               toolOffset={maintenanceManager.getToolOffset()}
               setToolOffset={(o) => maintenanceManager.setToolOffset(o)}
               pixelsPerMm={maintenanceManager.getPixelsPerMm()}
