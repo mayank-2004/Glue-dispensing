@@ -2,6 +2,15 @@ import React from "react";
 import "./FiducialPanel.css";
 
 export default function FiducialPanel({
+  globalFiducials = [],
+  setGlobalFiducials,
+  globalXf,
+  setGlobalXf,
+  globalApplyXf,
+  setGlobalApplyXf,
+  onSolveGlobal2,
+  onSolveGlobal3,
+
   fiducials,
   activeId,
   setActiveId,
@@ -29,8 +38,27 @@ export default function FiducialPanel({
   setActiveBoardIndex,
   boardOutline
 }) {
-  const ready2 = fiducials.filter(f => f.design && f.machine).length >= 2;
-  const ready3 = fiducials.filter(f => f.design && f.machine).length >= 3;
+  const readyLocal2 = fiducials.filter(f => f.design && f.machine).length >= 2;
+  const readyLocal3 = fiducials.filter(f => f.design && f.machine).length >= 3;
+
+  const readyGlobal2 = globalFiducials.filter(f => f.design && f.machine).length >= 2;
+  const readyGlobal3 = globalFiducials.filter(f => f.design && f.machine).length >= 3;
+
+  // Global Transform Summary Math
+  const globalTransformSummary = React.useMemo(() => {
+    if (!globalXf) return null;
+    const out = { type: globalXf.type, tx: globalXf.tx, ty: globalXf.ty };
+    if (globalXf.type === "similarity") {
+      out.thetaDeg = globalXf.theta * 180 / Math.PI;
+      out.scale = globalXf.scale;
+    }
+    const pairs = globalFiducials.filter(f => f.design && f.machine);
+    if (pairs.length >= 2) {
+      // rmsError function is bound to utils/transform2d but we don't have it imported here. 
+      // the parent does the math. But for now we just show basic properties.
+    }
+    return out;
+  }, [globalXf, globalFiducials]);
 
   return (
     <div className="section">
@@ -113,49 +141,20 @@ export default function FiducialPanel({
         </div>
       )} */}
 
-      <div className="flex-row" style={{ gap: 8, alignItems: "center", marginBottom: 16, paddingBottom: 16, borderBottom: '1px solid #ccc' }}>
-        <strong>Mapping:</strong>
-        <select
-          value={activeBoardIndex}
-          onChange={(e) => setActiveBoardIndex(parseInt(e.target.value))}
-          style={{ padding: '6px 12px', minWidth: 120, fontSize: '1.1em' }}
-        >
-          {panelBoards.map((b, idx) => (
-            <option key={b.id} value={idx}>{b.name}</option>
-          ))}
-        </select>
-        <button
-          className="btn sm"
-          onClick={() => {
-            setPanelBoards(prev => {
-              const newBoards = [...prev];
-              const activeBoard = { ...newBoards[activeBoardIndex] };
-              const fCount = activeBoard.fiducials.length;
-              const newFid = {
-                id: `F${fCount + 1}`,
-                design: null,
-                machine: null,
-                color: `#${Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0')}`
-              };
-              activeBoard.fiducials = [...activeBoard.fiducials, newFid];
-              newBoards[activeBoardIndex] = activeBoard;
-              return newBoards;
-            });
-          }}
-        >
-          + Add Fiducial
-        </button>
-      </div>
-
-      <div className="flex-row" style={{ gap: 8, alignItems: "center" }}>
+      <div className="flex-row" style={{ gap: 8, alignItems: "center", marginBottom: 16 }}>
         <button className={`btn ${pickMode ? "" : "secondary"}`} onClick={togglePickMode}>
           {pickMode ? "Pick/Drag fiducials: ON" : "Pick/Drag fiducials"}
         </button>
         <select value={activeId ?? ""} onChange={(e) => setActiveId(e.target.value || null)}>
           <option value="">(select F to arm)</option>
-          {fiducials.map(f => <option key={f.id} value={f.id}>{f.id}</option>)}
+          <optgroup label="Global (Panel Rails)">
+            {globalFiducials.map(f => <option key={f.id} value={f.id}>{f.id}</option>)}
+          </optgroup>
+          <optgroup label={`Local (${panelBoards[activeBoardIndex]?.name || 'Sub-Board'})`}>
+            {fiducials.map(f => <option key={f.id} value={f.id}>{f.id}</option>)}
+          </optgroup>
         </select>
-        <button className="btn secondary" onClick={onClearAll}>Clear all</button>
+        
         {onRedetectFiducials && (
           <button className="btn" onClick={onRedetectFiducials} title="Re-analyze Gerber files for fiducials">
             🔍 Re-detect
@@ -169,11 +168,113 @@ export default function FiducialPanel({
             📷 Camera Detect
           </button>
         )}
-        <label className="flex-row" style={{ gap: 6, marginLeft: "auto" }}>
-          <input type="checkbox" checked={applyTransform} onChange={(e) => setApplyTransform(e.target.checked)} />
-          Apply transform to outputs
-        </label>
       </div>
+
+      {/* --- SECTION 1: GLOBAL PANEL ALIGNMENT --- */}
+      <div style={{ border: '1px solid var(--border-primary)', borderRadius: 8, padding: 12, marginBottom: 16, background: 'rgba(59, 130, 246, 0.05)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <h3 style={{ margin: 0, color: 'var(--text-primary)' }}>1. Global Panel Alignment (Rails)</h3>
+          <label className="flex-row" style={{ gap: 6 }}>
+            <input type="checkbox" checked={globalApplyXf} onChange={(e) => setGlobalApplyXf(e.target.checked)} />
+            Apply Global Transform
+          </label>
+        </div>
+        <p style={{ margin: '0 0 12px 0', fontSize: '0.9em', color: 'var(--text-secondary)' }}>
+          Mark extreme corners of the panel frame to calculate broad panel rotation.
+        </p>
+
+        <table className="kv small" style={{ marginBottom: 12 }}>
+          <thead>
+            <tr>
+              <th>Global Fiducial</th>
+              <th>Design (mm)</th>
+              <th>Machine (mm)</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {globalFiducials.map(f => (
+              <tr key={f.id}>
+                <td>
+                  <span style={{ display: "inline-block", width: 10, height: 10, background: f.color, borderRadius: 4, marginRight: 6 }} />
+                  <strong>{f.id}</strong>{activeId === f.id ? " (armed)" : ""}
+                </td>
+                <td>{f.design ? `X ${f.design.x.toFixed(3)}, Y ${f.design.y.toFixed(3)}` : <em>— click PCB —</em>}</td>
+                <td>
+                  <div className="flex-row" style={{ gap: 6, alignItems: 'center' }}>
+                    <input className="in sm" placeholder="Mx" value={f.machine?.x ?? ""} onChange={(e) => onInputMachine(f.id, { x: parseFloat(e.target.value), y: f.machine?.y })} />
+                    <input className="in sm" placeholder="My" value={f.machine?.y ?? ""} onChange={(e) => onInputMachine(f.id, { x: f.machine?.x, y: parseFloat(e.target.value) })} />
+                    {f.machine && (
+                      <button className="btn icon-btn" style={{ padding: '0 6px', fontSize: '16px', background: 'transparent', border: 'none', color: '#ff4d4f', cursor: 'pointer' }} onClick={() => onClearMachine(f.id)}>×</button>
+                    )}
+                  </div>
+                </td>
+                <td><button className="btn secondary" onClick={() => onClearOne(f.id)}>Clear</button></td>  
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <div className="flex-row" style={{ gap: 8 }}>
+          <button className="btn" disabled={!readyGlobal2} onClick={onSolveGlobal2}>Solve Global (2-pt)</button>
+          <button className="btn secondary" disabled={!readyGlobal3} onClick={onSolveGlobal3}>Solve Global (3-pt)</button>
+        </div>
+
+        {globalTransformSummary && (
+          <div className="info" style={{ marginTop: 8 }}>
+            <div><strong>Global Transform</strong>: {globalTransformSummary.type}</div>
+            {"thetaDeg" in globalTransformSummary && <div>Rotation: {globalTransformSummary.thetaDeg.toFixed(3)}°</div>}
+            {"scale" in globalTransformSummary && <div>Scale: {globalTransformSummary.scale.toFixed(6)}×</div>}
+            <div>tx: {globalTransformSummary.tx.toFixed(3)} mm, ty: {globalTransformSummary.ty.toFixed(3)} mm</div>
+          </div>
+        )}
+      </div>
+
+      {/* --- SECTION 2: LOCAL BOARD ALIGNMENT --- */}
+      <div style={{ border: '1px solid var(--border-primary)', borderRadius: 8, padding: 12, background: 'rgba(255, 255, 255, 0.02)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <h3 style={{ margin: 0, color: 'var(--text-primary)' }}>2. Local Board Alignment</h3>
+          <label className="flex-row" style={{ gap: 6 }}>
+            <input type="checkbox" checked={applyTransform} onChange={(e) => setApplyTransform(e.target.checked)} />
+            Apply Local Transform
+          </label>
+        </div>
+        
+        <div className="flex-row" style={{ gap: 8, alignItems: "center", marginBottom: 16, paddingBottom: 16, borderBottom: '1px solid var(--border-secondary)' }}>
+          <strong>Mapping:</strong>
+          <select
+            value={activeBoardIndex}
+            onChange={(e) => setActiveBoardIndex(parseInt(e.target.value))}
+            style={{ padding: '6px 12px', minWidth: 120, fontSize: '1.1em' }}
+          >
+            {panelBoards.map((b, idx) => (
+              <option key={b.id} value={idx}>{b.name}</option>
+            ))}
+          </select>
+          <button
+            className="btn sm"
+            onClick={() => {
+              setPanelBoards(prev => {
+                const newBoards = [...prev];
+                const activeBoard = { ...newBoards[activeBoardIndex] };
+                const fCount = activeBoard.fiducials.length;
+                const newFid = {
+                  id: `F${fCount + 1}`,
+                  design: null,
+                  machine: null,
+                  color: `#${Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0')}`
+                };
+                activeBoard.fiducials = [...activeBoard.fiducials, newFid];
+                newBoards[activeBoardIndex] = activeBoard;
+                return newBoards;
+              });
+            }}
+          >
+            + Add Fiducial
+          </button>
+          
+          <button className="btn sm secondary" style={{ marginLeft: 'auto' }} onClick={onClearAll}>Clear All Local</button>
+        </div>
 
       <table className="kv small">
         <thead>
@@ -220,19 +321,20 @@ export default function FiducialPanel({
       </table>
 
       <div className="flex-row" style={{ gap: 8 }}>
-        <button className="btn" disabled={!ready2} onClick={onSolve2}>Solve (2-pt similarity)</button>
-        <button className="btn secondary" disabled={!ready3} onClick={onSolve3}>Solve (3-pt affine)</button>
+        <button className="btn" disabled={!readyLocal2} onClick={onSolve2}>Solve Local (2-pt)</button>
+        <button className="btn secondary" disabled={!readyLocal3} onClick={onSolve3}>Solve Local (3-pt)</button>
       </div>
 
       {transformSummary && (
         <div className="info" style={{ marginTop: 8 }}>
-          <div><strong>Transform</strong>: {transformSummary.type}</div>
+          <div><strong>Local Transform</strong>: {transformSummary.type}</div>
           {"thetaDeg" in transformSummary && <div>Rotation: {transformSummary.thetaDeg.toFixed(3)}°</div>}
           {"scale" in transformSummary && <div>Scale: {transformSummary.scale.toFixed(6)}×</div>}
           <div>tx: {transformSummary.tx.toFixed(3)} mm, ty: {transformSummary.ty.toFixed(3)} mm</div>
           {"rms" in transformSummary && <div>RMS error: {transformSummary.rms.toFixed(3)} mm</div>}
         </div>
       )}
+      </div>
     </div>
   );
 }

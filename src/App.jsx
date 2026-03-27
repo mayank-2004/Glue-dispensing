@@ -177,6 +177,14 @@ export default function App() {
     _setActiveBoardIndex(idx);
   }, []);
 
+  const [globalFiducials, setGlobalFiducials] = useState([
+    { id: 'GF1', design: null, machine: null, color: '#ffb3ba' },
+    { id: 'GF2', design: null, machine: null, color: '#baffc9' },
+    { id: 'GF3', design: null, machine: null, color: '#ffdfba' }
+  ]);
+  const [globalXf, setGlobalXf] = useState(null);
+  const [globalApplyXf, setGlobalApplyXf] = useState(false);
+
   const fiducials = panelBoards[activeBoardIndexState]?.fiducials || [];
   const setFiducials = useCallback((updater) => {
     setPanelBoards(prev => {
@@ -1499,8 +1507,9 @@ export default function App() {
     let targetId = null;
     let best = { id: null, d: Infinity };
 
-    // Check for click near existing fiducial design position
-    for (const f of fiducials) {
+    // Check for click near existing fiducial design position (Local AND Global)
+    const allActiveFids = [...globalFiducials, ...fiducials];
+    for (const f of allActiveFids) {
       if (!f.design) continue;
       const d = Math.hypot(f.design.x - mm.x, f.design.y - mm.y);
       if (d < best.d) { best = { id: f.id, d }; }
@@ -1514,8 +1523,11 @@ export default function App() {
     console.log('Fiducial click processed. Best match:', best.id, 'Target:', targetId);
 
     if (targetId) {
-      // Update the design position for the target fiducial
-      setFiducials(prev => prev.map(f => f.id === targetId ? { ...f, design: mm } : f));
+      if (targetId.startsWith('GF')) {
+        setGlobalFiducials(prev => prev.map(f => f.id === targetId ? { ...f, design: mm } : f));
+      } else {
+        setFiducials(prev => prev.map(f => f.id === targetId ? { ...f, design: mm } : f));
+      }
       setDragFid(targetId);
     }
   };
@@ -1527,7 +1539,11 @@ export default function App() {
     const onMove = (e) => {
       if (!dragFid) return;
       const mm = getEventMm(e); if (!mm) return;
-      setFiducials(prev => prev.map(f => f.id === dragFid ? { ...f, design: mm } : f));
+      if (dragFid.startsWith('GF')) {
+        setGlobalFiducials(prev => prev.map(f => f.id === dragFid ? { ...f, design: mm } : f));
+      } else {
+        setFiducials(prev => prev.map(f => f.id === dragFid ? { ...f, design: mm } : f));
+      }
     };
 
     const onUp = () => setDragFid(null);
@@ -1708,10 +1724,22 @@ export default function App() {
   ]);
 
   const onInputMachine = (id, partial) => {
-    setFiducials(prev => prev.map(f => f.id === id ? { ...f, machine: { x: (partial.x ?? f.machine?.x ?? null), y: (partial.y ?? f.machine?.y ?? null) } } : f));
+    if (id.startsWith('GF')) {
+      setGlobalFiducials(prev => prev.map(f => f.id === id ? { ...f, machine: { x: (partial.x ?? f.machine?.x ?? null), y: (partial.y ?? f.machine?.y ?? null) } } : f));
+    } else {
+      setFiducials(prev => prev.map(f => f.id === id ? { ...f, machine: { x: (partial.x ?? f.machine?.x ?? null), y: (partial.y ?? f.machine?.y ?? null) } } : f));
+    }
   };
-  const onClearMachine = (id) => setFiducials(prev => prev.map(f => f.id === id ? { ...f, machine: null } : f));
-  const onClearOne = (id) => setFiducials(prev => prev.map(f => f.id === id ? { ...f, design: null, machine: null } : f));
+  const onClearMachine = (id) => {
+    if (id.startsWith('GF')) setGlobalFiducials(prev => prev.map(f => f.id === id ? { ...f, machine: null } : f));
+    else setFiducials(prev => prev.map(f => f.id === id ? { ...f, machine: null } : f));
+  };
+  const onClearOne = (id) => {
+    if (id.startsWith('GF')) setGlobalFiducials(prev => prev.map(f => f.id === id ? { ...f, design: null, machine: null } : f));
+    else setFiducials(prev => prev.map(f => f.id === id ? { ...f, design: null, machine: null } : f));
+  };
+  
+  // onClearAll applies specifically to the Local Board arrays. 
   const onClearAll = () => { setFiducials(prev => prev.map(f => ({ ...f, design: null, machine: null }))); setXf(null); };
 
   const onSolve2 = () => {
@@ -1725,6 +1753,19 @@ export default function App() {
     if (P.length < 3) return;
     const T = fitAffine(P.map(f => f.design), P.map(f => f.machine));
     setXf(T);
+  };
+
+  const onSolveGlobal2 = () => {
+    const P = globalFiducials.filter(f => f.design && f.machine);
+    if (P.length < 2) return;
+    const T = fitSimilarity(P.map(f => f.design), P.map(f => f.machine));
+    setGlobalXf(T);
+  };
+  const onSolveGlobal3 = () => {
+    const P = globalFiducials.filter(f => f.design && f.machine);
+    if (P.length < 3) return;
+    const T = fitAffine(P.map(f => f.design), P.map(f => f.machine));
+    setGlobalXf(T);
   };
 
   const onRedetectFiducials = () => {
@@ -2075,12 +2116,12 @@ export default function App() {
               onClick={async () => {
                 let targetDesign = null;
                 if (referenceType === 'origin') {
-                  targetDesign = effectiveOrigin;
+                  targetDesign = selectedOrigin;
                 } else if (referencePoint) {
                   targetDesign = { x: referencePoint.x, y: referencePoint.y };
                 }
 
-                if (targetDesign && effectiveOrigin) {
+                if (targetDesign && selectedOrigin) {
                   let targetMachine = null;
 
                   if (applyXf && xf) {
@@ -2114,9 +2155,35 @@ export default function App() {
               disabled={!isSerialConnected}
               onClick={async () => {
                 if (confirm("Set current machine position as Work Zero (G92 X0 Y0)?\nOnly do this if you are physically at the True Gerber Origin.")) {
+                  const mPos = livePreview.machinePosition;
+                  if (!mPos) {
+                     alert("Machine position unknown. Please ensure the machine is connected.");
+                     return;
+                  }
+                  
+                  // Calculate shift dynamically based on absolute machine position prior to G92
+                  const shiftX = -mPos.x;
+                  const shiftY = -mPos.y;
+
                   await window.serial.writeLine("G92 X0 Y0");
                   setPcbOriginOffset({ x: 0, y: 0 });
-                  alert("Machine Zero Set!");
+
+                  // Shift all saved fiducials to visually remain in their correct physical locations
+                  setFiducials(prev => prev.map(f => {
+                    if (f.machine) {
+                      return {
+                        ...f,
+                        machine: { x: f.machine.x + shiftX, y: f.machine.y + shiftY }
+                      };
+                    }
+                    return f;
+                  }));
+                  
+                  // Invalidate any active transformations because the machine space just exploded
+                  setXf(null);
+                  setApplyXf(false);
+
+                  alert("Machine Zero Set! Fiducial coordinates have been shifted to match the new coordinate space.");
                 }
               }}
             >
@@ -2293,6 +2360,15 @@ export default function App() {
           <div style={{ display: activeComponent === 'FiducialPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
             <div className="fiducial-panel">
               <FiducialPanel
+                globalFiducials={globalFiducials}
+                setGlobalFiducials={setGlobalFiducials}
+                globalXf={globalXf}
+                setGlobalXf={setGlobalXf}
+                globalApplyXf={globalApplyXf}
+                setGlobalApplyXf={setGlobalApplyXf}
+                onSolveGlobal2={onSolveGlobal2}
+                onSolveGlobal3={onSolveGlobal3}
+
                 fiducials={fiducials}
                 activeId={fidActiveId}
                 setActiveId={setFidActiveId}
@@ -2340,7 +2416,7 @@ export default function App() {
               fiducials={fiducials}
               xf={xf}
               applyXf={applyXf}
-              selectedDesign={effectiveOrigin ? effectiveOrigin : (selectedMm ? { x: selectedMm.x, y: selectedMm.y } : null)}
+              selectedDesign={selectedOrigin ? selectedOrigin : (selectedMm ? { x: selectedMm.x, y: selectedMm.y } : null)}
               effectiveOrigin={effectiveOrigin}
               toolOffset={maintenanceManager.getToolOffset()}
               setToolOffset={(o) => maintenanceManager.setToolOffset(o)}

@@ -1,25 +1,10 @@
-/**
- * Safe Path Planning - Consistent Safe Z-Height Navigation
- * Implements strict Cartesian Linear Interpolation with Z-hops (G1)
- */
-
 import { applyTransform } from '../utils/transform2d.js';
 
 export class SafePathPlanner {
   constructor(options = {}) {
-    this.safeHeight = options.safeHeight || 5; // mm above PCB
+    this.safeHeight = options.safeHeight || 5;
   }
 
-  // ... (calculateSafeSequence, generateSafePath, calculateDistance remain unchanged)
-
-  /**
-   * Calculate safe dispensing sequence
-   * Iterates through pads sequentially and applies safe Z-hop moves for every transition.
-   * Removes complex obstacle avoidance simulation and greedy reordering.
-   * @param {Object} referencePoint - Starting point {x, y}
-   * @param {Array} pads - Array of pad objects
-   * @returns {Array} Safe dispensing sequence with path information
-   */
   calculateSafeSequence(referencePoint, pads) {
     if (!pads || pads.length === 0) return [];
 

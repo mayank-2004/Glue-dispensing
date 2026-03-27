@@ -26,8 +26,6 @@ const ToolOffsetCalibration = ({
 
     const calculateOffset = () => {
         if (!posA || !posB) return { dx: 0, dy: 0 };
-        // If needle was at (10,10) and Machine moved to (-8.40, 35.01) to look at it with camera
-        // The camera is physically +18.40 X, -25.01 Y from the needle.
         return {
             dx: posA.x - posB.x,
             dy: posA.y - posB.y

@@ -25,7 +25,8 @@ export default function CameraPanel({
   panelBoards = [],
   setPanelBoards,
   pixelsPerMm,
-  setPixelsPerMm
+  setPixelsPerMm,
+  fiducialVisionDetector
 }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -48,6 +49,56 @@ export default function CameraPanel({
   const [H, setH] = useState(() => {
     try { return JSON.parse(localStorage.getItem("camH") || "null"); } catch { return null; }
   });
+
+  useEffect(() => {
+    const handleAutoAlign = async (e) => {
+      const { targetMachine, padCenter } = e.detail;
+      console.log(`[Auto-Align] Triggered for Pad. Waiting for initial translation to complete...`);
+      
+      // Wait for G0 travel to finish. 
+      // A full closed-loop system would listen for an 'ok' state machine, but 2000ms is a safe generic buffer for short PCB hops.
+      await new Promise(r => setTimeout(r, 2000));
+
+      if (videoRef.current && streamOn) {
+        console.log(`[Auto-Align] Camera stabilized. Scanning for component centroid...`);
+        const result = await fiducialVisionDetector.detectCenterFeature(videoRef.current);
+        
+        if (result.success && result.detected && result.pixelDelta) {
+          const { pixelDx, pixelDy } = result.pixelDelta;
+          const pxmm = pixelsPerMm || 20;
+          
+          const dxMm = pixelDx / pxmm;
+          const dyMm = pixelDy / pxmm;
+          
+          if (Math.abs(dxMm) > 0.05 || Math.abs(dyMm) > 0.05) {
+             console.log(`[Auto-Align] Component is off-center by dx:${dxMm.toFixed(3)}mm dy:${dyMm.toFixed(3)}mm. Re-centering...`);
+             const cmds = jogRel({ dx: dxMm, dy: dyMm, feed: 1000 });
+             if (window.serial && window.serial.writeLine) {
+               for (const cmd of cmds) await window.serial.writeLine(cmd);
+               
+               // Optional visual feedback ping
+               const targetU = (videoRef.current.clientWidth || 640) / 2 + pixelDx;
+               const targetV = (videoRef.current.clientHeight || 480) / 2 - pixelDy;
+               
+               setVisionResult({
+                 detected: true,
+                 fiducials: [{ pixelPosition: { x: targetU, y: targetV }, confidence: 1.0, radius: 10 }]
+               });
+               setTimeout(() => setVisionResult(null), 1500);
+
+             }
+          } else {
+             console.log('[Auto-Align] Component is completely centered within tolerance (<50um).');
+          }
+        } else {
+          console.warn('[Auto-Align] Camera could not confidently resolve a core centroid in this frame.');
+        }
+      }
+    };
+
+    window.addEventListener('camera-auto-align-pad', handleAutoAlign);
+    return () => window.removeEventListener('camera-auto-align-pad', handleAutoAlign);
+  }, [streamOn, fiducialVisionDetector, pixelsPerMm]);
   const [pendingPick, setPendingPick] = useState(null);
   const [showOverlay, setShowOverlay] = useState(true);
   const [measureMode, setMeasureMode] = useState(false);
@@ -202,12 +253,23 @@ export default function CameraPanel({
   }, [H, projectPx]);
 
   const predictedPx = useMemo(() => {
-    console.log("selected design: ", selectedDesign);
+    // console.log("selected design: ", selectedDesign);
     if (!selectedDesign) return null;
-    const m = (applyXf && xf) ? applyTransform(xf, selectedDesign) : { ...selectedDesign };
+    let m;
+    if (applyXf && xf) {
+      m = applyTransform(xf, selectedDesign);
+    } else if (latestPropsRef.current.effectiveOrigin) {
+      // Convert standard gerber directly to machine coordinate representation mathematically
+      m = { 
+        x: selectedDesign.x - latestPropsRef.current.effectiveOrigin.x, 
+        y: selectedDesign.y - latestPropsRef.current.effectiveOrigin.y 
+      };
+    } else {
+      m = { ...selectedDesign };
+    }
     const withTool = { x: m.x + (toolOffset?.dx || 0), y: m.y + (toolOffset?.dy || 0) };
     return projectPx(withTool);
-  }, [selectedDesign, xf, applyXf, toolOffset, projectPx]);
+  }, [selectedDesign, xf, applyXf, toolOffset, projectPx]); // effectiveOrigin state is accessible via latestPropsRef without triggering loops
 
   const rms = useMemo(() => {
     if (!H || !pairs.length) return null;
@@ -860,8 +922,9 @@ export default function CameraPanel({
     }
 
     if (detectionInterval) {
-      fiducialDetector.stopContinuousDetection(detectionInterval);
+      clearInterval(detectionInterval); // Just standard clearInterval since we mapped it cleanly
       setDetectionInterval(null);
+      setVisionResult(null); // Clear the green circles from the UI when stopped
       return;
     }
 

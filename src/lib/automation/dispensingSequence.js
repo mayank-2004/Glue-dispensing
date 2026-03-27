@@ -1,7 +1,3 @@
-/**
- * Automated Dispensing Sequence - Generate optimal pad dispensing order and G-code
- */
-
 import { applyTransform } from '../utils/transform2d.js';
 
 export class DispensingSequencer {

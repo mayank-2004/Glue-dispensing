@@ -178,6 +178,112 @@ export class FiducialVisionDetector {
     }
   }
 
+  // Detects the centroid of a bright generic shaped pad (square, oval, round) near the dead center of the camera.
+  // Used for micro-jog visual servoing after a primary G0 move.
+  async detectCenterFeature(videoElement, options = {}) {
+    if (this.isDetecting || !window.cv) return { success: false };
+    this.isDetecting = true;
+    
+    try {
+      const canvas = document.createElement('canvas');
+      const cw = videoElement.clientWidth || videoElement.videoWidth;
+      const ch = videoElement.clientHeight || videoElement.videoHeight;
+      canvas.width = cw;
+      canvas.height = ch;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(videoElement, 0, 0, cw, ch);
+
+      const src = window.cv.imread(canvas);
+      const gray = new window.cv.Mat();
+      window.cv.cvtColor(src, gray, window.cv.COLOR_RGBA2GRAY, 0);
+
+      // Blur to remove surface texture/noise
+      const blurred = new window.cv.Mat();
+      window.cv.medianBlur(gray, blurred, 5);
+
+      // Adaptive threshold to isolate metallic surfaces from dark mask
+      const binary = new window.cv.Mat();
+      window.cv.adaptiveThreshold(
+        blurred, 
+        binary, 
+        255, 
+        window.cv.ADAPTIVE_THRESH_GAUSSIAN_C, 
+        window.cv.THRESH_BINARY, 
+        61, // Block size
+        -3   // C constant
+      );
+
+      // Morphological Close to fill in glare holes inside the bright copper pad
+      const M = window.cv.Mat.ones(5, 5, window.cv.CV_8U);
+      window.cv.morphologyEx(binary, binary, window.cv.MORPH_CLOSE, M);
+      M.delete();
+
+      const contours = new window.cv.MatVector();
+      const hierarchy = new window.cv.Mat();
+      window.cv.findContours(binary, contours, hierarchy, window.cv.RETR_EXTERNAL, window.cv.CHAIN_APPROX_SIMPLE);
+
+      const centerX = cw / 2;
+      const centerY = ch / 2;
+      
+      let bestContour = null;
+      let bestScore = Infinity; // Lower is better (closest to center)
+      let bestCentroid = null;
+
+      for (let i = 0; i < contours.size(); ++i) {
+        const cnt = contours.get(i);
+        const area = window.cv.contourArea(cnt);
+        
+        // Ignore tiny noise specs and massive background blobs
+        if (area < 100 || area > (cw * ch) / 4) continue;
+
+        // Calculate image moments to find the centroid of the shape
+        const moments = window.cv.moments(cnt, false);
+        if (moments.m00 === 0) continue;
+        
+        const cx = moments.m10 / moments.m00;
+        const cy = moments.m01 / moments.m00;
+
+        // Score is pure Euclidean distance from the true center of the camera
+        const dist = Math.hypot(cx - centerX, cy - centerY);
+        
+        // Only consider the contour if its centroid is within ~60 pixels of the crosshair
+        if (dist < 60 && dist < bestScore) {
+          bestScore = dist;
+          bestContour = cnt;
+          bestCentroid = { x: cx, y: cy };
+        }
+      }
+
+      let resultDelta = null;
+      if (bestCentroid) {
+        resultDelta = {
+          pixelDx: bestCentroid.x - centerX,
+          pixelDy: centerY - bestCentroid.y // Y flipped: Canvas down is +Y, Machine up is +Y
+        };
+      }
+
+      src.delete();
+      gray.delete();
+      blurred.delete();
+      binary.delete();
+      contours.delete();
+      hierarchy.delete();
+
+      return {
+        success: true,
+        detected: bestCentroid !== null,
+        centroid: bestCentroid,
+        pixelDelta: resultDelta
+      };
+
+    } catch (error) {
+      console.error('Pad centroid detection failed:', error);
+      return { success: false, error: error.message };
+    } finally {
+      this.isDetecting = false;
+    }
+  }
+
   /* =========================================================================
    * LEGACY VANILLA JS DETECTION CODE
    * =========================================================================

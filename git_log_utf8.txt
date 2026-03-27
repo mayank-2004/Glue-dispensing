@@ -1,0 +1,70 @@
+﻿d1bff3f - fiducial detection and nozzle dispensing working correctly.
+A	git_log_output.txt
+M	index.html
+M	package-lock.json
+M	package.json
+A	public/vendor/opencv.js
+M	scripts/copy-vendor.mjs
+M	src/App.jsx
+M	src/components/CameraPanel.jsx
+M	src/components/FiducialPanel.jsx
+M	src/lib/vision/fiducialVision.js
+M	src/lib/vision/padDetection.js
+
+446a7be - fiducial detection done using blob detection and feature extraction architecture.
+M	APP_EXPLANATION.md
+M	src/App.jsx
+M	src/components/CameraPanel.jsx
+M	src/lib/vision/fiducialVision.js
+
+1a55eff - origin offset correction done.
+M	src/App.jsx
+M	src/components/CameraPanel.jsx
+M	src/components/FiducialPanel.jsx
+M	src/components/Viewer.jsx
+M	src/lib/vision/fiducialVision.js
+
+5ce3800 - implemented camera to nozzle offset calibration functionality.
+M	src/App.jsx
+M	src/components/AutomatedDispensingPanel.jsx
+M	src/components/CameraPanel.jsx
+M	src/components/FiducialPanel.jsx
+M	src/components/JogPanel.jsx
+M	src/components/LensCalibration.jsx
+M	src/components/SerialPanel.css
+M	src/components/SerialPanel.jsx
+M	src/components/ToolOffsetCalibration.jsx
+M	src/components/Viewer.jsx
+M	src/lib/automation/dispensingSequence.js
+M	src/lib/vision/fiducialVision.js
+
+3632ac4 - completely generated G-code for the glue dispensing process.
+M	src/App.jsx
+M	src/components/AutomatedDispensingPanel.jsx
+D	src/components/BatchPanel.jsx
+M	src/components/CameraPanel.jsx
+A	src/components/LensCalibration.jsx
+D	src/components/PressurePanel.css
+D	src/components/PressurePanel.jsx
+D	src/components/SpeedPanel.css
+D	src/components/SpeedPanel.jsx
+M	src/lib/automation/dispensingSequence.js
+D	src/lib/batch/batchExecutor.js
+D	src/lib/batch/batchProcessor.js
+M	src/lib/maintenance/nozzleMaintenance.js
+D	src/lib/pressure/pressureControl.js
+D	src/lib/speed/speedProfiles.js
+
+e726ea4 - camera to nozzle offset calibration done.
+M	src/App.jsx
+A	src/components/ToolOffsetCalibration.jsx
+
+fe9047d - homing in serial and jog panel component done successfully from default machine head position to (0,0,0)
+M	src/App.jsx
+M	src/components/CameraPanel.jsx
+M	src/components/FiducialPanel.jsx
+M	src/components/JogPanel.jsx
+M	src/components/SerialPanel.jsx
+M	src/lib/gerber/fiducialDetection.js
+M	src/lib/motion/gcode.js
+M	src/lib/vision/fiducialVision.js
