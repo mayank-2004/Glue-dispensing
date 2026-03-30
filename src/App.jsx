@@ -124,6 +124,61 @@ export default function App() {
     if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
   };
 
+  // ============================================================
+  // EMERGENCY STOP
+  // ============================================================
+  const [isEmergencyStopped, setIsEmergencyStopped] = useState(false);
+
+  /**
+   * Triggers a full machine emergency stop.
+   *
+   * Reasons this is needed:
+   *  - Head moved to a wrong pad / board position
+   *  - Nozzle not aligned to pad center
+   *  - Glue over-dispensing (nozzle clog / pressure spike)
+   *  - Z-axis collision risk (nozzle descending too far)
+   *  - PCB not seated / shifted on bed
+   *  - Unexpected machine positional drift (accumulation of errors)
+   *  - Camera / vision system failure during automated run
+   *  - Air pressure loss or pneumatic failure
+   *  - Any operator-detected anomaly during the dispensing cycle
+   */
+  const triggerEmergencyStop = async () => {
+    setIsEmergencyStopped(true);
+    console.error('[E-STOP] Emergency Stop Triggered!');
+    try {
+      if (window.serial && window.serial.writeLine) {
+        // 1. GRBL soft-reset — immediately halts motion queue and disables steppers
+        if (window.serial.write) {
+          await window.serial.write('\x18'); // Ctrl+X — GRBL real-time command
+        }
+        // 2. Marlin immediate stop (M112 causes firmware halt requiring restart)
+        await window.serial.writeLine('M112');
+        // 3. Feed Hold (GRBL '!' or Marlin M0) — pauses feed without full reset
+        await window.serial.writeLine('!');
+        await window.serial.writeLine('M0');
+        // 4. Retract Z axis to safe height to avoid nozzle dragging on PCB
+        await window.serial.writeLine('G91');
+        await window.serial.writeLine('G0 Z10 F1000');
+        await window.serial.writeLine('G90');
+      }
+    } catch (err) {
+      console.error('[E-STOP] Failed to send stop commands:', err);
+    }
+  };
+
+  const resetEmergencyStop = async () => {
+    setIsEmergencyStopped(false);
+    try {
+      if (window.serial && window.serial.writeLine) {
+        await window.serial.writeLine('$X'); // GRBL unlock after E-Stop
+        await window.serial.writeLine('M999'); // Marlin: restart after M112
+      }
+    } catch (err) {
+      console.error('[E-STOP] Failed to send reset commands:', err);
+    }
+  };
+
   // Global Serial Data Handler
   useEffect(() => {
     if (window.serial && window.serial.onData) {
@@ -176,14 +231,6 @@ export default function App() {
     activeBoardIndexRef.current = idx;
     _setActiveBoardIndex(idx);
   }, []);
-
-  const [globalFiducials, setGlobalFiducials] = useState([
-    { id: 'GF1', design: null, machine: null, color: '#ffb3ba' },
-    { id: 'GF2', design: null, machine: null, color: '#baffc9' },
-    { id: 'GF3', design: null, machine: null, color: '#ffdfba' }
-  ]);
-  const [globalXf, setGlobalXf] = useState(null);
-  const [globalApplyXf, setGlobalApplyXf] = useState(false);
 
   const fiducials = panelBoards[activeBoardIndexState]?.fiducials || [];
   const setFiducials = useCallback((updater) => {
@@ -1507,9 +1554,8 @@ export default function App() {
     let targetId = null;
     let best = { id: null, d: Infinity };
 
-    // Check for click near existing fiducial design position (Local AND Global)
-    const allActiveFids = [...globalFiducials, ...fiducials];
-    for (const f of allActiveFids) {
+    // Check for click near existing fiducial design position
+    for (const f of fiducials) {
       if (!f.design) continue;
       const d = Math.hypot(f.design.x - mm.x, f.design.y - mm.y);
       if (d < best.d) { best = { id: f.id, d }; }
@@ -1523,11 +1569,8 @@ export default function App() {
     console.log('Fiducial click processed. Best match:', best.id, 'Target:', targetId);
 
     if (targetId) {
-      if (targetId.startsWith('GF')) {
-        setGlobalFiducials(prev => prev.map(f => f.id === targetId ? { ...f, design: mm } : f));
-      } else {
-        setFiducials(prev => prev.map(f => f.id === targetId ? { ...f, design: mm } : f));
-      }
+      // Update the design position for the target fiducial
+      setFiducials(prev => prev.map(f => f.id === targetId ? { ...f, design: mm } : f));
       setDragFid(targetId);
     }
   };
@@ -1539,11 +1582,7 @@ export default function App() {
     const onMove = (e) => {
       if (!dragFid) return;
       const mm = getEventMm(e); if (!mm) return;
-      if (dragFid.startsWith('GF')) {
-        setGlobalFiducials(prev => prev.map(f => f.id === dragFid ? { ...f, design: mm } : f));
-      } else {
-        setFiducials(prev => prev.map(f => f.id === dragFid ? { ...f, design: mm } : f));
-      }
+      setFiducials(prev => prev.map(f => f.id === dragFid ? { ...f, design: mm } : f));
     };
 
     const onUp = () => setDragFid(null);
@@ -1724,22 +1763,10 @@ export default function App() {
   ]);
 
   const onInputMachine = (id, partial) => {
-    if (id.startsWith('GF')) {
-      setGlobalFiducials(prev => prev.map(f => f.id === id ? { ...f, machine: { x: (partial.x ?? f.machine?.x ?? null), y: (partial.y ?? f.machine?.y ?? null) } } : f));
-    } else {
-      setFiducials(prev => prev.map(f => f.id === id ? { ...f, machine: { x: (partial.x ?? f.machine?.x ?? null), y: (partial.y ?? f.machine?.y ?? null) } } : f));
-    }
+    setFiducials(prev => prev.map(f => f.id === id ? { ...f, machine: { x: (partial.x ?? f.machine?.x ?? null), y: (partial.y ?? f.machine?.y ?? null) } } : f));
   };
-  const onClearMachine = (id) => {
-    if (id.startsWith('GF')) setGlobalFiducials(prev => prev.map(f => f.id === id ? { ...f, machine: null } : f));
-    else setFiducials(prev => prev.map(f => f.id === id ? { ...f, machine: null } : f));
-  };
-  const onClearOne = (id) => {
-    if (id.startsWith('GF')) setGlobalFiducials(prev => prev.map(f => f.id === id ? { ...f, design: null, machine: null } : f));
-    else setFiducials(prev => prev.map(f => f.id === id ? { ...f, design: null, machine: null } : f));
-  };
-  
-  // onClearAll applies specifically to the Local Board arrays. 
+  const onClearMachine = (id) => setFiducials(prev => prev.map(f => f.id === id ? { ...f, machine: null } : f));
+  const onClearOne = (id) => setFiducials(prev => prev.map(f => f.id === id ? { ...f, design: null, machine: null } : f));
   const onClearAll = () => { setFiducials(prev => prev.map(f => ({ ...f, design: null, machine: null }))); setXf(null); };
 
   const onSolve2 = () => {
@@ -1753,19 +1780,6 @@ export default function App() {
     if (P.length < 3) return;
     const T = fitAffine(P.map(f => f.design), P.map(f => f.machine));
     setXf(T);
-  };
-
-  const onSolveGlobal2 = () => {
-    const P = globalFiducials.filter(f => f.design && f.machine);
-    if (P.length < 2) return;
-    const T = fitSimilarity(P.map(f => f.design), P.map(f => f.machine));
-    setGlobalXf(T);
-  };
-  const onSolveGlobal3 = () => {
-    const P = globalFiducials.filter(f => f.design && f.machine);
-    if (P.length < 3) return;
-    const T = fitAffine(P.map(f => f.design), P.map(f => f.machine));
-    setGlobalXf(T);
   };
 
   const onRedetectFiducials = () => {
@@ -1804,7 +1818,6 @@ export default function App() {
   };
 
   const onAutoAlign = () => {
-    // Auto-populate machine coordinates from design coordinatesc
     const alignedFiducials = fiducials.map(f => {
       if (f.design && f.design.x !== null && f.design.y !== null) {
         return {
@@ -1908,7 +1921,62 @@ export default function App() {
           <div className="panel-title">FILE CONTROL</div>
         </div>
 
-        <div className="section">
+        {/* ===== EMERGENCY STOP BANNER — Always visible ===== */}
+        <div style={{
+          padding: '8px 10px',
+          background: isEmergencyStopped ? '#7a0000' : '#1a1a1a',
+          borderBottom: `2px solid ${isEmergencyStopped ? '#ff2200' : '#333'}`,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          flexShrink: 0
+        }}>
+          <button
+            onClick={triggerEmergencyStop}
+            disabled={!isSerialConnected && !isEmergencyStopped}
+            title="Emergency Stop — Immediately halts all machine motion"
+            style={{
+              flex: 1,
+              padding: '10px 4px',
+              background: isEmergencyStopped ? '#ff4400' : '#cc0000',
+              color: '#fff',
+              border: '3px solid #ff0000',
+              borderRadius: 6,
+              fontSize: 13,
+              fontWeight: 900,
+              letterSpacing: 1.5,
+              cursor: 'pointer',
+              boxShadow: isEmergencyStopped ? '0 0 16px #ff220080' : '0 0 8px #cc000060',
+              animation: isEmergencyStopped ? 'none' : undefined
+            }}
+          >
+            ⬛ E-STOP
+          </button>
+          {isEmergencyStopped && (
+            <button
+              onClick={resetEmergencyStop}
+              title="Re-arm machine after emergency stop"
+              style={{
+                flex: 1,
+                padding: '10px 4px',
+                background: '#1e5e1e',
+                color: '#7dff7d',
+                border: '2px solid #4caf50',
+                borderRadius: 6,
+                fontSize: 12,
+                fontWeight: 700,
+                cursor: 'pointer'
+              }}
+            >
+              ✅ RESET
+            </button>
+          )}
+        </div>
+        {isEmergencyStopped && (
+          <div style={{ background: '#7a0000', color: '#ffcccc', fontSize: 11, padding: '4px 10px', textAlign: 'center' }}>
+            ⚠️ MACHINE STOPPED — Click RESET to re-arm
+          </div>
+        )}        <div className="section">
           <input
             type="file"
             id="fileInput"
@@ -2360,15 +2428,6 @@ export default function App() {
           <div style={{ display: activeComponent === 'FiducialPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
             <div className="fiducial-panel">
               <FiducialPanel
-                globalFiducials={globalFiducials}
-                setGlobalFiducials={setGlobalFiducials}
-                globalXf={globalXf}
-                setGlobalXf={setGlobalXf}
-                globalApplyXf={globalApplyXf}
-                setGlobalApplyXf={setGlobalApplyXf}
-                onSolveGlobal2={onSolveGlobal2}
-                onSolveGlobal3={onSolveGlobal3}
-
                 fiducials={fiducials}
                 activeId={fidActiveId}
                 setActiveId={setFidActiveId}

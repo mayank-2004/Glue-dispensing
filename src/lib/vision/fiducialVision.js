@@ -51,90 +51,115 @@ export class FiducialVisionDetector {
         return { success: false, error: 'OpenCV not loaded' };
       }
 
-      // OpenCV Processing
-      const src = window.cv.imread(canvas);
-      const gray = new window.cv.Mat();
-      window.cv.cvtColor(src, gray, window.cv.COLOR_RGBA2GRAY, 0);
+      // --- CENTER ROI EXTRACTION ---
+      // Instead of scanning the full frame (which detects circles anywhere including corners),
+      // we extract only a center crop to ensure HoughCircles can only find features
+      // that are directly under the camera crosshair.
+      const roiSize = Math.floor(Math.min(cw, ch) * 0.5); // 50% of shortest dimension
+      const roiX = Math.floor((cw - roiSize) / 2);
+      const roiY = Math.floor((ch - roiSize) / 2);
 
-      // Median blur is mathematically ideal for HoughCircles, 
-      // as it obliterates salt-and-pepper noise and specular glares without blurring edges
+      const fullSrc = window.cv.imread(canvas);
+      const fullGray = new window.cv.Mat();
+      window.cv.cvtColor(fullSrc, fullGray, window.cv.COLOR_RGBA2GRAY, 0);
+
+      // Crop to center ROI only
+      const roiRect = new window.cv.Rect(roiX, roiY, roiSize, roiSize);
+      const roiGray = fullGray.roi(roiRect);
+
       const blurred = new window.cv.Mat();
-      window.cv.medianBlur(gray, blurred, 5);
+      window.cv.medianBlur(roiGray, blurred, 5);
 
       const circles = new window.cv.Mat();
 
       const MIN_DIAMETER_MM = 0.3;
       const MAX_DIAMETER_MM = 3.0;
-      
-      // Calculate dynamic radius limits based on zoom level calibration
+
       const minRadiusPx = Math.floor((MIN_DIAMETER_MM / 2) * pxPerMm * 0.8);
       const maxRadiusPx = Math.ceil((MAX_DIAMETER_MM / 2) * pxPerMm * 1.5);
-      
-      // Minimum distance between circle centers (stops overlapping duplicates)
-      const minDist = maxRadiusPx * 1.5;
+      const minDist = Math.max(maxRadiusPx * 1.5, 10);
 
-      // param1: Canny edge detection high threshold
-      // param2: Accumulator threshold for circle centers (lower = more false circles). 
-      // 20 is a highly tuned strict threshold for small/sharp holes
       window.cv.HoughCircles(
-        blurred, 
-        circles, 
-        window.cv.HOUGH_GRADIENT, 
-        1, // dp (inverse ratio of accumulator resolution)
-        minDist, 
+        blurred,
+        circles,
+        window.cv.HOUGH_GRADIENT,
+        1,
+        minDist,
         100, // Canny high threshold
-        22,  // Accumulator threshold
-        Math.max(3, minRadiusPx), 
+        22,  // Accumulator threshold (lower = more circles)
+        Math.max(3, minRadiusPx),
         Math.min(minRadiusPx * 10, maxRadiusPx)
       );
+
+      // Collect ALL raw candidates first
+      const allCandidates = [];
+
+      if (circles.cols > 0) {
+        for (let i = 0; i < circles.cols; ++i) {
+          // x,y are in ROI-local coordinates
+          const xRoi = circles.data32F[i * 3];
+          const yRoi = circles.data32F[i * 3 + 1];
+          const radius = circles.data32F[i * 3 + 2];
+
+          // Convert to full-canvas pixel coordinates
+          const x = xRoi + roiX;
+          const y = yRoi + roiY;
+
+          // Extract center brightness from the blurred ROI image
+          let centerLum = 0;
+          if (xRoi >= 0 && xRoi < roiSize && yRoi >= 0 && yRoi < roiSize) {
+            centerLum = blurred.ucharPtr(Math.round(yRoi), Math.round(xRoi))[0];
+          }
+
+          // Distance from the dead center of the ROI (= crosshair center in full-canvas)
+          const distFromCenter = Math.hypot(xRoi - roiSize / 2, yRoi - roiSize / 2);
+
+          allCandidates.push({
+            x, y, xRoi, yRoi, radius,
+            circularity: 1.0,
+            area: Math.PI * radius * radius,
+            centerLum,
+            distFromCenter,
+            confidence: 0.90 + (Math.min(centerLum, 255) / 2550)
+          });
+        }
+      }
+
+      // Cleanup ROI mats
+      fullSrc.delete();
+      fullGray.delete();
+      roiGray.delete();
+
+      // *** KEY FIX: Only keep the single candidate closest to the crosshair center ***
+      // All other candidates (even if bright) are false positives from the ROI edges.
+      allCandidates.sort((a, b) => a.distFromCenter - b.distFromCenter);
 
       const validBlobs = [];
       const rejectedBlobs = [];
 
-      if (circles.cols > 0) {
-        for (let i = 0; i < circles.cols; ++i) {
-          const x = circles.data32F[i * 3];
-          const y = circles.data32F[i * 3 + 1];
-          const radius = circles.data32F[i * 3 + 2];
-          
-          const diameterMm = (radius * 2) / pxPerMm;
-
-          // Only accept if strictly inside dimensions (avoid border noise circles)
-          if (x >= radius && x <= cw - radius && y >= radius && y <= ch - radius) {
-            
-            // Extract the center pixel brightness from the blurred image
-            // Fiducial pads MUST be somewhat bright (copper/HASL).
-            // Reject dark circles which might just be shadows or green mask patterns.
-            let centerLum = 0;
-            if (x >= 0 && x < cw && y >= 0 && y < ch) {
-               centerLum = blurred.ucharPtr(Math.round(y), Math.round(x))[0];
-            }
-
-            const blob = { 
-              x, y, radius, 
-              circularity: 1.0, // Hough circles are perfect
-              area: Math.PI * radius * radius,
-              confidence: 0.90 + (Math.min(centerLum, 255) / 2550) // Bonus confidence for bright centers
-            };
-
-            if (centerLum > 60) {
-              validBlobs.push(blob);
-            } else {
-              blob.rejectReason = 'Too Dark (Not Copper)';
-              rejectedBlobs.push(blob);
-            }
-          }
+      if (allCandidates.length > 0) {
+        const best = allCandidates[0]; // Closest to center
+        if (best.centerLum > 60) {
+          validBlobs.push(best);
+        } else {
+          best.rejectReason = 'Too Dark (Not Copper)';
+          rejectedBlobs.push(best);
+        }
+        // All remaining candidates are rejected (they are off-center false positives)
+        for (let i = 1; i < allCandidates.length; i++) {
+          allCandidates[i].rejectReason = 'Off-Center';
+          rejectedBlobs.push(allCandidates[i]);
         }
       }
 
-      // Sort by confidence
+      // Sort by confidence (trivially — only one valid blob max)
       validBlobs.sort((a, b) => b.confidence - a.confidence);
 
-      const debug = options?.debug === true;
-      if (debug) {
-        console.log(`[OpenCV DEBUG] HoughCircles found: ${circles.cols}`);
-        console.log(`[OpenCV DEBUG] Valid: ${validBlobs.length}, Rejected: ${rejectedBlobs.length}`);
-      }
+      // const debug = options?.debug === true;
+      // if (debug) {
+      //   console.log(`[OpenCV DEBUG] HoughCircles found: ${circles.cols}`);
+      //   console.log(`[OpenCV DEBUG] Valid: ${validBlobs.length}, Rejected: ${rejectedBlobs.length}`);
+      // }
 
       // Format for CameraPanel
       const mappedFiducials = validBlobs.map((blob, idx) => ({
@@ -156,9 +181,7 @@ export class FiducialVisionDetector {
         diameterMm: (blob.radius * 2) / pxPerMm
       }));
 
-      // Cleanup OpenCV memory
-      src.delete();
-      gray.delete();
+      // Cleanup remaining OpenCV memory (fullSrc, fullGray, roiGray already deleted above)
       blurred.delete();
       circles.delete();
 
