@@ -37,38 +37,43 @@ export function extractPadsMm(gerberText) {
       }
 
       macros[macroName] = { width, height, shape: 'MACRO' };
-      // console.log(`✅ Parsed macro ${macroName}:`, macros[macroName]);
     }
 
-    // Parse standard aperture definitions
-    let ad = block.match(/%ADD(\d+)([CR]),([\.\d]+)(?:X([\d\.]+))?\*%/i);
-    if (!ad) ad = block.match(/%ADD(\d+)([CR])([\.\d]+)(?:X([\d\.]+))?\*%/i);
-    if (!ad) ad = block.match(/%ADD(\d+)([A-Z0-9]+)\*%/i); // Macro reference
+    // Parse ALL Aperture Definitions (Standard: C, R, O, P | Macros: CustomName)
+    const adMatch = block.match(/%ADD(\d+)([A-Z0-9_]+)(?:,([\.\d]+)(?:X([\.\d]+))?(?:X([\.\d]+))?)?\*%/i);
 
-    if (ad) {
-      const dCode = parseInt(ad[1]);
-      const shapeOrMacro = ad[2].toUpperCase();
+    if (adMatch) {
+      const dCode = parseInt(adMatch[1]);
+      const shapeOrMacro = adMatch[2].toUpperCase();
+      
+      const p1 = parseFloat(adMatch[3] || '0');
+      const p2 = parseFloat(adMatch[4] || adMatch[3] || '0');
+      const p3 = parseFloat(adMatch[5] || '0');
 
       let aperture;
-      if (macros[shapeOrMacro]) {
-        // Use macro dimensions
-        aperture = { ...macros[shapeOrMacro] };
-      } else if (shapeOrMacro === 'C' || shapeOrMacro === 'R') {
-        // Standard circle/rectangle
-        const size1 = parseFloat(ad[3] || '1');
-        const size2 = ad[4] ? parseFloat(ad[4]) : size1;
+
+      // Ensure standard CAD geometric templates are correctly recognized
+      if (['C', 'R', 'O', 'P' || 'c', 'r', 'o', 'p'].includes(shapeOrMacro)) {
         aperture = {
-          shape: shapeOrMacro,
-          width: shapeOrMacro === 'C' ? size1 : size1,
-          height: shapeOrMacro === 'C' ? size1 : size2
+          shape: shapeOrMacro === 'C' ? 'Circle' : shapeOrMacro === 'O' ? 'Obround' : shapeOrMacro === 'P' ? 'Polygon' : 'Rect',
+          width: p1,
+          height: p2
         };
-      } else {
-        // Unknown macro, use reasonable defaults
-        aperture = { width: 1.5, height: 1.7, shape: 'MACRO' };
+      } 
+      else if (macros[shapeOrMacro]) {
+        aperture = { ...macros[shapeOrMacro] }; // Start with default guess
+        
+        if (p1 > 0) {
+          aperture.width = p1;
+          aperture.height = p2 || p1; // Fallback to square/circle if only 1 param
+        }
+      } 
+      else {
+        // Unknown macro or missing definition, use instantiation parameters if they exist
+        aperture = { width: p1 || 1.0, height: p2 || p1 || 1.0, shape: 'MACRO' };
       }
 
       apertures[dCode] = aperture;
-      // console.log(`✅ Parsed aperture D${dCode}:`, aperture, 'from:', block);
     }
   }
 
@@ -119,20 +124,9 @@ export function extractPadsMm(gerberText) {
       continue;
     }
     if (t.startsWith('TD')) {
-      // Delete Attribute - Reset state
-      // console.log('TD command: Resetting RefDes from', currentRefDes);
       currentRefDes = null;
       continue;
     }
-
-    // SR (Step and Repeat) Handling
-    // Format: %SRX<R>Y<R>I<d>J<d>*%
-    // Example: %SRX2Y3I5.0J6.0*%  -> Repeat 2 times in X (dist 5.0), 3 times in Y (dist 6.0)
-    // The "Repeat" count usually means "Total number of copies" or "Number of additional copies". 
-    // Standard Gerber spec says: 
-    // X, Y = number of repeats along axis. 1 means no repeat (just the original).
-    // I, J = Step distance in X, Y.
-    // An empty %SR*% cancels the step and repeat.
 
     const sr = t.match(/%SR(?:X(\d+))?(?:Y(\d+))?(?:I([\d.-]+))?(?:J([\d.-]+))?\*%/i);
     if (sr) {
@@ -148,22 +142,6 @@ export function extractPadsMm(gerberText) {
         const stepY = sr[4] ? parseFloat(sr[4]) : 0.0;
 
         console.log(`SR Start: X=${dimX} Y=${dimY} dX=${stepX} dY=${stepY} (Units: ${units})`);
-
-        // Adjust step for units if needed? 
-        // In Gerber, coordinates in SR parameters are usually in the same unit/format as G-codes?
-        // Actually, SR parameters are decimal numbers in the file units (mm or inch).
-        // But our main parsing uses 'units' var to convert at the END.
-        // If we duplicate points HERE, we must do it in the "current" coordinate system (which is raw from file).
-        // parseCoord handles the raw integer scaling. But SR I/J values are explicitly decimal in the % command?
-        // Check Spec: "The I and J modifiers specify the distance... expressed in the unit of the file."
-
-        // Critical: I/J are DECIMAL numbers, not integer-scaled like coordinates.
-        // So if units='mm', stepX is in mm. If units='in', stepX is in inches.
-        // BUT, our `curX`/`curY` and `pads` are stored in RAW integer format until the very end return!!!
-        // Wait, look at line 87: parseCoord returns a FLOAT (e.g. 10.5 mm).
-        // Wait, line 166: if units === 'in', we multiply by IN2MM.
-        // So `pads` currently stores values in FILE UNITS (mm or in).
-
         srState = { dimX, dimY, stepX, stepY };
       }
       continue;
@@ -185,10 +163,7 @@ export function extractPadsMm(gerberText) {
       if (currentD === 2 || currentD == null) { curX = x; curY = y; continue; }
       if (currentD === 1) { curX = x; curY = y; continue; }
       if (currentD === 3) { // FLASH
-        // Use current active aperture or fallback
         let aperture = currentAperture || { width: 1.0, height: 1.0, shape: 'R' };
-
-        // console.log(`Flash at (${x}, ${y}) with aperture:`, aperture, 'RefDes:', currentRefDes);
 
         // Push the PRIMARY pad
         pads.push({
@@ -203,11 +178,6 @@ export function extractPadsMm(gerberText) {
         // Loop for SR repeats
         if (srState) {
           const { dimX, dimY, stepX, stepY } = srState;
-          // Loop starts at 0, but (0,0) is the primary flash we just pushed.
-          // SR implies a grid. If X=2, we have the original + 1 copy at +stepX.
-          // Proper loops: x=0..dimX-1, y=0..dimY-1.
-          // (0,0) is the original. Skip it to avoid double pads!
-
           for (let i = 0; i < dimX; i++) {
             for (let j = 0; j < dimY; j++) {
               if (i === 0 && j === 0) continue; // Original already added
@@ -231,11 +201,6 @@ export function extractPadsMm(gerberText) {
       }
     }
   }
-
-  // console.log('Total pads extracted:', pads.length);
-  // const namedPads = pads.filter(p => p.componentIdentifier);
-  // console.log('Pads with component names:', namedPads.length);
-  // if (namedPads.length > 0) console.log('Sample names:', namedPads.slice(0, 5).map(p => p.componentIdentifier));
 
   if (units === 'in') {
     return pads.map(p => ({

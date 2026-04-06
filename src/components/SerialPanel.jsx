@@ -63,6 +63,45 @@ export default function SerialPanel({
         }
       }
 
+      // Check for Probe trigger results (G38.x) - GRBL Fast Probe
+      const prbMatch = line.match(/\[PRB:\s*([-\d.]+)\s*,\s*([-\d.]+)\s*,\s*([-\d.]+)\s*:\s*(\d)/i);
+      if (prbMatch) {
+        const pSuccess = parseInt(prbMatch[4]) === 1;
+        if (pSuccess) {
+          const prbPos = { x: parseFloat(prbMatch[1]), y: parseFloat(prbMatch[2]), z: parseFloat(prbMatch[3]) };
+          console.log('🎯 GRBL Probe Triggered! Emitting global event:', prbPos);
+          window.dispatchEvent(new CustomEvent('probe-triggered', { detail: prbPos }));
+        } else {
+          console.warn('⚠️ Probe cycle ended without triggering pressure sensor.');
+          window.dispatchEvent(new CustomEvent('probe-failed'));
+        }
+      }
+
+      // Check for Marlin G30 Probe results
+      // Format: "Bed X: 10.00 Y: 10.00 Z: -1.23"
+      const marlinPrbMatch = line.match(/Bed\s+X:\s*([-\d.]+)\s+Y:\s*([-\d.]+)\s+Z:\s*([-\d.]+)/i);
+      if (marlinPrbMatch) {
+         const prbPos = {
+            x: parseFloat(marlinPrbMatch[1]),
+            y: parseFloat(marlinPrbMatch[2]),
+            z: parseFloat(marlinPrbMatch[3])
+          };
+          console.log('🎯 Marlin G30 Probe Triggered! Emitting global event:', prbPos);
+          window.dispatchEvent(new CustomEvent('probe-triggered', { detail: prbPos }));
+      }
+
+      // ── M119 Endstop State Parser ──
+      // Parses Marlin M119 response lines. Your pressure sensor is on z_min.
+      // Matches: z_min / z_probe / z_min_probe / probe : TRIGGERED or open
+      const m119ProbeTriggered = /\b(z_min|z_probe|z_min_probe|probe)\b\s*:\s*TRIGGERED/i.test(line);
+      const m119ProbeOpen      = /\b(z_min|z_probe|z_min_probe|probe)\b\s*:\s*open/i.test(line);
+      if (m119ProbeTriggered) {
+        console.log('🟢 M119: Probe pin TRIGGERED →', line.trim());
+        window.dispatchEvent(new CustomEvent('endstop-z-probe-triggered'));
+      } else if (m119ProbeOpen) {
+        window.dispatchEvent(new CustomEvent('endstop-z-probe-open'));
+      }
+
       if (x !== null && y !== null && z !== null) {
         hasReceivedPosRef.current = true;
         const pos = { x, y, z };
@@ -218,7 +257,6 @@ export default function SerialPanel({
         <div className="control-pane">
           <h3>Control</h3>
           <div className="control-grid-3">
-            {/* Using generic M-codes until user provides exact machine codes */}
             <button className="btn-dark" onClick={() => sendCommand('M8')}>Left Air On</button>
             <button className="btn-dark" onClick={() => sendCommand('M8')}>Right Air On</button>
             <button className="btn-dark" onClick={() => sendCommand('M8')}>Ring Lights On</button>

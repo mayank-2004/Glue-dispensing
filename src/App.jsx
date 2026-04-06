@@ -10,7 +10,6 @@ import ComponentList from "./components/ComponentList.jsx";
 import JogPanel from "./components/JogPanel.jsx";
 import FiducialPanel from "./components/FiducialPanel.jsx";
 import AutomatedDispensingPanel from "./components/AutomatedDispensingPanel.jsx";
-// import LivePreview from "./components/LivePreview.jsx";
 import { identifyLayers } from "./lib/gerber/identifyLayers.js";
 import { stackupToSvg } from "./lib/gerber/stackupToSvg.js";
 import { extractPadsMm } from "./lib/gerber/extractPads.js";
@@ -29,42 +28,39 @@ import { extractBoardOutline } from "./lib/gerber/boardOutline.js";
 import { DispensingSequencer } from "./lib/automation/dispensingSequence.js";
 import { SafePathPlanner } from "./lib/automation/safePathPlanner.js";
 import { LayerDataExtractor } from "./lib/gerber/layerDataExtractor.js";
-// import { debugCoordinateConversion } from "./lib/debug/coordinateDebug.js";
 import MaintenanceManager from "./components/MaintenanceManager.jsx";
 import ToolOffsetCalibration from "./components/ToolOffsetCalibration.jsx";
+import BedCalibrationPanel from "./components/BedCalibrationPanel.jsx";
 
 function calculatePadCenter(p) {
-  // For Gerber-extracted pads, x,y coordinates ARE the center (flash coordinates)
   if (typeof p.x === "number" && typeof p.y === "number") {
     return {
       x: p.x,
       y: p.y,
       valid: true,
       method: 'gerber_flash_center',
-      width: p.width || 1,
-      height: p.height || 1
+      width: p.width,
+      height: p.height
     };
   }
-
-  // Fallback for invalid data
   return { x: 0, y: 0, valid: false, method: 'fallback' };
 }
 
-// Legacy wrapper for compatibility
 function padCenter(p) {
   const result = calculatePadCenter(p);
-  return { x: result.x, y: result.y };
+  return { ...p, x: result.x, y: result.y };
 }
 
 function processPads(points) {
   return points.map((pad, idx) => {
     const centerInfo = calculatePadCenter(pad);
     return {
+      ...pad,
       x: centerInfo.x,
       y: centerInfo.y,
       id: pad.componentIdentifier || `P${idx + 1}`,
-      width: centerInfo.width || pad.width || 1,
-      height: centerInfo.height || pad.height || 1,
+      width: pad.width || centerInfo.width || 1,
+      height: pad.height || centerInfo.height || 1,
       centerValid: centerInfo.valid,
       centerMethod: centerInfo.method,
       originalPad: pad
@@ -83,7 +79,6 @@ export default function App() {
   const [layers, setLayers] = useState([]);
   const [side, setSide] = useState("top");
   const [, forceRender] = useState({});
-  // const [mirrorBottom, setMirrorBottom] = useState(true); // User requested removal
   const [svg, setSvg] = useState("");
 
   const [pads, setPads] = useState([]);
@@ -96,16 +91,13 @@ export default function App() {
 
   const cameraPanelRef = useRef(null);
 
-  // Serial State lifted from SerialPanel
   const [isSerialConnected, setIsSerialConnected] = useState(false);
   const [machinePos, setMachinePos] = useState({ x: 0, y: 0, z: 0 });
   const statusIntervalRef = useRef(null);
 
-  // Connection Handlers
   const handleSerialConnect = (status) => {
     setIsSerialConnected(status);
     if (status) {
-      // Start polling for status
       if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
       statusIntervalRef.current = setInterval(async () => {
         try {
@@ -124,40 +116,19 @@ export default function App() {
     if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
   };
 
-  // ============================================================
-  // EMERGENCY STOP
-  // ============================================================
   const [isEmergencyStopped, setIsEmergencyStopped] = useState(false);
 
-  /**
-   * Triggers a full machine emergency stop.
-   *
-   * Reasons this is needed:
-   *  - Head moved to a wrong pad / board position
-   *  - Nozzle not aligned to pad center
-   *  - Glue over-dispensing (nozzle clog / pressure spike)
-   *  - Z-axis collision risk (nozzle descending too far)
-   *  - PCB not seated / shifted on bed
-   *  - Unexpected machine positional drift (accumulation of errors)
-   *  - Camera / vision system failure during automated run
-   *  - Air pressure loss or pneumatic failure
-   *  - Any operator-detected anomaly during the dispensing cycle
-   */
   const triggerEmergencyStop = async () => {
     setIsEmergencyStopped(true);
     console.error('[E-STOP] Emergency Stop Triggered!');
     try {
       if (window.serial && window.serial.writeLine) {
-        // 1. GRBL soft-reset — immediately halts motion queue and disables steppers
         if (window.serial.write) {
-          await window.serial.write('\x18'); // Ctrl+X — GRBL real-time command
+          await window.serial.write('\x18');
         }
-        // 2. Marlin immediate stop (M112 causes firmware halt requiring restart)
         await window.serial.writeLine('M112');
-        // 3. Feed Hold (GRBL '!' or Marlin M0) — pauses feed without full reset
         await window.serial.writeLine('!');
         await window.serial.writeLine('M0');
-        // 4. Retract Z axis to safe height to avoid nozzle dragging on PCB
         await window.serial.writeLine('G91');
         await window.serial.writeLine('G0 Z10 F1000');
         await window.serial.writeLine('G90');
@@ -171,8 +142,8 @@ export default function App() {
     setIsEmergencyStopped(false);
     try {
       if (window.serial && window.serial.writeLine) {
-        await window.serial.writeLine('$X'); // GRBL unlock after E-Stop
-        await window.serial.writeLine('M999'); // Marlin: restart after M112
+        await window.serial.writeLine('$X');
+        await window.serial.writeLine('M999');
       }
     } catch (err) {
       console.error('[E-STOP] Failed to send reset commands:', err);
@@ -246,9 +217,8 @@ export default function App() {
   const [fiducialDetectionResult, setFiducialDetectionResult] = useState(null);
   const [originCandidates, setOriginCandidates] = useState([]);
   const [selectedOrigin, setSelectedOrigin] = useState(null);
-  const [pcbOriginOffset, setPcbOriginOffset] = useState({ x: 0, y: 0 }); // Relative offset from detected origin
+  const [pcbOriginOffset, setPcbOriginOffset] = useState({ x: 0, y: 0 });
 
-  // Effective Origin = Raw Origin + User Manual Offset
   const effectiveOrigin = useMemo(() => {
     if (!selectedOrigin) return null;
     return {
@@ -274,7 +244,6 @@ export default function App() {
   const [applyXf, setApplyXf] = useState(false);
   const [activeComponent, setActiveComponent] = useState('SerialPanel')
 
-  // New feature states
   const [collisionDetector] = useState(() => new CollisionDetector());
   const [padDetector] = useState(() => new PadDetector());
   const [qualityController] = useState(() => new QualityController());
@@ -299,19 +268,14 @@ export default function App() {
     completedPads: []
   });
 
-  // Multi-Selection State
   const [multiSelectMode, setMultiSelectMode] = useState(false);
-  const [selectedPadIndices, setSelectedPadIndices] = useState([]); // Stores ordered indices of selected pads
+  const [selectedPadIndices, setSelectedPadIndices] = useState([]);
 
-  // Panel Alignment State
   const [alignment, setAlignment] = useState({ p1: null, p2: null, transform: null });
-
-  // Refs for log optimization
   const prevOriginLogRef = useRef(null);
   const prevActiveRefLogRef = useRef(null);
 
   const handleAlignmentCapture = useCallback((refIndex) => {
-    // Get current machine position from livePreview (assuming it tracks latest MPos)
     const currentMPos = livePreview.machinePosition;
     if (!currentMPos) {
       alert("No machine position available. Connect machine first.");
@@ -324,31 +288,46 @@ export default function App() {
       if (refIndex === 2) next.p2 = { ...currentMPos };
 
       if (next.p1 && next.p2) {
-        let width = 100, height = 100; // Default
+        // Use the actual Gerber design coordinates of the two fiducials
+        // NOT a synthetic bounding box — using wrong coords causes progressive drift!
+        const f1 = fiducials[0];
+        const f2 = fiducials[1];
 
-        // Try to get from board outline
-        if (boardOutline) {
-          width = boardOutline.width;
-          height = boardOutline.height;
-        } else if (pads.length > 0) {
-          const xs = pads.map(p => p.x);
-          const ys = pads.map(p => p.y);
-          width = Math.max(...xs) - Math.min(...xs);
-          height = Math.max(...ys) - Math.min(...ys);
+        const hasRealDesignCoords = f1?.design && f2?.design;
+
+        let designPts, machinePts;
+
+        if (hasRealDesignCoords) {
+          // Correct: Use real fiducial design positions from Gerber
+          designPts = [
+            { x: f1.design.x, y: f1.design.y },
+            { x: f2.design.x, y: f2.design.y }
+          ];
+        } else {
+          // Fallback: no fiducial design data available — use bounding box approximation
+          let width = 100, height = 100;
+          if (boardOutline) {
+            width = boardOutline.width;
+            height = boardOutline.height;
+          } else if (pads.length > 0) {
+            const xs = pads.map(p => p.x);
+            const ys = pads.map(p => p.y);
+            width = Math.max(...xs) - Math.min(...xs);
+            height = Math.max(...ys) - Math.min(...ys);
+          }
+          console.warn("Panel alignment: no fiducial design coords found, using bounding box fallback — drift may occur!");
+          designPts = [
+            { x: 0, y: 0 },
+            { x: width, y: height }
+          ];
         }
 
-        const designPts = [
-          { x: 0, y: 0 },
-          { x: width, y: height }
-        ];
-        const machinePts = [
-          next.p1,
-          next.p2
-        ];
+        machinePts = [next.p1, next.p2];
 
         try {
           const T = fitSimilarity(designPts, machinePts);
-          console.log("Panel Alignment Computed:", T);
+          const err = rmsError(T, designPts, machinePts);
+          console.log("Panel Alignment Computed:", T, "RMS Error:", err.toFixed(4), "mm");
           next.transform = T;
           setXf(T);
           setApplyXf(true);
@@ -361,7 +340,7 @@ export default function App() {
       }
       return next;
     });
-  }, [livePreview.machinePosition, boardOutline, pads]);
+  }, [livePreview.machinePosition, boardOutline, pads, fiducials]);
 
   const handleMachinePositionUpdate = useCallback((newPos) => {
     setLivePreview(prev => ({
@@ -373,152 +352,6 @@ export default function App() {
   const handleFiducialsUpdate = useCallback((newFids) => {
     setFiducials(newFids);
   }, []);
-
-  // useEffect(() => {
-  //   // Initialize OpenCV on app load
-  //   loadOpenCV()
-  //     .then(() => {
-  //       setOpencvReady(true);
-  //       console.log('✅ OpenCV loaded and ready');
-  //     })
-  //     .catch(err => {
-  //       console.error('❌ OpenCV load failed:', err);
-  //     });
-  // }, []);
-
-  // // Add OpenCV detection callback
-  // const handleOpenCVDetection = (detectedFiducials) => {
-  //   console.log('OpenCV detected fiducials:', detectedFiducials);
-
-  //   // Convert to your fiducial format
-  //   const colors = ["#2ea8ff", "#8e2bff", "#00c49a"];
-  //   const autoFiducials = detectedFiducials.slice(0, 3).map((fid, idx) => ({
-  //     id: `F${idx + 1}`,
-  //     design: {
-  //       x: fid.x, // Convert from pixels to mm if needed
-  //       y: fid.y
-  //     },
-  //     machine: null,
-  //     color: colors[idx],
-  //     confidence: fid.confidence,
-  //     autoDetected: true,
-  //     detectionMethod: 'opencv'
-  //   }));
-
-  //   setFiducials(autoFiducials);
-  //   alert(`✅ OpenCV detected ${detectedFiducials.length} fiducials!`);
-  // };
-
-  // useEffect(() => {
-  //   if (currentBatchId && batchProcessor) {
-  //     setCurrentBatch(batchProcessor.getBatch(currentBatchId));
-  //   } else {
-  //     setCurrentBatch(null);
-  //   }
-  // }, [currentBatchId, batchProcessor]);
-
-  // // Batch processing handlers
-  // const handleBatchSelect = (batchId) => {
-  //   setCurrentBatchId(batchId);
-  // };
-
-  // const handleStartBatch = async (batchId) => {
-  //   const batch = batchProcessor.getBatch(batchId);
-  //   if (!batch) return;
-
-  //   if (batch.status === 'paused') {
-  //     // Resume paused batch
-  //     return handleResumeBatch(batchId);
-  //   }
-
-  //   // Start new batch
-  //   const success = await batchProcessor.startBatch(batchId);
-  //   if (success) {
-  //     console.log('Batch started:', batchId);
-  //     try {
-  //       await batchExecutor.executeBatch(batch, batchProcessor);
-  //       console.log('Batch execution completed');
-  //     } catch (error) {
-  //       console.error('Batch execution failed:', error);
-  //       alert('Batch execution failed: ' + error.message);
-  //     }
-  //   }
-  // };
-
-  // const handlePauseBatch = (batchId) => {
-  //   batchProcessor.pauseBatch(batchId);
-  // };
-
-  // const handleResumeBatch = async (batchId) => {
-  //   const success = batchProcessor.resumeBatch(batchId);
-  //   if (success) {
-  //     try {
-  //       const batch = batchProcessor.getBatch(batchId);
-  //       await batchExecutor.executeBatch(batch, batchProcessor);
-  //       console.log('Batch execution resumed and completed');
-  //     } catch (error) {
-  //       console.error('Batch resume failed:', error);
-  //       alert('Batch resume failed: ' + error.message);
-  //     }
-  //   }
-  // };
-
-  // const handleAddCurrentBoard = (batchId) => {
-  //   if (!pads.length) {
-  //     alert('No pads loaded. Please load a PCB file first.');
-  //     return;
-  //   }
-
-  //   const board = {
-  //     name: `Board ${Date.now()}`,
-  //     pads: pads,
-  //     fiducials: fiducials,
-  //     settings: {
-  //       pressure: pressureSettings,
-  //       speed: speedSettings
-  //     },
-  //     position: { x: 0, y: 0, rotation: 0 }
-  //   };
-
-  //   batchProcessor.addBoard(batchId, board);
-  //   alert('Board added to batch!');
-  // };
-
-  // const handleDeleteBatch = (batchId) => {
-  //   if (currentBatchId === batchId) {
-  //     setCurrentBatchId(null);
-  //   }
-  // };
-
-  // // Live preview control functions
-  // const startLivePreview = () => {
-  //   setLivePreview({
-  //     isActive: true,
-  //     currentPadIndex: 0,
-  //     machinePosition: { x: 0, y: 0, z: 6 },
-  //     completedPads: []
-  //   });
-  // };
-
-  // const updateLivePreview = (padIndex, machinePos = null) => {
-  //   setLivePreview(prev => ({
-  //     ...prev,
-  //     currentPadIndex: padIndex,
-  //     machinePosition: machinePos || prev.machinePosition,
-  //     completedPads: dispensingSequence.slice(0, padIndex)
-  //   }));
-  // };
-
-  // const stopLivePreview = () => {
-  //   setLivePreview({
-  //     isActive: false,
-  //     currentPadIndex: -1,
-  //     machinePosition: null,
-  //     completedPads: []
-  //   });
-  // };
-  // const [visionEnabled, setVisionEnabled] = useState(false);
-  // const [qualityEnabled, setQualityEnabled] = useState(false);
 
   const [maintenanceAlert, setMaintenanceAlert] = useState(null);
   const [toolOffset, setToolOffset] = useState(() => {
@@ -623,15 +456,11 @@ export default function App() {
     console.log("layers: ", ls);
     setLayers(ls);
 
-    // Extract useful data from each layer
     const extractedData = LayerDataExtractor.extractLayerData(ls);
     setLayerData(extractedData);
     console.log('Extracted layer data:', extractedData);
-
-    // Prioritize Open "Top" Solderpaste layer to match default view
     let pi = ls.findIndex(x => x.type === "solderpaste" && x.side === "top");
     if (pi < 0) {
-      // Fallback to any solderpaste layer if top not found
       pi = ls.findIndex(x => x.type === "solderpaste");
     }
 
@@ -639,7 +468,6 @@ export default function App() {
     if (pi >= 0) {
       const padData = extractPadsMm(ls[pi].text).map(padCenter);
       setPads(processPads(padData));
-      // Ensure view side matches the selected paste layer
       if (ls[pi].side === 'bottom') {
         setSide('bottom');
       } else {
@@ -647,11 +475,9 @@ export default function App() {
       }
     } else setPads([]);
 
-    // Detect fiducials automatically
     let detectedFiducials = analyzeFiducialsInLayers(ls);
     setFiducialDetectionResult(detectedFiducials);
 
-    // Detect board outline if available
     const outlineLayer = ls.find(l => l.filename.toLowerCase().includes('outline') || l.filename.toLowerCase().includes('edge'));
     if (outlineLayer) {
       const outline = extractBoardOutline(outlineLayer.text);
@@ -666,7 +492,6 @@ export default function App() {
       console.log('No specific board outline layer found (checking for "outline" or "edge" in filenames).');
     }
 
-    // Detect origin candidates
     const origins = detectPcbOrigins(ls);
     console.log('Detected origins:', origins);
     setOriginCandidates(origins);
@@ -678,7 +503,6 @@ export default function App() {
     }
 
     if (detectedFiducials.length > 0) {
-      // Auto-populate fiducials with detected positions
       const colors = ["#2ea8ff", "#8e2bff", "#00c49a", "#ff6b35", "#9c27b0", "#4caf50"];
       const autoFiducials = detectedFiducials.slice(0, 3).map((fid, idx) => ({
         id: fid.id || `F${idx + 1}`,
@@ -688,7 +512,6 @@ export default function App() {
         confidence: fid.confidence
       }));
 
-      // Fill remaining slots with empty fiducials if needed
       while (autoFiducials.length < 3) {
         autoFiducials.push({
           id: `F${autoFiducials.length + 1}`,
@@ -700,7 +523,6 @@ export default function App() {
 
       setFiducials(autoFiducials);
     } else {
-      // No fiducials detected, use default empty ones
       setFiducials([
         { id: "F1", design: null, machine: null, color: "#2ea8ff" },
         { id: "F2", design: null, machine: null, color: "#8e2bff" },
@@ -714,7 +536,6 @@ export default function App() {
     setSelectedMm(null);
     setXf(null); setApplyXf(false);
     setFidPickMode(false); setFidActiveId(null);
-    // Don't clear origin candidates and selectedOrigin here - they were just set above
 
     queueMicrotask(() => { updateOverlay(); });
   }
@@ -851,15 +672,10 @@ export default function App() {
     const gm = ensureGroup("overlay-markers"); if (!gm) return;
     const svgEl = getSvgEl(); if (!svgEl) return;
 
-    // Always get fresh geometry from current viewBox
     const geom = getSvgGeom(); if (!geom) return;
 
-    // Helper to convert mm to current viewBox units with consistent coordinate system
     const mmToCurrentUnits = (ptMm) => {
-      // X: Absolute coordinate conversion
       let xUnits = ptMm.x / geom.mmPerUnit;
-
-      // If bottom side, flip X to match the mirrored SVG generated by pcb-stackup
       if (side === 'bottom') {
         xUnits = (2 * geom.minX + geom.vbW) - xUnits;
       }
@@ -874,20 +690,12 @@ export default function App() {
         r: 1 / geom.mmPerUnit
       };
 
-      /* console.log('mmToCurrentUnits conversion:', {
-        input: ptMm,
-        output: result,
-        geom: { minX: geom.minX, minY: geom.minY, mmPerUnit: geom.mmPerUnit },
-        side
-      }); */
       return result;
     };
 
-    // Draw live preview overlays
     if (livePreview.isActive) {
       const glive = ensureGroup("overlay-live");
 
-      // Draw completed pads (green)
       livePreview.completedPads.forEach(pad => {
         const u = mmToCurrentUnits({ x: pad.x, y: pad.y });
         const completedCircle = document.createElementNS(NS, "circle");
@@ -899,7 +707,6 @@ export default function App() {
         completedCircle.setAttribute("stroke-width", u.r * 0.1);
         glive.appendChild(completedCircle);
 
-        // Add checkmark
         const checkmark = document.createElementNS(NS, "text");
         checkmark.setAttribute("x", u.x);
         checkmark.setAttribute("y", u.y + u.r * 0.3);
@@ -911,7 +718,6 @@ export default function App() {
         glive.appendChild(checkmark);
       });
 
-      // Draw current pad (pulsing orange)
       if (livePreview.currentPadIndex >= 0 && dispensingSequence[livePreview.currentPadIndex]) {
         const currentPad = dispensingSequence[livePreview.currentPadIndex];
         const u = mmToCurrentUnits({ x: currentPad.x, y: currentPad.y });
@@ -924,7 +730,6 @@ export default function App() {
         currentCircle.setAttribute("stroke", "#ffc107");
         currentCircle.setAttribute("stroke-width", u.r * 0.15);
 
-        // Add pulsing animation
         const animate = document.createElementNS(NS, "animate");
         animate.setAttribute("attributeName", "r");
         animate.setAttribute("values", `${u.r * 1.0};${u.r * 1.4};${u.r * 1.0}`);
@@ -934,7 +739,6 @@ export default function App() {
 
         glive.appendChild(currentCircle);
 
-        // Add "DISPENSING" label
         const label = document.createElementNS(NS, "text");
         label.setAttribute("x", u.x);
         label.setAttribute("y", u.y - u.r * 1.8);
@@ -946,12 +750,9 @@ export default function App() {
         glive.appendChild(label);
       }
 
-      // Draw machine position (blue crosshair)
       if (livePreview.machinePosition) {
         const u = mmToCurrentUnits(livePreview.machinePosition);
         const crossSize = u.r * 0.8;
-
-        // Horizontal line
         const hLine = document.createElementNS(NS, "line");
         hLine.setAttribute("x1", u.x - crossSize);
         hLine.setAttribute("y1", u.y);
@@ -961,7 +762,6 @@ export default function App() {
         hLine.setAttribute("stroke-width", u.r * 0.1);
         glive.appendChild(hLine);
 
-        // Vertical line
         const vLine = document.createElementNS(NS, "line");
         vLine.setAttribute("x1", u.x);
         vLine.setAttribute("y1", u.y - crossSize);
@@ -971,7 +771,6 @@ export default function App() {
         vLine.setAttribute("stroke-width", u.r * 0.1);
         glive.appendChild(vLine);
 
-        // Center dot
         const centerDot = document.createElementNS(NS, "circle");
         centerDot.setAttribute("cx", u.x);
         centerDot.setAttribute("cy", u.y);
@@ -980,14 +779,11 @@ export default function App() {
         glive.appendChild(centerDot);
       }
     } else {
-      // Clear live preview overlays when not active
       ensureGroup("overlay-live");
     }
 
-    // Draw reference point (origin or fiducial)
     const activeRef = referencePoint || selectedOrigin;
     if (activeRef) {
-      // Log ONLY if activeRef has changed significantly (by ID or coordinates)
       const prev = prevActiveRefLogRef.current;
       const hasChanged = !prev || prev.id !== activeRef.id || Math.abs(prev.x - activeRef.x) > 0.001 || Math.abs(prev.y - activeRef.y) > 0.001;
 
@@ -1016,7 +812,6 @@ export default function App() {
       drawText(gm, uh.x + uh.r * 1.6, uh.y - uh.r * 0.8, label, uh.r * 1.0, color);
     }
 
-    // Draw multi-selected pads (visualized via overlay-sequence later)
     if (selectedPadIndices.length > 0) {
 
       selectedPadIndices.forEach(idx => {
@@ -1027,51 +822,36 @@ export default function App() {
         const u = mmToCurrentUnits(pt);
         if (!inView(u)) return;
 
-        // Draw orange selection marker
-        const r = u.r * (Math.max(pad.width || 1, pad.height || 1) * 0.6); // Scale to pad size
-
-        // Selection box/circle
+        const r = u.r * (Math.max(pad.width || 1, pad.height || 1) * 0.6);
         const sel = document.createElementNS(NS, "circle");
         sel.setAttribute("cx", u.x); sel.setAttribute("cy", u.y);
         sel.setAttribute("r", r * 1.1);
         sel.setAttribute("fill", "none");
-        sel.setAttribute("stroke", "#FFA500"); // Orange
+        sel.setAttribute("stroke", "#FFA500");
         sel.setAttribute("stroke-width", u.r * 0.3);
-        sel.setAttribute("stroke-dasharray", "4,2"); // Dashed look
+        sel.setAttribute("stroke-dasharray", "4,2");
         gm.appendChild(sel);
 
-        // Label index
         drawText(gm, u.x + r, u.y - r, `#${idx + 1}`, r * 0.5, "#FFA500");
       });
     }
 
     if (selectedMm) {
-      // Find the selected pad using original coordinates (before transformation)
       const origin = selectedOrigin;
       let searchCoords = selectedMm;
 
-      // If we have an origin, reverse the transformation to find the original pad
       if (origin) {
         searchCoords = {
-          x: selectedMm.x + origin.x, // Reverse: add back origin.x
-          y: selectedMm.y - origin.y  // Reverse: subtract back origin.y
+          x: selectedMm.x + origin.x,
+          y: selectedMm.y - origin.y
         };
       }
 
-      // Use stored original pad reference if available
       const selectedPad = selectedMm.originalPad || pads.find(p => Math.abs(p.x - searchCoords.x) < 0.1 && Math.abs(p.y - searchCoords.y) < 0.1);
       if (selectedPad) {
 
-        // Use original pad coordinates for drawing the marker (not transformed coordinates)
         const markerCoords = { x: selectedPad.x, y: selectedPad.y };
-        // console.log('Drawing overlay for selected pad:', {
-        //   selectedMm,
-        //   selectedPad,
-        //   markerCoords,
-        //   centerMethod: selectedPad.centerMethod
-        // });
         const u = mmToCurrentUnits(markerCoords);
-        // console.log('Converted to SVG units:', u);
 
         // Calculate marker radius based on actual pad dimensions
         const padWidth = selectedPad.width || 1.0;
@@ -1080,8 +860,6 @@ export default function App() {
 
         // Marker radius should be slightly larger than the pad (110% of max dimension)
         const markerRadius = (maxDimension * 1) / geom.mmPerUnit;
-
-        // Red circle ring removed
 
         // Enhanced center marking with validation indicator
         const crossSize = (maxDimension * 0.4) / geom.mmPerUnit;
@@ -1113,7 +891,6 @@ export default function App() {
         vLine.setAttribute("stroke-width", markerRadius * 0.08);
         gm.appendChild(vLine);
 
-        // Center dot at calculated center position
         const centerDot = document.createElementNS(NS, "circle");
         centerDot.setAttribute("cx", centerCoords.x);
         centerDot.setAttribute("cy", centerCoords.y);
@@ -1123,7 +900,6 @@ export default function App() {
         centerDot.setAttribute("stroke-width", markerRadius * 0.05);
         gm.appendChild(centerDot);
 
-        // Validation ring at calculated center position
         const validationRing = document.createElementNS(NS, "circle");
         validationRing.setAttribute("cx", centerCoords.x);
         validationRing.setAttribute("cy", centerCoords.y);
@@ -1134,16 +910,12 @@ export default function App() {
         validationRing.setAttribute("stroke-dasharray", selectedPad.centerValid ? "none" : "2,2");
         gm.appendChild(validationRing);
 
-        // Draw paste visualization dots if enabled
         if (showPasteDots) {
           const dotRadius = (nozzleDia * 0.4) / geom.mmPerUnit;
-          const spacing = dotRadius * 2.5; // Space between dot centers
-
-          // Calculate grid dimensions to fill the pad
+          const spacing = dotRadius * 2.5;
           const dotsX = Math.max(1, Math.floor(padWidthSvg / spacing));
           const dotsY = Math.max(1, Math.floor(padHeightSvg / spacing));
 
-          // Calculate starting position to center the grid
           const startX = centerCoords.x - ((dotsX - 1) * spacing) / 2;
           const startY = centerCoords.y - ((dotsY - 1) * spacing) / 2;
 
@@ -1162,7 +934,6 @@ export default function App() {
               pasteCircle.setAttribute("stroke-width", dotRadius * 0.1);
               gm.appendChild(pasteCircle);
 
-              // Add dot number
               const dotText = document.createElementNS(NS, "text");
               dotText.setAttribute("x", dotX);
               dotText.setAttribute("y", dotY + dotRadius * 0.25);
@@ -1178,12 +949,8 @@ export default function App() {
       }
     }
 
-    // Draw dispensing sequence (Straight lines connecting pads)
-    // Only draw if user has explicitly selected pads (avoid showing mess on load)
     if (dispensingSequence && dispensingSequence.length > 0 && selectedPadIndices.length > 0) {
       const gs = ensureGroup("overlay-sequence");
-
-      // Connection from Reference/Origin to the FIRST pad
       if (activeRef) {
         const start = mmToCurrentUnits({ x: activeRef.x, y: activeRef.y });
         const end = mmToCurrentUnits({ x: dispensingSequence[0].x, y: dispensingSequence[0].y });
@@ -1192,14 +959,12 @@ export default function App() {
         line.setAttribute("x1", start.x); line.setAttribute("y1", start.y);
         line.setAttribute("x2", end.x); line.setAttribute("y2", end.y);
 
-        // Neon Green-Yellow for sequence path (Same as pad-to-pad)
         line.setAttribute("stroke", "#ccff00");
         line.setAttribute("stroke-width", start.r * 0.5);
         line.setAttribute("stroke-opacity", "0.8");
         gs.appendChild(line);
       }
 
-      // Draw lines between consecutive pads
       if (dispensingSequence.length > 1) {
         for (let i = 0; i < dispensingSequence.length - 1; i++) {
           const p1 = dispensingSequence[i];
@@ -1212,24 +977,19 @@ export default function App() {
           line.setAttribute("x1", start.x); line.setAttribute("y1", start.y);
           line.setAttribute("x2", end.x); line.setAttribute("y2", end.y);
 
-          // Neon Green-Yellow for sequence path
           line.setAttribute("stroke", "#ccff00");
           line.setAttribute("stroke-width", start.r * 0.5);
           line.setAttribute("stroke-opacity", "0.8");
-          // line.setAttribute("stroke-dasharray", "5,3"); // Optional: makes it look like a planned path
           gs.appendChild(line);
         }
       }
     } else {
-      ensureGroup("overlay-sequence"); // Clear if empty
+      ensureGroup("overlay-sequence");
     }
 
-    // Draw generated path (Single Reference -> Target path)
-    // ONLY if NOT in multi-select mode (to avoid clutter)
     if (!multiSelectMode && generatedPath && activeRef && selectedMm) {
       const gp = ensureGroup("overlay-path");
 
-      // Draw path segments
       generatedPath.segments.forEach((segment, idx) => {
         const start = mmToCurrentUnits(segment.start);
         const end = mmToCurrentUnits(segment.end);
@@ -1238,13 +998,12 @@ export default function App() {
         line.setAttribute("x1", start.x); line.setAttribute("y1", start.y);
         line.setAttribute("x2", end.x); line.setAttribute("y2", end.y);
 
-        // Different colors for different segment types
         const color = segment.type === 'lift' ? '#00ff00' :
-          segment.type === 'travel' ? '#00ccff' : // Bright blue
-            segment.type === 'lower' ? '#ff9900' : '#ffff00'; // Neon Yellow for dispense
+          segment.type === 'travel' ? '#00ccff' :
+            segment.type === 'lower' ? '#ff9900' : '#ffff00';
 
         line.setAttribute("stroke", color);
-        line.setAttribute("stroke-width", start.r * 0.6); // Thicker line (was 0.3)
+        line.setAttribute("stroke-width", start.r * 0.6);
 
         line.setAttribute("stroke-dasharray", segment.type === 'travel' ? "4,2" : "none");
         line.setAttribute("stroke-linecap", "round");
@@ -1252,7 +1011,6 @@ export default function App() {
         gp.appendChild(line);
       });
 
-      // Draw waypoints
       generatedPath.points.forEach((point, idx) => {
         if (point.type === 'waypoint') {
           const up = mmToCurrentUnits(point);
@@ -1260,21 +1018,16 @@ export default function App() {
         }
       });
 
-      // Draw distance label
       const start = mmToCurrentUnits({ x: activeRef.x, y: activeRef.y });
       const end = mmToCurrentUnits(selectedMm);
       const midX = (start.x + end.x) / 2, midY = (start.y + end.y) / 2 - start.r * 0.6;
       drawText(gp, midX, midY, `${generatedPath.totalDistance.toFixed(3)} mm`, start.r * 1.2, "#222", "#fffb");
     } else {
-      // CLEAR generated path overlay if not active or in multi-select mode
       ensureGroup("overlay-path");
     }
 
-    // Fallback: simple line if no path generated (but still single mode)
     if (!multiSelectMode && activeRef && selectedMm && !generatedPath) {
-      // Fallback to simple line if no path generated
       const uh = mmToCurrentUnits({ x: activeRef.x, y: activeRef.y });
-      // Find selected pad and calculate center position for yellow line endpoint
       const origin = selectedOrigin;
       let searchCoords = selectedMm;
       if (origin) {
@@ -1307,7 +1060,6 @@ export default function App() {
       const isBoardActive = bIdx === activeBoardIndexState;
       board.fiducials.forEach(f => {
         if (!f.design) return;
-        // Skip duplicate drawing if this fiducial is the active reference
         if (activeRef && f.id === activeRef.id && isBoardActive) return;
 
         const u = mmToCurrentUnits(f.design);
@@ -1323,7 +1075,6 @@ export default function App() {
       });
     });
 
-    // Draw True Gerber Origin
     if (selectedOrigin) {
       const go = ensureGroup("overlay-origin");
       const uo = mmToCurrentUnits({ x: selectedOrigin.x, y: selectedOrigin.y });
@@ -1381,14 +1132,7 @@ export default function App() {
     const refPoint = referencePoint || selectedOrigin;
     if (refPoint && pads.length > 0) {
       const distances = pads.map(pad => {
-        // Step 1: Calculate TRUE CENTER of the pad (same as handleCanvasClick)
-        // Gerber pads are already centered, so we use pad.y directly.
         const trueCenterY = pad.y;
-
-        // Step 2: Apply coordinate transformation relative to origin if available
-        // Note: This 'transformedPadCenter' is mainly for debugging or if we need to store relative coords differently.
-        // But for distance calculation, we can just use pad.x/y and origin.x/y directly.
-
         let dx, dy;
         if (refPoint === selectedOrigin) {
           dx = pad.x - selectedOrigin.x;
@@ -1405,7 +1149,7 @@ export default function App() {
           distance: dist,
           dx,
           dy,
-          transformedX: pad.x - (selectedOrigin?.x || 0), // For display relative to origin
+          transformedX: pad.x - (selectedOrigin?.x || 0),
           transformedY: trueCenterY - (selectedOrigin?.y || 0),
           trueCenterY: trueCenterY
         };
@@ -1416,7 +1160,6 @@ export default function App() {
     }
   }, [referencePoint, selectedOrigin, pads]);
 
-  // Generate path when reference point and target change
   useEffect(() => {
     const refPoint = referencePoint || selectedOrigin;
     if (refPoint && selectedMm) {
@@ -1431,18 +1174,15 @@ export default function App() {
     }
   }, [referencePoint, selectedOrigin, selectedMm, pads, pathType]);
 
-  // Generate dispensing sequence when reference point or pads change
   useEffect(() => {
     const refPoint = referencePoint || selectedOrigin;
 
-    // Choose which pads to sequence: Multi-selection or All
     const padsToUse = selectedPadIndices.length > 0
       ? selectedPadIndices.map(i => pads[i]).filter(Boolean)
       : pads;
 
     if (refPoint && padsToUse.length > 0) {
       if (useSafePathPlanning) {
-        // Use safe path planning with collision avoidance
         const safeSeq = safePathPlanner.calculateSafeSequence(refPoint, padsToUse, boardOutline, componentHeights);
         setSafeSequence(safeSeq);
         setDispensingSequence(safeSeq);
@@ -1481,10 +1221,8 @@ export default function App() {
     const ctm = svgEl.getScreenCTM(); if (!ctm) return null;
     const local = pt.matrixTransform(ctm.inverse());
 
-    // Default X: Absolute coordinate
     let mmX = local.x * geom.mmPerUnit;
 
-    // Handle X-inversion for Bottom View
     if (side === 'bottom') {
       mmX = (2 * geom.minX + geom.vbW - local.x) * geom.mmPerUnit;
     }
@@ -1507,10 +1245,8 @@ export default function App() {
       const halfWidth = (pad.width || 1) / 2;
       const halfHeight = (pad.height || 1) / 2;
 
-      // Calculate distance from click to pad center
       const distanceToCenter = Math.hypot(clickMm.x - pad.x, clickMm.y - pad.y);
 
-      // Check if click is within pad boundaries
       const withinBounds = clickMm.x >= pad.x - halfWidth &&
         clickMm.x <= pad.x + halfWidth &&
         clickMm.y >= pad.y - halfHeight &&
@@ -1521,8 +1257,8 @@ export default function App() {
         bestMatch = {
           pad: i,
           pos: {
-            x: pad.x, // Always use calculated center
-            y: pad.y, // Always use calculated center
+            x: pad.x,
+            y: pad.y,
             width: pad.width,
             height: pad.height,
             centerValid: pad.centerValid,
@@ -1542,7 +1278,6 @@ export default function App() {
     if (!fidPickMode) return;
     console.log('handleFiducialMouseDown fired');
 
-    // Ensure we have the SVG element for coordinate conversion
     const svgEl = getSvgEl();
     if (!svgEl) {
       console.warn('SVG element not found during mousedown');
@@ -1554,22 +1289,18 @@ export default function App() {
     let targetId = null;
     let best = { id: null, d: Infinity };
 
-    // Check for click near existing fiducial design position
     for (const f of fiducials) {
       if (!f.design) continue;
       const d = Math.hypot(f.design.x - mm.x, f.design.y - mm.y);
       if (d < best.d) { best = { id: f.id, d }; }
     }
 
-    // If clicked close to existing one (2mm tolerance), pick it
     if (best.d <= 2) targetId = best.id;
-    // Otherwise if a specific fiducial ID is armed in the dropdown, place it there
     else if (fidActiveId) targetId = fidActiveId;
 
     console.log('Fiducial click processed. Best match:', best.id, 'Target:', targetId);
 
     if (targetId) {
-      // Update the design position for the target fiducial
       setFiducials(prev => prev.map(f => f.id === targetId ? { ...f, design: mm } : f));
       setDragFid(targetId);
     }
@@ -1617,26 +1348,23 @@ export default function App() {
   // Update overlay when origin changes
   useEffect(() => {
     if (selectedOrigin) {
-      // Log ONLY if selectedOrigin has changed
       const prev = prevOriginLogRef.current;
       const hasChanged = !prev || Math.abs(prev.x - selectedOrigin.x) > 0.001 || Math.abs(prev.y - selectedOrigin.y) > 0.001;
 
       if (hasChanged) {
         console.log('Origin changed, updating overlay:', selectedOrigin);
         prevOriginLogRef.current = { ...selectedOrigin };
-        setTimeout(() => updateOverlay(), 300); // Small delay to ensure SVG is ready
+        setTimeout(() => updateOverlay(), 300);
       }
     }
   }, [selectedOrigin, updateOverlay]);
 
   const handleCanvasClick = useCallback((evt) => {
-    // console.log('handleCanvasClick fired. PickMode:', fidPickMode);
     if (fidPickMode) return;
 
     const mm = getEventMm(evt);
     if (!mm) return;
 
-    // Bounds check: Ignore clicks outside the defined SVG area
     const boundsSvg = getSvgEl();
     const geom = getSvgGeom();
     if (geom) {
@@ -1650,9 +1378,7 @@ export default function App() {
 
     const hit = isClickInsidePad(mm);
 
-    // Only process clicks inside actual pad boundaries
     if (!hit) {
-      // Clear selection when clicking outside pads (only in single mode)
       if (!multiSelectMode) {
         setSelectedMm(null);
         setSelectedPadIndices([]);
@@ -1661,18 +1387,16 @@ export default function App() {
     }
 
     if (multiSelectMode) {
-      // Toggle selection in multi-select mode (Ordered List)
       setSelectedPadIndices(prev => {
         if (prev.includes(hit.pad)) {
-          return prev.filter(i => i !== hit.pad); // Remove (deselect)
+          return prev.filter(i => i !== hit.pad);
         } else {
-          return [...prev, hit.pad]; // Append (keep order)
+          return [...prev, hit.pad];
         }
       });
       return;
     }
 
-    // Single Selection Mode Logic
     // Clear previous multi-selection
     setSelectedPadIndices([hit.pad]);
 
@@ -1681,13 +1405,12 @@ export default function App() {
     let padCenter;
 
     if (origin) {
-      // Apply coordinate transformation
       padCenter = {
-        x: hit.pos.x, // Store absolute coordinate for correct overlay rendering
-        y: hit.pos.y, // Store absolute coordinate
+        x: hit.pos.x,
+        y: hit.pos.y,
         centerValid: hit.pos.centerValid,
         centerMethod: hit.pos.centerMethod,
-        originalPad: pads[hit.pad] // Store reference to original pad
+        originalPad: pads[hit.pad]
       };
       console.log('🔄 Coordinate selection:', {
         originalPad: { x: hit.pos.x, y: hit.pos.y },
@@ -1696,13 +1419,12 @@ export default function App() {
         note: 'Storing absolute coordinates for overlay. Distances calculated in UI.'
       });
     } else {
-      // No origin available, use original coordinates
       padCenter = {
         x: hit.pos.x,
-        y: hit.pos.y, // hit.pos.y is already center
+        y: hit.pos.y,
         centerValid: hit.pos.centerValid,
         centerMethod: hit.pos.centerMethod,
-        originalPad: pads[hit.pad] // Store reference to original pad
+        originalPad: pads[hit.pad]
       };
     }
 
@@ -1714,15 +1436,11 @@ export default function App() {
       distanceToCenter: hit.distanceToCenter
     });
 
-    // Validate center calculation
     if (!hit.pos.centerValid) {
       console.warn('Pad center calculation may be inaccurate:', hit.pos.centerMethod);
     }
-
-    // Select the pad immediately for Visual Feedback
     setSelectedMm(padCenter);
 
-    // Calculate distance from reference if valid
     const refPoint = referencePoint || selectedOrigin;
     let distInfo = "";
     if (refPoint) {
@@ -1733,7 +1451,6 @@ export default function App() {
       distInfo = `\n\nDistance from ${refName}: ${dist.toFixed(3)} mm (ΔX: ${dx.toFixed(2)}, ΔY: ${dy.toFixed(2)})`;
     }
 
-    // Direct machine to move to pad (Camera Crosshair alignment)
     if (window.serial && window.serial.writeLine && xf && applyXf) {
       setTimeout(() => {
         const targetMachine = applyTransform(xf, padCenter);
@@ -1744,15 +1461,13 @@ export default function App() {
         );
         
         if (move) {
-          // Send movement command (Safe height assumption: user handles Z height manually before clicking)
           window.serial.writeLine(`G0 X${targetMachine.x.toFixed(3)} Y${targetMachine.y.toFixed(3)} F3000`);
           
-          // Trigger vision-based micro-alignment. CameraPanel will catch this and wait for motion to finish.
           window.dispatchEvent(new CustomEvent('camera-auto-align-pad', {
              detail: { targetMachine, padCenter }
           }));
         }
-      }, 50); // Small timeout to allow React to render the selection first
+      }, 50);
     }
   }, [
     fidPickMode,
@@ -1785,12 +1500,10 @@ export default function App() {
   const onRedetectFiducials = () => {
     if (layers.length === 0) return;
 
-    // Re-run fiducial detection
     let detectedFiducials = analyzeFiducialsInLayers(layers);
     setFiducialDetectionResult(detectedFiducials);
 
     if (detectedFiducials.length > 0) {
-      // Auto-populate fiducials with detected positions
       const colors = ["#2ea8ff", "#8e2bff", "#00c49a", "#ff6b35", "#9c27b0", "#4caf50"];
       const autoFiducials = detectedFiducials.slice(0, 3).map((fid, idx) => ({
         id: fid.id || `F${idx + 1}`,
@@ -1800,7 +1513,6 @@ export default function App() {
         confidence: fid.confidence
       }));
 
-      // Fill remaining slots with empty fiducials if needed
       while (autoFiducials.length < 3) {
         autoFiducials.push({
           id: `F${autoFiducials.length + 1}`,
@@ -1833,7 +1545,6 @@ export default function App() {
 
     setFiducials(alignedFiducials);
 
-    // Auto-solve transformation if we have enough fiducials
     const validFiducials = alignedFiducials.filter(f => f.design && f.machine);
     if (validFiducials.length === 1) {
       const T = fitTranslation(validFiducials.map(f => f.design), validFiducials.map(f => f.machine));
@@ -1845,7 +1556,6 @@ export default function App() {
   };
 
   const onAutoDetectCamera = async () => {
-    // This will be called from CameraPanel when fiducials are detected
     console.log('Camera-based fiducial detection initiated');
   };
 
@@ -1869,14 +1579,13 @@ export default function App() {
 
       const updatedFiducials = detectedFiducials.map((detected, idx) => ({
         id: detected.id || `F${idx + 1}`,
-        design: fiducials[idx]?.design || null, // Keep existing design coordinates
+        design: fiducials[idx]?.design || null,
         machine: detected.machine,
         color: colors[idx % colors.length],
         confidence: detected.confidence,
         autoDetected: true
       }));
 
-      // Fill remaining slots
       while (updatedFiducials.length < 3) {
         updatedFiducials.push({
           id: `F${updatedFiducials.length + 1}`,
@@ -1888,7 +1597,6 @@ export default function App() {
 
       setFiducials(updatedFiducials);
 
-      // Auto-solve if we have enough data
       const validFiducials = updatedFiducials.filter(f => f.design && f.machine);
       if (validFiducials.length === 1) {
         const T = fitTranslation(validFiducials.map(f => f.design), validFiducials.map(f => f.machine));
@@ -2004,8 +1712,6 @@ export default function App() {
                   const padData = extractPadsMm(selectedLayer.text).map(padCenter);
                   setPads(processPads(padData));
                   console.log('Solderpaste layer loaded:', padData.length, 'pads');
-
-                  // Auto-switch view side
                   if (selectedLayer.side === 'top') {
                     changeSide('top', true);
                   } else if (selectedLayer.side === 'bottom') {
@@ -2050,6 +1756,9 @@ export default function App() {
             return false;
           }}
         />
+
+        {/* Auto-Bed Leveling / Surface Calibration */}
+        <BedCalibrationPanel nozzleDia={0.6} machinePosition={livePreview.machinePosition} />
 
         <div style={{ color: '#9aa0a6', margin: '0 0 12px 0', border: '1px solid #9aa0a6', padding: '4px 12px 6px 12px', borderRadius: '4px' }}>
           Components
@@ -2122,10 +1831,9 @@ export default function App() {
                   return;
                 }
                 const mPos = livePreview.machinePosition;
-                const tOff = maintenanceManager.getToolOffset(); // dx, dy
+                const tOff = maintenanceManager.getToolOffset();
 
                 // Formula: Crosshair = Machine + ToolOffset + selectedOrigin(Gerber0,0) + pcbOriginOffset
-                // We want Crosshair to equal selectedOrigin (so UI reads 0,0 locally)  
                 // Therefore: selectedOrigin = Machine + ToolOffset + selectedOrigin + pcbOriginOffset
                 // Result: pcbOriginOffset = - (Machine + ToolOffset)
                 
@@ -2141,15 +1849,6 @@ export default function App() {
             <button className="btn sm secondary" style={{ width: '100%', marginBottom: '8px' }} onClick={onDetectOrigins} disabled={layers.length === 0}>
               🎯 Detect Origins
             </button>
-            {/* <button className="btn sm secondary" onClick={() => {
-              // Test origin at (0,0)
-              const testOrigin = { id: 'O1', x: 0, y: 0, confidence: 0.9, description: 'True Gerber Origin (test)' };
-              setSelectedOrigin(testOrigin);
-              console.log('Set test origin (Gerber 0,0):', testOrigin);
-              setTimeout(() => updateOverlay(), 100);
-            }}>
-              Test Origin (0,0)
-            </button> */}
             <button className="btn sm secondary" style={{ width: '100%' }} onClick={() => {
               setSelectedOrigin(null);
               setPcbOriginOffset({ x: 0, y: 0 });
@@ -2246,8 +1945,6 @@ export default function App() {
                     }
                     return f;
                   }));
-                  
-                  // Invalidate any active transformations because the machine space just exploded
                   setXf(null);
                   setApplyXf(false);
 
@@ -2485,7 +2182,7 @@ export default function App() {
                 if (typeof forceRender === 'function') forceRender({});
               }}
               nozzleDia={0.6}
-              setNozzleDia={(d) => { /* update nozzle dia */ }}
+              setNozzleDia={(d) => {}}
               padDetector={padDetector}
               qualityController={qualityController}
               onCaptureAlignment={handleAlignmentCapture}

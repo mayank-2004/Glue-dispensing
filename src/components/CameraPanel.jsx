@@ -17,11 +17,11 @@ export default function CameraPanel({
   nozzleDia,
   setNozzleDia,
   qualityController,
-  onCaptureAlignment, // function(index: 1|2)
-  alignmentInfo,      // { p1: {x,y}, p2: {x,y}, status: '...' }
-  machinePosition,    // Current machine coordinates {x,y,z}
-  onUpdateFiducials,  // function(newFiducials)
-  activeBoardName,      // string for logging
+  onCaptureAlignment,
+  alignmentInfo,
+  machinePosition,
+  onUpdateFiducials,
+  activeBoardName,
   panelBoards = [],
   setPanelBoards,
   pixelsPerMm,
@@ -33,8 +33,6 @@ export default function CameraPanel({
   const rafRef = useRef(0);
   const machinePositionRef = useRef(machinePosition);
 
-  // Camera-to-Nozzle offset: how far to jog after fiducial detection so the nozzle
-  // aligns over the detected fiducial center instead of the camera crosshair.
   // Formula: ΔX = machine − crosshair,  ΔY = machine − crosshair
   const [cameraOffset, setCameraOffset] = useState(() => {
     try { return JSON.parse(localStorage.getItem("cameraOffset") || "null") || { dx: 0, dy: 0 }; }
@@ -64,10 +62,7 @@ export default function CameraPanel({
       const { targetMachine, padCenter } = e.detail;
       console.log(`[Auto-Align] Triggered for Pad. Waiting for initial translation to complete...`);
 
-      // Wait for G0 travel to finish. 
-      // A full closed-loop system would listen for an 'ok' state machine, but 2000ms is a safe generic buffer for short PCB hops.
       await new Promise(r => setTimeout(r, 2000));
-
       if (videoRef.current && streamOn) {
         console.log(`[Auto-Align] Camera stabilized. Scanning for component centroid...`);
         const result = await fiducialVisionDetector.detectCenterFeature(videoRef.current);
@@ -85,7 +80,6 @@ export default function CameraPanel({
             if (window.serial && window.serial.writeLine) {
               for (const cmd of cmds) await window.serial.writeLine(cmd);
 
-              // Optional visual feedback ping
               const targetU = (videoRef.current.clientWidth || 640) / 2 + pixelDx;
               const targetV = (videoRef.current.clientHeight || 480) / 2 - pixelDy;
 
@@ -113,13 +107,6 @@ export default function CameraPanel({
   const [measureMode, setMeasureMode] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
 
-  // const [invertCameraX, setInvertCameraX] = useState(() => localStorage.getItem("camInvertX") === "true");
-  // const [invertCameraY, setInvertCameraY] = useState(() => localStorage.getItem("camInvertY") === "true");
-
-  // useEffect(() => { localStorage.setItem("camInvertX", invertCameraX); }, [invertCameraX]);
-  // useEffect(() => { localStorage.setItem("camInvertY", invertCameraY); }, [invertCameraY]);
-
-  // Use a Ref for vision results so the 60fps Animation Loop can always read the latest data without stale closures
   const visionResultRef = useRef(null);
 
   const [visionResult, setVisionResultState] = useState(null);
@@ -156,14 +143,12 @@ export default function CameraPanel({
     const handleAutoAlign = async (e) => {
       const { targetMachine, padCenter } = e.detail;
 
-      // 1. Wait a moment for the G0 move to fully finish physically 
       await new Promise(r => setTimeout(r, 1200));
 
       if (!padDetector || !streamOn) return;
       setAutoDetecting(true);
       try {
-        // Find the pad near the crosshair
-        const pxmm = pixelsPerMm || 20; // fallback scale
+        const pxmm = pixelsPerMm || 20;
         const result = await padDetector.detectPad(padCenter, { width: 1, height: 1 }, pxmm);
         setVisionResult(result);
 
@@ -788,19 +773,22 @@ export default function CameraPanel({
           if (latestCb) latestCb(updatedFiducials);
         }
         // --- DYNAMIC OFFSET EVALUATION ---
-        // Formula: ΔX = machine - crosshair | ΔY = machine - crosshair
-        // The user's exact evaluation: the absolute machine coordinate minus the displayed visual target intersection.
         let autoDx = 0;
         let autoDy = 0;
 
         if (correctedFiducials.length > 0) {
           const detected = correctedFiducials[0];
-          // Replace mixed relative/absolute logic with pure physical optical vector to stop overshooting
-          const actualMatch = getMachineCoordinateFromPixel(detected.pixelPosition.x, detected.pixelPosition.y, videoWidth, videoHeight);
-
-          if (actualMatch) {
-            autoDx = actualMatch.dxMm;
-            autoDy = actualMatch.dyMm;
+          
+          // 1. Where the camera crosshair points on screen, stored in a variable
+          const crosshairCoord = getMachineCoordinateFromPixel(videoWidth / 2, videoHeight / 2, videoWidth, videoHeight);
+            
+          // 2. Detected fiducial coordinate value via camera vision stored in another variable
+          const detectedFidCoord = getMachineCoordinateFromPixel(detected.pixelPosition.x, detected.pixelPosition.y, videoWidth, videoHeight);
+            
+          if (crosshairCoord && detectedFidCoord) {
+            // 3. "camera crosshair coordinate value" subtracted from "detected fiducial coordinate value"
+            autoDx = detectedFidCoord.x - crosshairCoord.x;
+            autoDy = detectedFidCoord.y - crosshairCoord.y;
 
             autoDx = parseFloat(autoDx.toFixed(3));
             autoDy = parseFloat(autoDy.toFixed(3));
@@ -1052,33 +1040,27 @@ export default function CameraPanel({
           });
 
           // --- DYNAMIC OFFSET EVALUATION FOR CONTINUOUS TRACKING ---
-          // Evaluates dynamically on every successful frame (like the snapshot mode)
           if (result.fiducials.length > 0) {
             const detected = result.fiducials[0];
-            const crosshairData = getMachineCoordinateFromPixel(videoWidth / 2, videoHeight / 2, videoWidth, videoHeight);
-            const actualMatch = getMachineCoordinateFromPixel(detected.pixelPosition.x, detected.pixelPosition.y, videoWidth, videoHeight);
-
-            if (crosshairData && actualMatch) {
-              const originOffset = latestPropsRef.current.effectiveOrigin || { x: 0, y: 0 };
-              
-              const crosshairTargetX = crosshairData.x - originOffset.x;
-              const crosshairTargetY = crosshairData.y - originOffset.y;
-
-              const machineX = actualMatch.x;
-              const machineY = actualMatch.y;
-
-              // Formula: machine coordinate value - crosshair intersection value
-              let autoDx = machineX - crosshairTargetX;
-              let autoDy = machineY - crosshairTargetY;
+            
+            // 1. Where the camera crosshair points on screen, stored in a variable
+            const crosshairCoord = getMachineCoordinateFromPixel(videoWidth / 2, videoHeight / 2, videoWidth, videoHeight);
+            
+            // 2. Detected fiducial coordinate value via camera vision stored in another variable
+            const detectedFidCoord = getMachineCoordinateFromPixel(detected.pixelPosition.x, detected.pixelPosition.y, videoWidth, videoHeight);
+            
+            if (crosshairCoord && detectedFidCoord) {
+              // 3. "camera crosshair coordinate value" subtracted from "detected fiducial coordinate value"
+              let autoDx = detectedFidCoord.x - crosshairCoord.x;
+              let autoDy = detectedFidCoord.y - crosshairCoord.y;
 
               autoDx = parseFloat(autoDx.toFixed(3));
               autoDy = parseFloat(autoDy.toFixed(3));
 
               // 1. Update UI section automatically
               setCameraOffset({ dx: autoDx, dy: autoDy });
-              // console.log("Auto offset", autoDx, autoDy);
 
-              // 2. Automatically jog nozzle into position
+              // 4. Then the head should move with the offset value calculated
               if (Math.abs(autoDx) > 0.005 || Math.abs(autoDy) > 0.005) {
                 jogCameraToNozzle({ dx: autoDx, dy: autoDy });
               }
@@ -1124,7 +1106,7 @@ export default function CameraPanel({
   // Called once after a successful one-shot fiducial detection.
   const jogCameraToNozzle = async (offset) => {
     if (!offset || (offset.dx === 0 && offset.dy === 0)) return;
-    console.log("Offset:", offset);
+    // console.log("Offset:", offset);
     const cmds = jogRel({ dx: offset.dx, dy: offset.dy, feed: 1000 });
     if (window.serial && window.serial.writeLine) {
       for (const cmd of cmds) await window.serial.writeLine(cmd);
@@ -1301,12 +1283,12 @@ export default function CameraPanel({
 
       <div className="camera-controls-row" style={{ marginTop: 12 }}>
         {/* Added Lens Calibration Wizard to the sidebar */}
-        <LensCalibration
+        {/* <LensCalibration
           pixelsPerMm={pixelsPerMm}
           setPixelsPerMm={setPixelsPerMm}
           machinePosition={machinePosition}
           visionResult={visionResult}
-        />
+        /> */}
 
         {/* <div className="section" style={{ border: '1px solid #444', borderRadius: '4px', marginBottom: '12px', padding: '12px', background: '#2c2e33' }}>
           <legend style={{ color: '#007bff', fontWeight: 'bold', marginBottom: 8 }}>Mini Jog Controls</legend>

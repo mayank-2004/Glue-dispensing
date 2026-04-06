@@ -14,7 +14,8 @@ This is a high-performance **React + Electron** application for controlling a 3-
 *   **Dynamic Speed Profiles**: Automatically adjusts machine speeds based on pad size:
     *   *Micro Pads* (<0.5mm): Slow, precise movements (6000mm/min travel).
     *   *Large Pads* (>4mm): High-speed operation (12000mm/min travel).
-*   **Pressure Control**: Automated pressure and dwell time calculation based on pad area and glue viscosity (Low/Medium/High).
+*   **Geometric Volume Mapping**: Parses native Gerber shapes (Circle, Rectangle, Obround) to mathematically calculate true pad surface area (mm²).
+*   **Proportional Dwell Control**: Linearly scales the glue dispense dwell time exactly proportional to the physical pad area, ensuring perfect fluid volume control.
 *   **Path Optimization**: Uses "Nearest Neighbor" and collision-aware routing to minimize travel time.
 
 ### 🏭 Production Batch Processing
@@ -28,7 +29,7 @@ This is a high-performance **React + Electron** application for controlling a 3-
     *   Multi-select support for custom path planning.
     *   Live machine position tracking.
 *   **Dedicated Control Panels**:
-    *   **Automated Panel**: Main workflow controller.
+    *   **Automated Panel**: Main workflow controller featuring a Live **Dispense Sequence Preview** (visually confirms calculated mathematical pad areas and dwell timings before execution).
     *   **Manual Jog**: Precise axis control with Z-axis safety.
     *   **Serial Terminal**: Direct G-code communication.
 

@@ -237,7 +237,12 @@ export default function AutomatedDispensingPanel({
 
           const cmds = dispensePoint({
             x: p.x, y: p.y,
-            zWork: 0.1, zSafe: 6,
+            // Read bed leveling height settings from BedCalibrationPanel localStorage
+            zGapAboveBed: parseFloat(localStorage.getItem('dispensingGap') || '0.1'),
+            zLiftAboveBed: parseFloat(localStorage.getItem('liftHeight') || '5'),
+            // Fallback (used when no bed mesh is calibrated)
+            zWork: parseFloat(localStorage.getItem('dispensingGap') || '0.1'),
+            zSafe: parseFloat(localStorage.getItem('liftHeight') || '5'),
             feedXY: speedSettings.travelSpeed || 6000,
             feedZ: speedSettings.dispenseSpeed || 300,
             pressure: pressure,
@@ -360,13 +365,49 @@ export default function AutomatedDispensingPanel({
           </div>
         </div>
 
-        {/* Board Info */}
+        {/* Dispense Sequence Preview & Board Info */}
         {(currentBoardSize || boardOutline) && (
-          <div className="box">
-            <div className="grid2">
-              <span>Board: {(currentBoardSize?.width || 0).toFixed(1)} x {(currentBoardSize?.height || 0).toFixed(1)}mm </span> <br />
-              <span>Pads: {activeSequence.length}</span>
+          <div className="box" style={{ marginTop: '12px' }}>
+            <div className="flex-row" style={{ justifyContent: 'space-between', marginBottom: '8px' }}>
+              <span><strong>PCB Size:</strong> {(currentBoardSize?.width || 0).toFixed(1)} x {(currentBoardSize?.height || 0).toFixed(1)}mm </span>
+              <span><strong>Total Glue Drops:</strong> {activeSequence.length}</span>
             </div>
+            
+            {activeSequence.length > 0 && (
+              <details>
+                <summary style={{ cursor: 'pointer', fontWeight: 'bold', color: '#0056b3' }}>
+                  👀 View Mathematical Volume Mapping & Timings
+                </summary>
+                <div style={{ maxHeight: '250px', overflowY: 'auto', marginTop: '8px', border: '1px solid #ddd' }}>
+                  <table className="kv small" style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse' }}>
+                    <thead style={{ position: 'sticky', top: 0, background: '#f8f9fa', zIndex: 1 }}>
+                      <tr>
+                        <th style={{ padding: '4px 8px', borderBottom: '1px solid #ccc' }}>#</th>
+                        <th style={{ padding: '4px 8px', borderBottom: '1px solid #ccc' }}>Shape</th>
+                        <th style={{ padding: '4px 8px', borderBottom: '1px solid #ccc' }}>Dimensions (mm)</th>
+                        <th style={{ padding: '4px 8px', borderBottom: '1px solid #ccc' }}>Exact Area (mm²)</th>
+                        <th style={{ padding: '4px 8px', borderBottom: '1px solid #ccc', color: '#d32f2f' }}>Dwell (ms)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {activeSequence.map((pad, idx) => {
+                        const area = dispensingSequencer.calculatePadArea(pad);
+                        const dwell = dispensingSequencer.calculateDwellTime(pad, { customDwellTime: baseDwellTime });
+                        return (
+                          <tr key={idx} style={{ borderBottom: '1px solid #eee' }}>
+                            <td style={{ padding: '4px 8px' }}>{idx + 1}</td>
+                            <td style={{ padding: '4px 8px' }}>{pad.isSubDot ? 'SubDot' : (pad.shape || 'Rect')}</td>
+                            <td style={{ padding: '4px 8px' }}>{(pad.width||0).toFixed(2)} × {(pad.height||0).toFixed(2)}</td>
+                            <td style={{ padding: '4px 8px' }}>{area.toFixed(3)}</td>
+                            <td style={{ padding: '4px 8px', fontWeight: 'bold', color: '#d32f2f' }}>{dwell}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            )}
           </div>
         )}
 

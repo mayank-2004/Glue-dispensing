@@ -271,28 +271,63 @@ export class DispensingSequencer {
   }
 
   /**
-   * Calculate pressure for specific pad based on size
+   * Mathematically calculate exact surface area depending on Gerber pad shape
+   */
+  calculatePadArea(pad) {
+    if (pad.isSubDot) {
+      // Generate sub-dots use a standard bounding box calculation based on their reduced pitch
+      return (pad.width || 1) * (pad.height || 1);
+    }
+    
+    const w = pad.width || 0;
+    const h = pad.height || 0;
+    const shape = (pad.shape || '').toLowerCase();
+
+    if (shape === 'circle' && w > 0) {
+      const r = w / 2;
+      return Math.PI * r * r;
+    } else if (shape === 'rect' || shape === 'square' || shape === 'rectangle') {
+      return w * h;
+    } else if (shape === 'obround' || shape === 'oval') {
+      const r = Math.min(w, h) / 2;
+      const rectLength = Math.max(w, h) - (2 * r);
+      return (rectLength * (2 * r)) + (Math.PI * r * r);
+    } else {
+      // SMT generic fallback bounding box
+      return (w || 1) * (h || 1);
+    }
+  }
+
+  /**
+   * Calculate pressure for specific pad based on geometric area
    */
   calculatePadPressure(pad, pressureSettings) {
-    const area = (pad.width || 1) * (pad.height || 1);
+    const area = this.calculatePadArea(pad);
     const basePressure = pressureSettings.customPressure || 25;
 
-    // Adjust pressure based on pad area
+    // Adjust pressure based on mathematically precise pad area
     if (area < 0.5) return Math.max(15, basePressure - 5);
     if (area > 2.0) return Math.min(40, basePressure + 5);
     return basePressure;
   }
 
   /**
-   * Calculate dwell time for specific pad
+   * Option A: Scale Dwell Time Mathematically Proportional to Pad Surface Area
    */
   calculateDwellTime(pad, pressureSettings) {
-    const area = (pad.width || 1) * (pad.height || 1);
+    const area = this.calculatePadArea(pad);
     const baseDwell = pressureSettings.customDwellTime || 120;
+    
+    // Assume the UI "Base Dwell Time" targets a standardized 1.0 mm² pad size reference.
+    const referenceAreaSqMm = 1.0; 
+    
+    // Precise linear mathematical scaling based on physical area
+    let calculatedDwell = baseDwell * (area / referenceAreaSqMm);
 
-    // Adjust dwell time based on pad area
-    if (area < 0.5) return Math.max(80, baseDwell - 20);
-    if (area > 2.0) return Math.min(200, baseDwell + 30);
-    return baseDwell;
+    // Provide sensible physical bounds to prevent machine stutters or ridiculous giant glue puddles
+    calculatedDwell = Math.max(20, calculatedDwell);       // absolute minimum 20ms valve fire time
+    calculatedDwell = Math.min(baseDwell * 5, calculatedDwell); // maximum 5x the base time
+    
+    return Math.round(calculatedDwell);
   }
 }

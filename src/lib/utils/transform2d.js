@@ -36,7 +36,6 @@ export function fitSimilarity(designPts, machinePts) {
   const ty = cm.y - (c * cd.x + d * cd.y);
 
   return { type: "similarity", a, b, c, d, tx, ty, scale, theta };
-  return { type: "similarity", a, b, c, d, tx, ty, scale, theta };
 }
 
 export function fitTranslation(designPts, machinePts) {
