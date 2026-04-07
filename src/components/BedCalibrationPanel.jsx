@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
-export default function BedCalibrationPanel({ nozzleDia, machinePosition }) {
+export default function BedCalibrationPanel({ nozzleDia, machinePosition, boardOutline, getMachineCoords }) {
   const [mesh, setMesh] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem('bedLevelMesh')) || [
@@ -39,10 +39,44 @@ export default function BedCalibrationPanel({ nozzleDia, machinePosition }) {
   useEffect(() => { localStorage.setItem('dispensingGap', String(dispensingGap)); }, [dispensingGap]);
   useEffect(() => { localStorage.setItem('liftHeight',    String(liftHeight)); }, [liftHeight]);
 
-  // ──────────────────────────────────────────────────
-  // Core: wait for next M119 probe result (with timeout)
-  // Returns true if TRIGGERED, false if open/timeout
-  // ──────────────────────────────────────────────────
+  const [edgeInset, setEdgeInset] = useState(() => parseFloat(localStorage.getItem('pcbProbeEdgeInset') || '5'));
+  useEffect(() => { localStorage.setItem('pcbProbeEdgeInset', String(edgeInset)); }, [edgeInset]);
+
+  const generatePCBPoints = () => {
+    if (!boardOutline) {
+      alert("Please load a Board Outline (Gerber) first.");
+      return;
+    }
+    if (!getMachineCoords) {
+      alert("Machine coordinate mapping not available.");
+      return;
+    }
+    const inset = Math.max(0, edgeInset);
+    const { minX, minY, maxX, maxY, centerX, centerY, width, height } = boardOutline;
+
+    // Reject if inset is too large
+    if (inset * 2 >= width || inset * 2 >= height) {
+      alert("Inset is too large for the PCB dimensions!");
+      return;
+    }
+
+    const designPts = [
+      { id: 'BL', name: 'PCB BL',  x: minX + inset, y: minY + inset },
+      { id: 'BR', name: 'PCB BR',  x: maxX - inset, y: minY + inset },
+      { id: 'TR', name: 'PCB TR',  x: maxX - inset, y: maxY - inset },
+      { id: 'TL', name: 'PCB TL',  x: minX + inset, y: maxY - inset },
+      { id: 'C',  name: 'PCB Center', x: centerX,   y: centerY }
+    ];
+
+    const newMesh = designPts.map(p => {
+      const g = getMachineCoords(p);
+      return { id: p.id, name: p.name, x: Number(g.x.toFixed(3)), y: Number(g.y.toFixed(3)), zParam: 0 };
+    });
+
+    setMesh(newMesh);
+    setStatusMsg(`Generated 5 probe points based on PCB outline (${width.toFixed(1)}x${height.toFixed(1)}mm) mapped to machine coordinates.`);
+  };
+
   const pollM119 = (timeoutMs = 600) => {
     return new Promise((resolve) => {
       const onTriggered = () => {
@@ -69,10 +103,6 @@ export default function BedCalibrationPanel({ nozzleDia, machinePosition }) {
     });
   };
 
-  // ──────────────────────────────────────────────────
-  // Probe a single point: step down until triggered
-  // Returns probed Z or null if failed
-  // ──────────────────────────────────────────────────
   const probeOnePoint = async (serial, cornerName) => {
     const msPerStep = Math.ceil((stepSize / probeSpeed) * 60 * 1000) + 150;
     let currentZ = probeStartZ;
@@ -280,10 +310,25 @@ export default function BedCalibrationPanel({ nozzleDia, machinePosition }) {
 
       {/* Mesh Table */}
       <div style={{ background: '#1a1a1a', borderRadius: '8px', padding: '12px', marginBottom: '14px', border: '1px solid #333' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-          <h4 style={{ margin: 0, fontSize: '0.9em', color: '#aaa' }}>Probe Points</h4>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
+          <div>
+            <h4 style={{ margin: 0, fontSize: '0.9em', color: '#aaa', marginBottom: '4px' }}>Probe Points</h4>
+            {boardOutline && getMachineCoords && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px' }}>
+                <button onClick={generatePCBPoints} disabled={isCalibrating}
+                  style={{ fontSize: '0.75em', padding: '4px 10px', background: '#0d47a1', border: '1px solid #1565c0', color: 'white', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>
+                  🎯 Auto-Generate PCB Probe Points
+                </button>
+                <div style={{ fontSize: '0.75em', color: '#888', display: 'flex', alignItems: 'center' }}>
+                  Inset: <input type="number" value={edgeInset} step="1" min="0" max="20" disabled={isCalibrating}
+                    onChange={e => setEdgeInset(parseFloat(e.target.value) || 0)}
+                    style={{ width: '40px', padding: '2px', marginLeft: '4px', background: '#222', color: 'white', border: '1px solid #444', borderRadius: '3px' }} /> mm
+                </div>
+              </div>
+            )}
+          </div>
           <button onClick={clearMesh} disabled={isCalibrating}
-            style={{ fontSize: '0.75em', padding: '3px 8px', background: '#333', border: '1px solid #555', color: '#888', borderRadius: '4px', cursor: 'pointer' }}>
+            style={{ fontSize: '0.75em', padding: '3px 8px', background: '#333', border: '1px solid #555', color: '#888', borderRadius: '4px', cursor: 'pointer', height: 'fit-content' }}>
             Clear Mesh
           </button>
         </div>

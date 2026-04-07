@@ -54,6 +54,8 @@ export default function AutomatedDispensingPanel({
   const [safeTravelHeight, setSafeTravelHeight] = useState(5.0);
   const [viscosity, setViscosity] = useState('medium'); // low, medium, high
   const [baseDwellTime, setBaseDwellTime] = useState(120);
+  const [useVisualServoing, setUseVisualServoing] = useState(false);
+  const [lastAlignResult, setLastAlignResult] = useState(null); // track last correction for display
 
   // Apply viscosity presets automatically when changed
   useEffect(() => {
@@ -142,6 +144,31 @@ export default function AutomatedDispensingPanel({
       ackQueue.current.pop();
       throw e;
     }
+  };
+
+  // ── Visual Servoing Helper ──
+  // Fires camera-auto-align-pad, awaits camera-align-complete (or timeout)
+  // Returns { corrected, dx, dy } from CameraPanel
+  const waitForCameraAlign = (padCenter) => {
+    return new Promise((resolve) => {
+      const onComplete = (e) => {
+        cleanup();
+        setLastAlignResult(e.detail);
+        resolve(e.detail);
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        console.warn('[Visual Servo] Timeout — no camera-align-complete received within 1.5s');
+        resolve({ corrected: false, dx: 0, dy: 0, reason: 'timeout' });
+      }, 1500);
+      const cleanup = () => {
+        window.removeEventListener('camera-align-complete', onComplete);
+        clearTimeout(timer);
+      };
+      window.addEventListener('camera-align-complete', onComplete, { once: true });
+      // Fire the event AFTER listener is registered
+      window.dispatchEvent(new CustomEvent('camera-auto-align-pad', { detail: { padCenter } }));
+    });
   };
 
   // --- Flow Logic ---
@@ -235,17 +262,47 @@ export default function AutomatedDispensingPanel({
           const configDwell = pressureSettings.customDwellTime || baseDwellTime;
           const dwell = dispensingSequencer.calculateDwellTime(p, { customDwellTime: configDwell });
 
+          const zGap  = parseFloat(localStorage.getItem('dispensingGap') || '0.1');
+          const zLift = parseFloat(localStorage.getItem('liftHeight')    || '5');
+          const feedXY = speedSettings.travelSpeed  || 6000;
+          const feedZ  = speedSettings.dispenseSpeed || 300;
+
+          // ── Look-Then-Move Visual Servoing ──
+          let correctedX = p.x;
+          let correctedY = p.y;
+
+          if (useVisualServoing) {
+            const tdx = toolOffset?.dx || 0;
+            const tdy = toolOffset?.dy || 0;
+
+            // Phase 1: Move CAMERA over the expected pad position
+            const camX = p.x - tdx;
+            const camY = p.y - tdy;
+            await sendGcodeWait(`G0 X${camX.toFixed(3)} Y${camY.toFixed(3)} F${feedXY}`);
+            await sendGcodeWait('M400'); // wait for move to finish
+
+            // Phase 2: Camera detects pad → returns correction (ex, ey)
+            const alignResult = await waitForCameraAlign({ x: p.x, y: p.y });
+
+            if (alignResult.corrected) {
+              correctedX = p.x + alignResult.dx;
+              correctedY = p.y + alignResult.dy;
+              console.log(`[Visual Servo] Pad ${i+1}: correction dx=${alignResult.dx.toFixed(3)} dy=${alignResult.dy.toFixed(3)}`);
+            } else {
+              console.warn(`[Visual Servo] Pad ${i+1}: no correction (${alignResult.reason || 'unknown'}), using nominal position`);
+            }
+          }
+
+          // Phase 3: Dispense at corrected (or nominal) position
           const cmds = dispensePoint({
-            x: p.x, y: p.y,
-            // Read bed leveling height settings from BedCalibrationPanel localStorage
-            zGapAboveBed: parseFloat(localStorage.getItem('dispensingGap') || '0.1'),
-            zLiftAboveBed: parseFloat(localStorage.getItem('liftHeight') || '5'),
-            // Fallback (used when no bed mesh is calibrated)
-            zWork: parseFloat(localStorage.getItem('dispensingGap') || '0.1'),
-            zSafe: parseFloat(localStorage.getItem('liftHeight') || '5'),
-            feedXY: speedSettings.travelSpeed || 6000,
-            feedZ: speedSettings.dispenseSpeed || 300,
-            pressure: pressure,
+            x: correctedX, y: correctedY,
+            zGapAboveBed: zGap,
+            zLiftAboveBed: zLift,
+            zWork: zGap,
+            zSafe: zLift,
+            feedXY,
+            feedZ,
+            pressure,
             dwellMs: dwell
           });
 
@@ -331,6 +388,30 @@ export default function AutomatedDispensingPanel({
             <input type="checkbox" checked={useSafePathPlanning} onChange={e => setUseSafePathPlanning(e.target.checked)} />
             Safe Path Planning
           </label>
+
+          {/* Visual Servoing Toggle */}
+          <label style={{ display: 'block', marginBottom: '4px' }}>
+            <input type="checkbox" checked={useVisualServoing} onChange={e => setUseVisualServoing(e.target.checked)} />
+            {' '}👁️ Visual Servoing (Camera Auto-Center)
+          </label>
+          {useVisualServoing && (
+            <div style={{ marginLeft: '20px', marginBottom: '8px', fontSize: '0.82em', padding: '6px 10px', background: '#0d1926', border: '1px solid #1565c0', borderRadius: '4px' }}>
+              <div style={{ color: '#64b5f6', marginBottom: '4px' }}>
+                Look-Then-Move active — camera centering before each pad.
+              </div>
+              <div style={{ color: '#888' }}>
+                Tool offset: dx=<strong style={{ color: '#ccc' }}>{(toolOffset?.dx || 0).toFixed(2)}</strong> dy=<strong style={{ color: '#ccc' }}>{(toolOffset?.dy || 0).toFixed(2)}</strong> mm
+              </div>
+              {lastAlignResult && (
+                <div style={{ marginTop: '4px', color: lastAlignResult.corrected ? '#00c49a' : '#ffaa00' }}>
+                  Last: {lastAlignResult.corrected
+                    ? `✅ dx=${lastAlignResult.dx?.toFixed(3)} dy=${lastAlignResult.dy?.toFixed(3)} mm`
+                    : `⚠️ Skip (${lastAlignResult.reason})`}
+                </div>
+              )}
+            </div>
+          )}
+
           <hr style={{ borderColor: '#444', margin: '12px 0' }} />
           <h5>G-Code Generation Config</h5>
           <div className="grid2" style={{ gap: '8px', fontSize: '0.9em' }}>

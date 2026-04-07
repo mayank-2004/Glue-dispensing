@@ -143,9 +143,13 @@ export default function CameraPanel({
     const handleAutoAlign = async (e) => {
       const { targetMachine, padCenter } = e.detail;
 
-      await new Promise(r => setTimeout(r, 1200));
+      // Brief settle time after machine arrives at camera-over-pad position
+      await new Promise(r => setTimeout(r, 800));
 
-      if (!padDetector || !streamOn) return;
+      if (!padDetector || !streamOn) {
+        window.dispatchEvent(new CustomEvent('camera-align-complete', { detail: { corrected: false, dx: 0, dy: 0, reason: 'camera_off' } }));
+        return;
+      }
       setAutoDetecting(true);
       try {
         const pxmm = pixelsPerMm || 20;
@@ -156,22 +160,35 @@ export default function CameraPanel({
           console.log('[Auto-Align] Pad detected at offset:', result.offset);
 
           const dxMm = result.offset.x;
-          // IMPORTANT: If offset > 3mm, it's likely a false positive (detecting neighboring pad)
-          const distMm = Math.hypot(dxMm, result.offset.y);
+          const dyMm = result.offset.y;
+          const distMm = Math.hypot(dxMm, dyMm);
+
           if (distMm > 0.02 && distMm < 3.0) {
-            const cmds = jogRel({ dx: dxMm, dy: result.offset.y, feed: 500 });
+            const cmds = jogRel({ dx: dxMm, dy: dyMm, feed: 500 });
             if (window.serial && window.serial.writeLine) {
               for (const line of cmds) await window.serial.writeLine(line);
-              console.log('[Auto-Align] Corrected precision by:', dxMm.toFixed(3), result.offset.y.toFixed(3));
+              console.log(`[Auto-Align] ✅ Corrected by dx=${dxMm.toFixed(3)} dy=${dyMm.toFixed(3)} mm`);
+              window.dispatchEvent(new CustomEvent('camera-align-complete', {
+                detail: { corrected: true, dx: dxMm, dy: dyMm }
+              }));
             }
           } else {
-            console.warn('[Auto-Align] Pad correction rejected due to out-of-bounds distance:', distMm);
+            console.warn('[Auto-Align] Correction rejected — out-of-bounds distance:', distMm.toFixed(3), 'mm');
+            window.dispatchEvent(new CustomEvent('camera-align-complete', {
+              detail: { corrected: false, dx: 0, dy: 0, reason: 'out_of_bounds' }
+            }));
           }
         } else {
-          console.warn('[Auto-Align] No valid rectangular pad contours detected near crosshair.');
+          console.warn('[Auto-Align] No valid pad contour detected near crosshair.');
+          window.dispatchEvent(new CustomEvent('camera-align-complete', {
+            detail: { corrected: false, dx: 0, dy: 0, reason: 'no_detection' }
+          }));
         }
       } catch (err) {
         console.error('[Auto-Align] Vision failed:', err);
+        window.dispatchEvent(new CustomEvent('camera-align-complete', {
+          detail: { corrected: false, dx: 0, dy: 0, reason: 'error' }
+        }));
       } finally {
         setAutoDetecting(false);
       }

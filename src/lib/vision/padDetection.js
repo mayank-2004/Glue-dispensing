@@ -249,10 +249,24 @@ export class PadDetector {
     };
   }
 
-  // Calculate detection confidence
+  // Calculate detection confidence based on real edge strength at detected position
   calculateConfidence(searchArea, detectedPos) {
-    // Simple confidence based on edge strength at detected position
-    return Math.min(1.0, Math.random() * 0.3 + 0.7); // Placeholder
+    if (!detectedPos || !searchArea || !searchArea.data || searchArea.data.length === 0) return 0;
+
+    // Sample pixels near the detected position and measure local contrast
+    const nearby = searchArea.data.filter(p =>
+      Math.hypot(p.x - detectedPos.u, p.y - detectedPos.v) < 8
+    );
+    if (nearby.length < 4) return 0.5; // not enough samples
+
+    // Compute mean and std-dev of intensity → high contrast = high confidence
+    const mean = nearby.reduce((s, p) => s + p.intensity, 0) / nearby.length;
+    const variance = nearby.reduce((s, p) => s + (p.intensity - mean) ** 2, 0) / nearby.length;
+    const stdDev = Math.sqrt(variance);
+
+    // stdDev of 0 = flat region (no edge) → confidence 0
+    // stdDev of 80+ = strong edge → confidence 1
+    return Math.min(1.0, stdDev / 80);
   }
 
   // Update homography matrix

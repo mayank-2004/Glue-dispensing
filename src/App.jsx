@@ -1612,6 +1612,18 @@ export default function App() {
     };
   }, [fiducials]);
 
+  const getMachineCoords = useCallback((designPt) => {
+    if (applyXf && xf) {
+      return applyTransform(xf, designPt);
+    } else if (effectiveOrigin) {
+      return {
+        x: designPt.x - effectiveOrigin.x,
+        y: designPt.y - effectiveOrigin.y
+      };
+    }
+    return { x: designPt.x, y: designPt.y };
+  }, [applyXf, xf, effectiveOrigin]);
+
   // Component navigation items
   const componentNavItems = [
     { id: 'SerialPanel', label: 'Serial Panel' },
@@ -1758,7 +1770,12 @@ export default function App() {
         />
 
         {/* Auto-Bed Leveling / Surface Calibration */}
-        <BedCalibrationPanel nozzleDia={0.6} machinePosition={livePreview.machinePosition} />
+        <BedCalibrationPanel
+          nozzleDia={0.6}
+          machinePosition={livePreview.machinePosition}
+          boardOutline={boardOutline}
+          getMachineCoords={getMachineCoords}
+        />
 
         <div style={{ color: '#9aa0a6', margin: '0 0 12px 0', border: '1px solid #9aa0a6', padding: '4px 12px 6px 12px', borderRadius: '4px' }}>
           Components
@@ -1901,7 +1918,7 @@ export default function App() {
                   }
 
                   if (targetMachine) {
-                    const cmd = `G0 X${targetMachine.x.toFixed(3)} Y${targetMachine.y.toFixed(3)}`;
+                    const cmd = `G0 X${targetMachine.x.toFixed(3)} Y${targetMachine.y.toFixed(3)} F9000`;
                     if (confirm(`Move machine to X${targetMachine.x.toFixed(3)} Y${targetMachine.y.toFixed(3)}?\n(Based on Ref: ${referenceType === 'origin' ? 'Gerber (0,0)' : referencePoint?.id})`)) {
                       console.log('Moving to reference:', cmd);
                       if (window.serial && window.serial.writeLine) {
