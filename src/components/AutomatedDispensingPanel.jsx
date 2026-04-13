@@ -2,6 +2,9 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { header, home, moveAbs, dispensePoint, jogRel } from "../lib/motion/gcode.js";
 import { applyTransform } from "../lib/utils/transform2d.js";
 import "./AutomatedDispensingPanel.css";
+import { buildJobGlueSummary, GlueStore } from '../lib/glue/glueTracker.js';
+import { getZOffsetForPoint } from './BedCalibrationPanel.jsx';
+import GlueGauge from './GlueGauge.jsx';
 
 export default function AutomatedDispensingPanel({
   side = 'top',
@@ -14,7 +17,7 @@ export default function AutomatedDispensingPanel({
   pressureSettings,
   speedSettings,
   boardOutline,
-  useSafePathPlanning,
+  useSafePathPlanning = false,
   setUseSafePathPlanning,
   safePathPlanner,
   onStartJob,
@@ -39,6 +42,10 @@ export default function AutomatedDispensingPanel({
   const [isJobRunning, setIsJobRunning] = useState(false);
   const [jobMode, setJobMode] = useState('single'); // 'single' or 'batch'
 
+  const [nozzleDia, setNozzleDia] = useState(() => parseFloat(localStorage.getItem('nozzleDia') || '0.6'));
+  const [glueStock, setGlueStock] = useState(() => GlueStore.getStock());
+  const [glueSummary, setGlueSummary] = useState(null);
+
   // Advanced Flow State
   const [jobStage, setJobStage] = useState('idle'); // idle, homing, loading, registering, dispensing, finished
   const [machineStatus, setMachineStatus] = useState('idle');
@@ -54,8 +61,6 @@ export default function AutomatedDispensingPanel({
   const [safeTravelHeight, setSafeTravelHeight] = useState(5.0);
   const [viscosity, setViscosity] = useState('medium'); // low, medium, high
   const [baseDwellTime, setBaseDwellTime] = useState(120);
-  const [useVisualServoing, setUseVisualServoing] = useState(false);
-  const [lastAlignResult, setLastAlignResult] = useState(null); // track last correction for display
 
   // Apply viscosity presets automatically when changed
   useEffect(() => {
@@ -77,8 +82,6 @@ export default function AutomatedDispensingPanel({
   const refPoint = referencePoint || selectedOrigin;
   const activeSequence = useSafePathPlanning ? safeSequence : dispensingSequence;
 
-
-
   // Refs for async access
   const xfRef = useRef(xf);
   const fiducialsRef = useRef(fiducials);
@@ -88,6 +91,7 @@ export default function AutomatedDispensingPanel({
 
   useEffect(() => { xfRef.current = xf; }, [xf]);
   useEffect(() => { fiducialsRef.current = fiducials; }, [fiducials]);
+  useEffect(() => { localStorage.setItem('nozzleDia', String(nozzleDia)); }, [nozzleDia]);
 
   // Stabilize board dimension calculation
   const currentBoardSize = useMemo(() => {
@@ -102,6 +106,20 @@ export default function AutomatedDispensingPanel({
     }
     return boardOutline;
   }, [fiducials, boardOutline]);
+
+  useEffect(() => {
+    if (!activeSequence || activeSequence.length === 0) {
+      setGlueSummary(null);
+      return;
+    }
+    const summary = buildJobGlueSummary(
+      activeSequence,
+      nozzleDia,
+      GlueStore.getStock(),
+      GlueStore.getUsed(),
+    );
+    setGlueSummary(summary);
+  }, [activeSequence, nozzleDia, glueStock]);
 
   // Position & ACK listener
   useEffect(() => {
@@ -146,31 +164,6 @@ export default function AutomatedDispensingPanel({
     }
   };
 
-  // ── Visual Servoing Helper ──
-  // Fires camera-auto-align-pad, awaits camera-align-complete (or timeout)
-  // Returns { corrected, dx, dy } from CameraPanel
-  const waitForCameraAlign = (padCenter) => {
-    return new Promise((resolve) => {
-      const onComplete = (e) => {
-        cleanup();
-        setLastAlignResult(e.detail);
-        resolve(e.detail);
-      };
-      const timer = setTimeout(() => {
-        cleanup();
-        console.warn('[Visual Servo] Timeout — no camera-align-complete received within 1.5s');
-        resolve({ corrected: false, dx: 0, dy: 0, reason: 'timeout' });
-      }, 1500);
-      const cleanup = () => {
-        window.removeEventListener('camera-align-complete', onComplete);
-        clearTimeout(timer);
-      };
-      window.addEventListener('camera-align-complete', onComplete, { once: true });
-      // Fire the event AFTER listener is registered
-      window.dispatchEvent(new CustomEvent('camera-auto-align-pad', { detail: { padCenter } }));
-    });
-  };
-
   // --- Flow Logic ---
 
   const startJobFlow = async () => {
@@ -182,9 +175,8 @@ export default function AutomatedDispensingPanel({
     setIsJobRunning(true);
 
     try {
-      // User explicitly requested to remove G28 automatic homing on job start.
+      window.pauseSerialPolling = true;
       // The machine will simply start executing moves from its current registered position/origin.
-
       // M400 guarantees previous moves finished.
       await sendGcodeWait('M400');
 
@@ -198,8 +190,6 @@ export default function AutomatedDispensingPanel({
   };
 
   const proceedToRegistration = async () => {
-    // With multi-board support, alignment is now handled upfront in FiducialPanel/CameraPanel.
-    // Proceed directly to dispensing loop.
     setJobStage('dispensing');
     runDispenseLoop();
   };
@@ -211,9 +201,9 @@ export default function AutomatedDispensingPanel({
         throw new Error("No boards defined in panel configuration.");
       }
 
-      await sendGcodeWait('G21');
-      await sendGcodeWait('G90');
-      await sendGcodeWait('G1 Z6 F3000');
+      await sendGcodeWait('G21'); // Set units to millimeters
+      await sendGcodeWait('G90'); // Set to absolute positioning
+      await sendGcodeWait(`G1 Z${safeTravelHeight} F3000`); // Move to safe height
 
       const seq = activeSequence;
       const totalPoints = seq.length * panelBoards.length;
@@ -256,66 +246,40 @@ export default function AutomatedDispensingPanel({
           if (transform) {
             const tp = applyTransform(transform, p);
             p = { ...p, x: tp.x, y: tp.y };
+          } else {
+            // No transform: align manually using the effective origin
+            const ox = selectedOrigin ? selectedOrigin.x : (boardOutline ? boardOutline.minX : 0);
+            const oy = selectedOrigin ? selectedOrigin.y : (boardOutline ? boardOutline.minY : 0);
+            p = { ...p, x: p.x - ox, y: p.y - oy };
           }
 
           const pressure = pressureSettings.customPressure || 25;
           const configDwell = pressureSettings.customDwellTime || baseDwellTime;
           const dwell = dispensingSequencer.calculateDwellTime(p, { customDwellTime: configDwell });
 
-          const zGap  = parseFloat(localStorage.getItem('dispensingGap') || '0.1');
-          const zLift = parseFloat(localStorage.getItem('liftHeight')    || '5');
-          const feedXY = speedSettings.travelSpeed  || 6000;
-          const feedZ  = speedSettings.dispenseSpeed || 300;
-
-          // ── Look-Then-Move Visual Servoing ──
-          let correctedX = p.x;
-          let correctedY = p.y;
-
-          if (useVisualServoing) {
-            const tdx = toolOffset?.dx || 0;
-            const tdy = toolOffset?.dy || 0;
-
-            // Phase 1: Move CAMERA over the expected pad position
-            const camX = p.x - tdx;
-            const camY = p.y - tdy;
-            await sendGcodeWait(`G0 X${camX.toFixed(3)} Y${camY.toFixed(3)} F${feedXY}`);
-            await sendGcodeWait('M400'); // wait for move to finish
-
-            // Phase 2: Camera detects pad → returns correction (ex, ey)
-            const alignResult = await waitForCameraAlign({ x: p.x, y: p.y });
-
-            if (alignResult.corrected) {
-              correctedX = p.x + alignResult.dx;
-              correctedY = p.y + alignResult.dy;
-              console.log(`[Visual Servo] Pad ${i+1}: correction dx=${alignResult.dx.toFixed(3)} dy=${alignResult.dy.toFixed(3)}`);
-            } else {
-              console.warn(`[Visual Servo] Pad ${i+1}: no correction (${alignResult.reason || 'unknown'}), using nominal position`);
-            }
-          }
-
-          // Phase 3: Dispense at corrected (or nominal) position
+          const zCompensated = dispenseHeight + getZOffsetForPoint(p.x, p.y);
           const cmds = dispensePoint({
-            x: correctedX, y: correctedY,
-            zGapAboveBed: zGap,
-            zLiftAboveBed: zLift,
-            zWork: zGap,
-            zSafe: zLift,
-            feedXY,
-            feedZ,
-            pressure,
+            x: p.x, y: p.y,
+            zWork: dispenseHeight + getZOffsetForPoint(p.x, p.y),
+            zSafe: safeTravelHeight,
+            feedXY: speedSettings.travelSpeed || 6000,
+            feedZ: speedSettings.dispenseSpeed || 300,
+            pressure: pressure,
             dwellMs: dwell
           });
-
           for (const c of cmds) {
             await sendGcodeWait(c);
           }
         }
+        if (glueSummary) {
+          GlueStore.addUsed(glueSummary.totalVolUl);
+          setGlueStock(GlueStore.getStock()); // trigger GlueGauge re-read
+        }
       }
 
-      // Park
-      await sendGcodeWait('G1 Z10 F3000');
-      await sendGcodeWait('G1 X0 Y0 F5000');
-      await sendGcodeWait('M400');
+      await sendGcodeWait(`G1 Z${safeTravelHeight} F3000`); // Move to safe height
+      await sendGcodeWait('G1 X0 Y0 F5000'); // Move to home position
+      await sendGcodeWait('M400'); // Wait for all moves to complete
 
       alert("Job Complete!");
       if (onJobComplete) onJobComplete();
@@ -329,6 +293,8 @@ export default function AutomatedDispensingPanel({
       setJobStage('idle');
       setMachineStatus('idle');
       setIsJobRunning(false);
+    } finally {
+      window.pauseSerialPolling = false;
     }
   };
 
@@ -388,30 +354,6 @@ export default function AutomatedDispensingPanel({
             <input type="checkbox" checked={useSafePathPlanning} onChange={e => setUseSafePathPlanning(e.target.checked)} />
             Safe Path Planning
           </label>
-
-          {/* Visual Servoing Toggle */}
-          <label style={{ display: 'block', marginBottom: '4px' }}>
-            <input type="checkbox" checked={useVisualServoing} onChange={e => setUseVisualServoing(e.target.checked)} />
-            {' '}👁️ Visual Servoing (Camera Auto-Center)
-          </label>
-          {useVisualServoing && (
-            <div style={{ marginLeft: '20px', marginBottom: '8px', fontSize: '0.82em', padding: '6px 10px', background: '#0d1926', border: '1px solid #1565c0', borderRadius: '4px' }}>
-              <div style={{ color: '#64b5f6', marginBottom: '4px' }}>
-                Look-Then-Move active — camera centering before each pad.
-              </div>
-              <div style={{ color: '#888' }}>
-                Tool offset: dx=<strong style={{ color: '#ccc' }}>{(toolOffset?.dx || 0).toFixed(2)}</strong> dy=<strong style={{ color: '#ccc' }}>{(toolOffset?.dy || 0).toFixed(2)}</strong> mm
-              </div>
-              {lastAlignResult && (
-                <div style={{ marginTop: '4px', color: lastAlignResult.corrected ? '#00c49a' : '#ffaa00' }}>
-                  Last: {lastAlignResult.corrected
-                    ? `✅ dx=${lastAlignResult.dx?.toFixed(3)} dy=${lastAlignResult.dy?.toFixed(3)} mm`
-                    : `⚠️ Skip (${lastAlignResult.reason})`}
-                </div>
-              )}
-            </div>
-          )}
-
           <hr style={{ borderColor: '#444', margin: '12px 0' }} />
           <h5>G-Code Generation Config</h5>
           <div className="grid2" style={{ gap: '8px', fontSize: '0.9em' }}>
@@ -444,6 +386,15 @@ export default function AutomatedDispensingPanel({
               <input type="number" step="10" value={baseDwellTime} onChange={e => setBaseDwellTime(Number(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
             </label>
           </div>
+          <div style={{ marginTop: 14 }}>
+            <GlueGauge
+              summary={glueSummary}
+              nozzleDia={nozzleDia}
+              onNozzleDia={setNozzleDia}
+              onStockChange={(v) => { setGlueStock(v); }}
+              onRefill={(v) => { setGlueStock(v); }}
+            />
+          </div>
         </div>
 
         {/* Dispense Sequence Preview & Board Info */}
@@ -453,7 +404,7 @@ export default function AutomatedDispensingPanel({
               <span><strong>PCB Size:</strong> {(currentBoardSize?.width || 0).toFixed(1)} x {(currentBoardSize?.height || 0).toFixed(1)}mm </span>
               <span><strong>Total Glue Drops:</strong> {activeSequence.length}</span>
             </div>
-            
+
             {activeSequence.length > 0 && (
               <details>
                 <summary style={{ cursor: 'pointer', fontWeight: 'bold', color: '#0056b3' }}>
@@ -468,6 +419,8 @@ export default function AutomatedDispensingPanel({
                         <th style={{ padding: '4px 8px', borderBottom: '1px solid #ccc' }}>Dimensions (mm)</th>
                         <th style={{ padding: '4px 8px', borderBottom: '1px solid #ccc' }}>Exact Area (mm²)</th>
                         <th style={{ padding: '4px 8px', borderBottom: '1px solid #ccc', color: '#d32f2f' }}>Dwell (ms)</th>
+                        <th style={{ padding: '4px 8px', borderBottom: '1px solid #ccc', color: '#00c49a' }}>Dots</th>
+                        <th style={{ padding: '4px 8px', borderBottom: '1px solid #ccc', color: '#00c49a' }}>Vol (µL)</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -478,9 +431,15 @@ export default function AutomatedDispensingPanel({
                           <tr key={idx} style={{ borderBottom: '1px solid #eee' }}>
                             <td style={{ padding: '4px 8px' }}>{idx + 1}</td>
                             <td style={{ padding: '4px 8px' }}>{pad.isSubDot ? 'SubDot' : (pad.shape || 'Rect')}</td>
-                            <td style={{ padding: '4px 8px' }}>{(pad.width||0).toFixed(2)} × {(pad.height||0).toFixed(2)}</td>
+                            <td style={{ padding: '4px 8px' }}>{(pad.width || 0).toFixed(2)} × {(pad.height || 0).toFixed(2)}</td>
                             <td style={{ padding: '4px 8px' }}>{area.toFixed(3)}</td>
                             <td style={{ padding: '4px 8px', fontWeight: 'bold', color: '#d32f2f' }}>{dwell}</td>
+                            <td style={{ padding: '4px 8px' }}>
+                              {glueSummary?.perPad?.[idx]?.dots ?? '—'}
+                            </td>
+                            <td style={{ padding: '4px 8px', fontWeight: 'bold', color: '#00c49a' }}>
+                              {glueSummary?.perPad?.[idx]?.volUl?.toFixed(3) ?? '—'}
+                            </td>
                           </tr>
                         );
                       })}

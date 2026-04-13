@@ -63,49 +63,17 @@ export default function SerialPanel({
         }
       }
 
-      // Check for Probe trigger results (G38.x) - GRBL Fast Probe
-      const prbMatch = line.match(/\[PRB:\s*([-\d.]+)\s*,\s*([-\d.]+)\s*,\s*([-\d.]+)\s*:\s*(\d)/i);
-      if (prbMatch) {
-        const pSuccess = parseInt(prbMatch[4]) === 1;
-        if (pSuccess) {
-          const prbPos = { x: parseFloat(prbMatch[1]), y: parseFloat(prbMatch[2]), z: parseFloat(prbMatch[3]) };
-          console.log('🎯 GRBL Probe Triggered! Emitting global event:', prbPos);
-          window.dispatchEvent(new CustomEvent('probe-triggered', { detail: prbPos }));
-        } else {
-          console.warn('⚠️ Probe cycle ended without triggering pressure sensor.');
-          window.dispatchEvent(new CustomEvent('probe-failed'));
-        }
-      }
-
-      // Check for Marlin G30 Probe results
-      // Format: "Bed X: 10.00 Y: 10.00 Z: -1.23"
-      const marlinPrbMatch = line.match(/Bed\s+X:\s*([-\d.]+)\s+Y:\s*([-\d.]+)\s+Z:\s*([-\d.]+)/i);
-      if (marlinPrbMatch) {
-         const prbPos = {
-            x: parseFloat(marlinPrbMatch[1]),
-            y: parseFloat(marlinPrbMatch[2]),
-            z: parseFloat(marlinPrbMatch[3])
-          };
-          console.log('🎯 Marlin G30 Probe Triggered! Emitting global event:', prbPos);
-          window.dispatchEvent(new CustomEvent('probe-triggered', { detail: prbPos }));
-      }
-
-      // ── M119 Endstop State Parser ──
-      // Parses Marlin M119 response lines. Your pressure sensor is on z_min.
-      // Matches: z_min / z_probe / z_min_probe / probe : TRIGGERED or open
-      const m119ProbeTriggered = /\b(z_min|z_probe|z_min_probe|probe)\b\s*:\s*TRIGGERED/i.test(line);
-      const m119ProbeOpen      = /\b(z_min|z_probe|z_min_probe|probe)\b\s*:\s*open/i.test(line);
-      if (m119ProbeTriggered) {
-        console.log('🟢 M119: Probe pin TRIGGERED →', line.trim());
-        window.dispatchEvent(new CustomEvent('endstop-z-probe-triggered'));
-      } else if (m119ProbeOpen) {
-        window.dispatchEvent(new CustomEvent('endstop-z-probe-open'));
-      }
-
       if (x !== null && y !== null && z !== null) {
         hasReceivedPosRef.current = true;
         const pos = { x, y, z };
         if (onMachinePositionUpdate) onMachinePositionUpdate(pos);
+      }
+      // Bridge for BedCalibrationPanel auto-probe (M119 endstop response)
+      if (line.includes('z_min:')) {
+        const triggered = /z_min:\s*TRIGGERED/i.test(line);
+        window.dispatchEvent(new CustomEvent(
+          triggered ? 'endstop-z-probe-triggered' : 'endstop-z-probe-open'
+        ));
       }
     });
   }, []);
@@ -141,6 +109,7 @@ export default function SerialPanel({
 
   const startStatusQuery = () => {
     const interval = setInterval(async () => {
+      if (window.pauseSerialPolling) return; // Prevent background M114s causing 'ok' spam
       try {
         await window.serial.writeLine('M114');
       } catch (e) { /* ignore */ }
@@ -245,7 +214,7 @@ export default function SerialPanel({
 
         <button className="btn" onClick={connect} disabled={!path || isConnected}>Connect</button>
         <button className="btn secondary" onClick={disconnect} disabled={!isConnected}>Disconnect</button>
-        
+
         <label className="btn" style={{ marginLeft: 8 }}>
           Send file
           <input type="file" accept=".gcode,.nc,.txt" style={{ display: 'none' }} onChange={sendFile} disabled={!isConnected} />
@@ -260,20 +229,20 @@ export default function SerialPanel({
             <button className="btn-dark" onClick={() => sendCommand('M8')}>Left Air On</button>
             <button className="btn-dark" onClick={() => sendCommand('M8')}>Right Air On</button>
             <button className="btn-dark" onClick={() => sendCommand('M8')}>Ring Lights On</button>
-            
+
             <button className="btn-dark" onClick={() => sendCommand('M9')}>Left Air Off</button>
             <button className="btn-dark" onClick={() => sendCommand('M9')}>Right Air Off</button>
             <button className="btn-dark" onClick={() => sendCommand('M9')}>Ring Lights Off</button>
-            
+
             <button className="btn-dark" onClick={() => sendCommand('M8')}>Left Vac</button>
             <button className="btn-dark" onClick={() => sendCommand('M8')}>Right Vac</button>
-            <button className="btn-dark" onClick={() => sendCommand('M18')}>Disable<br/>Steppers</button>
+            <button className="btn-dark" onClick={() => sendCommand('M18')}>Disable<br />Steppers</button>
           </div>
-          
+
           <div className="control-grid-5" style={{ marginTop: 'auto' }}>
-            <button className="btn-dark small" onClick={() => sendCommand('G28 X')}>Home<br/>X</button>
-            <button className="btn-dark small" onClick={() => sendCommand('G28 Y')}>Home<br/>Y</button>
-            <button className="btn-dark small" onClick={() => sendCommand('G28 Z')}>Home<br/>Z</button>
+            <button className="btn-dark small" onClick={() => sendCommand('G28 X')}>Home<br />X</button>
+            <button className="btn-dark small" onClick={() => sendCommand('G28 Y')}>Home<br />Y</button>
+            <button className="btn-dark small" onClick={() => sendCommand('G28 Z')}>Home<br />Z</button>
             {/* <button className="btn-dark small" onClick={() => sendCommand('G0 X200')}>Jog<br/>Max</button>
             <button className="btn-dark small" onClick={() => sendCommand('G0 X0')}>Jog<br/>Min</button> */}
           </div>
@@ -286,9 +255,9 @@ export default function SerialPanel({
           </div>
           <div className="console-input-row">
             <button className="btn-send" onClick={sendLine} disabled={!isConnected}>Send</button>
-            <input 
-              ref={inputRef} 
-              placeholder="G-code command..." 
+            <input
+              ref={inputRef}
+              placeholder="G-code command..."
               onKeyDown={(e) => e.key === 'Enter' && sendLine()}
               disabled={!isConnected}
             />

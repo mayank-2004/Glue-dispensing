@@ -6,6 +6,7 @@ import LayerList from "./components/LayerList.jsx";
 import Viewer from "./components/Viewer.jsx";
 import CameraPanel from "./components/CameraPanel.jsx";
 import SerialPanel from "./components/SerialPanel.jsx";
+import BedCalibrationPanel, { getZOffsetForPoint } from "./components/BedCalibrationPanel.jsx";
 import ComponentList from "./components/ComponentList.jsx";
 import JogPanel from "./components/JogPanel.jsx";
 import FiducialPanel from "./components/FiducialPanel.jsx";
@@ -30,7 +31,6 @@ import { SafePathPlanner } from "./lib/automation/safePathPlanner.js";
 import { LayerDataExtractor } from "./lib/gerber/layerDataExtractor.js";
 import MaintenanceManager from "./components/MaintenanceManager.jsx";
 import ToolOffsetCalibration from "./components/ToolOffsetCalibration.jsx";
-import BedCalibrationPanel from "./components/BedCalibrationPanel.jsx";
 
 function calculatePadCenter(p) {
   if (typeof p.x === "number" && typeof p.y === "number") {
@@ -288,46 +288,36 @@ export default function App() {
       if (refIndex === 2) next.p2 = { ...currentMPos };
 
       if (next.p1 && next.p2) {
-        // Use the actual Gerber design coordinates of the two fiducials
-        // NOT a synthetic bounding box — using wrong coords causes progressive drift!
-        const f1 = fiducials[0];
-        const f2 = fiducials[1];
+        let width = 100, height = 100;
 
-        const hasRealDesignCoords = f1?.design && f2?.design;
-
-        let designPts, machinePts;
-
-        if (hasRealDesignCoords) {
-          // Correct: Use real fiducial design positions from Gerber
-          designPts = [
-            { x: f1.design.x, y: f1.design.y },
-            { x: f2.design.x, y: f2.design.y }
-          ];
-        } else {
-          // Fallback: no fiducial design data available — use bounding box approximation
-          let width = 100, height = 100;
-          if (boardOutline) {
-            width = boardOutline.width;
-            height = boardOutline.height;
-          } else if (pads.length > 0) {
-            const xs = pads.map(p => p.x);
-            const ys = pads.map(p => p.y);
-            width = Math.max(...xs) - Math.min(...xs);
-            height = Math.max(...ys) - Math.min(...ys);
-          }
-          console.warn("Panel alignment: no fiducial design coords found, using bounding box fallback — drift may occur!");
-          designPts = [
-            { x: 0, y: 0 },
-            { x: width, y: height }
-          ];
+        if (boardOutline) {
+          width = boardOutline.width;
+          height = boardOutline.height;
+        } else if (pads.length > 0) {
+          const xs = pads.map(p => p.x);
+          const ys = pads.map(p => p.y);
+          width = Math.max(...xs) - Math.min(...xs);
+          height = Math.max(...ys) - Math.min(...ys);
         }
 
-        machinePts = [next.p1, next.p2];
+        // Guard against degenerate dimensions
+        if (width < 1 || height < 1) {
+          console.warn("Alignment failed: board dimensions too small or undefined", { width, height });
+          alert("Cannot compute alignment: board dimensions are invalid. Please load a board outline or paste layer first.");
+          return prev;
+        }
+        const designPts = [
+          { x: 0, y: 0 },
+          { x: width, y: height }
+        ];
+        const machinePts = [
+          next.p1,
+          next.p2
+        ];
 
         try {
           const T = fitSimilarity(designPts, machinePts);
-          const err = rmsError(T, designPts, machinePts);
-          console.log("Panel Alignment Computed:", T, "RMS Error:", err.toFixed(4), "mm");
+          console.log("Panel Alignment Computed:", T);
           next.transform = T;
           setXf(T);
           setApplyXf(true);
@@ -340,7 +330,7 @@ export default function App() {
       }
       return next;
     });
-  }, [livePreview.machinePosition, boardOutline, pads, fiducials]);
+  }, [livePreview.machinePosition, boardOutline, pads]);
 
   const handleMachinePositionUpdate = useCallback((newPos) => {
     setLivePreview(prev => ({
@@ -1459,12 +1449,12 @@ export default function App() {
           `Drive camera perfectly to this pad now?\n` +
           `Machine Target: X${targetMachine.x.toFixed(3)} Y${targetMachine.y.toFixed(3)}`
         );
-        
+
         if (move) {
           window.serial.writeLine(`G0 X${targetMachine.x.toFixed(3)} Y${targetMachine.y.toFixed(3)} F3000`);
-          
+
           window.dispatchEvent(new CustomEvent('camera-auto-align-pad', {
-             detail: { targetMachine, padCenter }
+            detail: { targetMachine, padCenter }
           }));
         }
       }, 50);
@@ -1508,7 +1498,7 @@ export default function App() {
       const autoFiducials = detectedFiducials.slice(0, 3).map((fid, idx) => ({
         id: fid.id || `F${idx + 1}`,
         design: { x: fid.x, y: fid.y },
-        machine: { x: fid.x, y: fid.y }, 
+        machine: { x: fid.x, y: fid.y },
         color: colors[idx % colors.length],
         confidence: fid.confidence
       }));
@@ -1612,18 +1602,6 @@ export default function App() {
     };
   }, [fiducials]);
 
-  const getMachineCoords = useCallback((designPt) => {
-    if (applyXf && xf) {
-      return applyTransform(xf, designPt);
-    } else if (effectiveOrigin) {
-      return {
-        x: designPt.x - effectiveOrigin.x,
-        y: designPt.y - effectiveOrigin.y
-      };
-    }
-    return { x: designPt.x, y: designPt.y };
-  }, [applyXf, xf, effectiveOrigin]);
-
   // Component navigation items
   const componentNavItems = [
     { id: 'SerialPanel', label: 'Serial Panel' },
@@ -1632,6 +1610,7 @@ export default function App() {
     { id: 'FiducialPanel', label: 'Fiducial Panel' },
     { id: 'CameraPanel', label: 'Camera Panel' },
     { id: 'AutomatedDispensingPanel', label: 'Automated Dispensing Panel' },
+    { id: 'BedCalibration', label: 'PCB Leveling' },
   ]
 
   return (
@@ -1769,14 +1748,6 @@ export default function App() {
           }}
         />
 
-        {/* Auto-Bed Leveling / Surface Calibration */}
-        <BedCalibrationPanel
-          nozzleDia={0.6}
-          machinePosition={livePreview.machinePosition}
-          boardOutline={boardOutline}
-          getMachineCoords={getMachineCoords}
-        />
-
         <div style={{ color: '#9aa0a6', margin: '0 0 12px 0', border: '1px solid #9aa0a6', padding: '4px 12px 6px 12px', borderRadius: '4px' }}>
           Components
           <ComponentList
@@ -1837,31 +1808,31 @@ export default function App() {
               </div>
             </div>
           )}
-            <button className="btn secondary" 
-              onClick={() => {
-                if (!selectedOrigin) {
-                  alert("Please load a Gerber file and 'Detect Origins' first.");
-                  return;
-                }
-                if (!livePreview.machinePosition) {
-                  alert("Machine position unknown. Please ensure the machine is connected.");
-                  return;
-                }
-                const mPos = livePreview.machinePosition;
-                const tOff = maintenanceManager.getToolOffset();
+          <button className="btn secondary"
+            onClick={() => {
+              if (!selectedOrigin) {
+                alert("Please load a Gerber file and 'Detect Origins' first.");
+                return;
+              }
+              if (!livePreview.machinePosition) {
+                alert("Machine position unknown. Please ensure the machine is connected.");
+                return;
+              }
+              const mPos = livePreview.machinePosition;
+              const tOff = maintenanceManager.getToolOffset();
 
-                // Formula: Crosshair = Machine + ToolOffset + selectedOrigin(Gerber0,0) + pcbOriginOffset
-                // Therefore: selectedOrigin = Machine + ToolOffset + selectedOrigin + pcbOriginOffset
-                // Result: pcbOriginOffset = - (Machine + ToolOffset)
-                
-                const newOffsetX = -(mPos.x + (tOff?.dx || 0));
-                const newOffsetY = -(mPos.y + (tOff?.dy || 0));
+              // Formula: Crosshair = Machine + ToolOffset + selectedOrigin(Gerber0,0) + pcbOriginOffset
+              // Therefore: selectedOrigin = Machine + ToolOffset + selectedOrigin + pcbOriginOffset
+              // Result: pcbOriginOffset = - (Machine + ToolOffset)
 
-                setPcbOriginOffset({ x: newOffsetX, y: newOffsetY });
-              }}
-              style={{ width: '100%', marginBottom: '8px' }}>
-              🎯 Set Camera Origin Here
-            </button>
+              const newOffsetX = -(mPos.x + (tOff?.dx || 0));
+              const newOffsetY = -(mPos.y + (tOff?.dy || 0));
+
+              setPcbOriginOffset({ x: newOffsetX, y: newOffsetY });
+            }}
+            style={{ width: '100%', marginBottom: '8px' }}>
+            🎯 Set Camera Origin Here
+          </button>
           <div className="flex-row" style={{ gap: 8, marginTop: 8 }}>
             <button className="btn sm secondary" style={{ width: '100%', marginBottom: '8px' }} onClick={onDetectOrigins} disabled={layers.length === 0}>
               🎯 Detect Origins
@@ -1918,8 +1889,9 @@ export default function App() {
                   }
 
                   if (targetMachine) {
-                    const cmd = `G0 X${targetMachine.x.toFixed(3)} Y${targetMachine.y.toFixed(3)} F9000`;
-                    if (confirm(`Move machine to X${targetMachine.x.toFixed(3)} Y${targetMachine.y.toFixed(3)}?\n(Based on Ref: ${referenceType === 'origin' ? 'Gerber (0,0)' : referencePoint?.id})`)) {
+                    const travelF = speedSettings?.travelSpeed || 6000;
+                    const cmd = `G1 X${targetMachine.x.toFixed(3)} Y${targetMachine.y.toFixed(3)} F${travelF}`;
+                    if (confirm(`Move machine to X${targetMachine.x.toFixed(3)} Y${targetMachine.y.toFixed(3)} at F${travelF}?\n(Based on Ref: ${referenceType === 'origin' ? 'Gerber (0,0)' : referencePoint?.id})`)) {
                       console.log('Moving to reference:', cmd);
                       if (window.serial && window.serial.writeLine) {
                         await window.serial.writeLine(cmd);
@@ -1941,10 +1913,10 @@ export default function App() {
                 if (confirm("Set current machine position as Work Zero (G92 X0 Y0)?\nOnly do this if you are physically at the True Gerber Origin.")) {
                   const mPos = livePreview.machinePosition;
                   if (!mPos) {
-                     alert("Machine position unknown. Please ensure the machine is connected.");
-                     return;
+                    alert("Machine position unknown. Please ensure the machine is connected.");
+                    return;
                   }
-                  
+
                   // Calculate shift dynamically based on absolute machine position prior to G92
                   const shiftX = -mPos.x;
                   const shiftY = -mPos.y;
@@ -2199,7 +2171,7 @@ export default function App() {
                 if (typeof forceRender === 'function') forceRender({});
               }}
               nozzleDia={0.6}
-              setNozzleDia={(d) => {}}
+              setNozzleDia={(d) => { }}
               padDetector={padDetector}
               qualityController={qualityController}
               onCaptureAlignment={handleAlignmentCapture}
@@ -2209,9 +2181,42 @@ export default function App() {
               layerData={layerData}
               onUpdateFiducials={handleFiducialsUpdate}
               activeBoardName={panelBoards[activeBoardIndexState]?.name || 'Unknown Board'}
-              panelBoards={panelBoards}
               setPanelBoards={setPanelBoards}
+              pads={pads}
             />
+          </div>
+
+          <div style={{ display: activeComponent === 'BedCalibration' ? 'block' : 'none', width: '100%', height: '100%' }}>
+            <div className="panel">
+              <div className="panel-header">
+                <h3 className="panel-title">PCB SURFACE LEVELING</h3>
+              </div>
+              <div style={{ padding: 12 }}>
+                <BedCalibrationPanel
+                  machinePosition={livePreview.machinePosition || machinePos}
+                  boardOutline={boardOutline}
+                  xf={xf}
+                  applyXf={applyXf}
+                  isConnected={isSerialConnected}
+
+                  // Tells BedCalibrationPanel to sync the PCB origin back into App state
+                  // so pad distances, path planning, and the overlay all stay correct.
+                  onSetPcbOrigin={(machineOrigin) => {
+                    // machineOrigin is where the nozzle physically is at the PCB BL corner.
+                    // We store the NEGATIVE so that adding it to a design coord gives machine coord.
+                    setPcbOriginOffset({ x: -machineOrigin.x, y: -machineOrigin.y });
+                    if (selectedOrigin) {
+                      setSelectedOrigin(prev => prev ? { ...prev } : null);
+                    }
+                  }}
+
+                  // Thin wrapper so the panel never touches window.serial directly
+                  onSendGcode={async (line) => {
+                    if (window.serial?.writeLine) await window.serial.writeLine(line);
+                  }}
+                />
+              </div>
+            </div>
           </div>
 
           <div style={{ display: activeComponent === 'AutomatedDispensingPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>

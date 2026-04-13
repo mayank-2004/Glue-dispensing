@@ -26,7 +26,8 @@ export default function CameraPanel({
   setPanelBoards,
   pixelsPerMm,
   setPixelsPerMm,
-  fiducialVisionDetector
+  fiducialVisionDetector,
+  pads = []
 }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -41,10 +42,10 @@ export default function CameraPanel({
   useEffect(() => { localStorage.setItem("cameraOffset", JSON.stringify(cameraOffset)); }, [cameraOffset]);
 
   // Ref to hold latest props for stale-closure avoidance in setInterval
-  const latestPropsRef = useRef({ fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, cameraOffset: { dx: 0, dy: 0 } });
+  const latestPropsRef = useRef({ fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, pads, cameraOffset: { dx: 0, dy: 0 } });
   useEffect(() => {
-    latestPropsRef.current = { fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, cameraOffset };
-  }, [fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, cameraOffset]);
+    latestPropsRef.current = { fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, pads, cameraOffset };
+  }, [fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, pads, cameraOffset]);
 
   const [streamOn, setStreamOn] = useState(false);
 
@@ -57,51 +58,6 @@ export default function CameraPanel({
     try { return JSON.parse(localStorage.getItem("camH") || "null"); } catch { return null; }
   });
 
-  useEffect(() => {
-    const handleAutoAlign = async (e) => {
-      const { targetMachine, padCenter } = e.detail;
-      console.log(`[Auto-Align] Triggered for Pad. Waiting for initial translation to complete...`);
-
-      await new Promise(r => setTimeout(r, 2000));
-      if (videoRef.current && streamOn) {
-        console.log(`[Auto-Align] Camera stabilized. Scanning for component centroid...`);
-        const result = await fiducialVisionDetector.detectCenterFeature(videoRef.current);
-
-        if (result.success && result.detected && result.pixelDelta) {
-          const { pixelDx, pixelDy } = result.pixelDelta;
-          const pxmm = pixelsPerMm || 20;
-
-          const dxMm = pixelDx / pxmm;
-          const dyMm = pixelDy / pxmm;
-
-          if (Math.abs(dxMm) > 0.05 || Math.abs(dyMm) > 0.05) {
-            console.log(`[Auto-Align] Component is off-center by dx:${dxMm.toFixed(3)}mm dy:${dyMm.toFixed(3)}mm. Re-centering...`);
-            const cmds = jogRel({ dx: dxMm, dy: dyMm, feed: 1000 });
-            if (window.serial && window.serial.writeLine) {
-              for (const cmd of cmds) await window.serial.writeLine(cmd);
-
-              const targetU = (videoRef.current.clientWidth || 640) / 2 + pixelDx;
-              const targetV = (videoRef.current.clientHeight || 480) / 2 - pixelDy;
-
-              setVisionResult({
-                detected: true,
-                fiducials: [{ pixelPosition: { x: targetU, y: targetV }, confidence: 1.0, radius: 10 }]
-              });
-              setTimeout(() => setVisionResult(null), 1500);
-
-            }
-          } else {
-            console.log('[Auto-Align] Component is completely centered within tolerance (<50um).');
-          }
-        } else {
-          console.warn('[Auto-Align] Camera could not confidently resolve a core centroid in this frame.');
-        }
-      }
-    };
-
-    window.addEventListener('camera-auto-align-pad', handleAutoAlign);
-    return () => window.removeEventListener('camera-auto-align-pad', handleAutoAlign);
-  }, [streamOn, fiducialVisionDetector, pixelsPerMm]);
   const [pendingPick, setPendingPick] = useState(null);
   const [showOverlay, setShowOverlay] = useState(true);
   const [measureMode, setMeasureMode] = useState(false);
@@ -138,16 +94,26 @@ export default function CameraPanel({
   const [jogStep, setJogStep] = useState(1);
   const [isBusy, setIsBusy] = useState(false);
 
-  // Auto-Align Window Event Listener
+  // Single canonical Auto-Align Window Event Listener
+  // A ref guard ensures only ONE jog fires per event dispatch.
+  const isAligningRef = useRef(false);
+
   useEffect(() => {
     const handleAutoAlign = async (e) => {
-      const { targetMachine, padCenter } = e.detail;
+      // Guard: if a jog is already in progress from a previous event, ignore this one
+      if (isAligningRef.current) {
+        console.warn('[Auto-Align] Already jogging, ignoring duplicate event.');
+        return;
+      }
 
-      // Brief settle time after machine arrives at camera-over-pad position
-      await new Promise(r => setTimeout(r, 800));
+      isAligningRef.current = true;
+
+      const { padCenter } = e.detail;
+
+      await new Promise(r => setTimeout(r, 1200));
 
       if (!padDetector || !streamOn) {
-        window.dispatchEvent(new CustomEvent('camera-align-complete', { detail: { corrected: false, dx: 0, dy: 0, reason: 'camera_off' } }));
+        isAligningRef.current = false;
         return;
       }
       setAutoDetecting(true);
@@ -160,37 +126,25 @@ export default function CameraPanel({
           console.log('[Auto-Align] Pad detected at offset:', result.offset);
 
           const dxMm = result.offset.x;
-          const dyMm = result.offset.y;
-          const distMm = Math.hypot(dxMm, dyMm);
-
+          const distMm = Math.hypot(dxMm, result.offset.y);
+          // Only jog if offset is meaningful (> 20µm) and not a false positive (< 3mm)
           if (distMm > 0.02 && distMm < 3.0) {
-            const cmds = jogRel({ dx: dxMm, dy: dyMm, feed: 500 });
+            const cmds = jogRel({ dx: dxMm, dy: result.offset.y, feed: 500 });
             if (window.serial && window.serial.writeLine) {
               for (const line of cmds) await window.serial.writeLine(line);
-              console.log(`[Auto-Align] ✅ Corrected by dx=${dxMm.toFixed(3)} dy=${dyMm.toFixed(3)} mm`);
-              window.dispatchEvent(new CustomEvent('camera-align-complete', {
-                detail: { corrected: true, dx: dxMm, dy: dyMm }
-              }));
+              console.log('[Auto-Align] Jogged once by:', dxMm.toFixed(3), result.offset.y.toFixed(3));
             }
           } else {
-            console.warn('[Auto-Align] Correction rejected — out-of-bounds distance:', distMm.toFixed(3), 'mm');
-            window.dispatchEvent(new CustomEvent('camera-align-complete', {
-              detail: { corrected: false, dx: 0, dy: 0, reason: 'out_of_bounds' }
-            }));
+            console.warn('[Auto-Align] Pad correction rejected — distance out of bounds:', distMm);
           }
         } else {
-          console.warn('[Auto-Align] No valid pad contour detected near crosshair.');
-          window.dispatchEvent(new CustomEvent('camera-align-complete', {
-            detail: { corrected: false, dx: 0, dy: 0, reason: 'no_detection' }
-          }));
+          console.warn('[Auto-Align] No valid rectangular pad contours detected near crosshair.');
         }
       } catch (err) {
         console.error('[Auto-Align] Vision failed:', err);
-        window.dispatchEvent(new CustomEvent('camera-align-complete', {
-          detail: { corrected: false, dx: 0, dy: 0, reason: 'error' }
-        }));
       } finally {
         setAutoDetecting(false);
+        isAligningRef.current = false; // Release guard so next explicit trigger can run
       }
     };
 
@@ -321,15 +275,17 @@ export default function CameraPanel({
   function drawOverlay() {
     const v = videoRef.current, c = canvasRef.current;
     if (!v || !c) return;
-    const W = v.clientWidth || v.videoWidth || 640;
-    const Hh = v.clientHeight || v.videoHeight || 480; // Unified to 480 fallback
+    // CRITICAL: Always use the raw internal video dimensions for canvas coordinate space!
+    // This ensures OpenCV coordinates map exactly 1:1 with canvas overlay drawings.
+    const W = v.videoWidth || 640;
+    const Hh = v.videoHeight || 480; 
     c.width = W; c.height = Hh;
     const ctx = c.getContext("2d");
     ctx.clearRect(0, 0, W, Hh);
 
     if (!showOverlay) return;
 
-    // --- CROSSHAIR REMAINS FIXED AT CENTER ---
+    // --- CROSSHAIR REMAINS FIXED AT CENTER OF RAW FRAME ---
     let crosshairX = W / 2;
     let crosshairY = Hh / 2;
 
@@ -441,17 +397,21 @@ export default function CameraPanel({
       return;
     }
 
-    // --- STEP 1: Compute Target Pixel & Snap to Blob Center ---
-    const W = rect.width;
-    const Hh = rect.height;
+    // --- STEP 1: Compute Target Pixel ---
+    // User clicked purely on the stretched DOM element, must map back to native video coords
+    const W = videoRef.current.videoWidth || 640;
+    const Hh = videoRef.current.videoHeight || 480;
+    const clickU = (u / rect.width) * W;
+    const clickV = (v / rect.height) * Hh;
+
     const centerX = W / 2;
     const centerY = Hh / 2;
 
     const baseWorld = (applyXf && xf && selectedDesign) ? applyTransform(xf, selectedDesign) : (selectedDesign || { x: 0, y: 0 });
     const pxmm = pixelsPerMm;
 
-    let targetU = u;
-    let targetV = v;
+    let targetU = clickU;
+    let targetV = clickV;
 
     // Optional Vision Snap
     if (videoRef.current && streamOn && !isBusy) {
@@ -462,19 +422,17 @@ export default function CameraPanel({
           let closestFid = null;
 
           result.fiducials.forEach(f => {
-            const dist = Math.hypot(f.pixelPosition.x - u, f.pixelPosition.y - v);
+            const dist = Math.hypot(f.pixelPosition.x - clickU, f.pixelPosition.y - clickV);
             if (dist < closestDist) {
               closestDist = dist;
               closestFid = f;
             }
           });
 
-          // Snap radius of 60px
+          // Snap radius of 60px in native space
           if (closestDist < 60 && closestFid) {
             targetU = closestFid.pixelPosition.x;
             targetV = closestFid.pixelPosition.y;
-            // console.log("Snapped to pad centroid at:", targetU, targetV);
-            // console.log("Snapped to pad centroid at:", closestFid);
           }
         }
       } catch (err) {
@@ -644,11 +602,11 @@ export default function CameraPanel({
       if (result.success && result.fiducials.length > 0) {
 
         // --- ONLY ACCEPT THE FIDUCIAL UNDER THE CROSSHAIRS ---
-        // MUST use clientWidth to match the physical UI canvas rendering
-        const videoWidth = videoRef.current.clientWidth || videoRef.current.videoWidth || 640;
-        const videoHeight = videoRef.current.clientHeight || videoRef.current.videoHeight || 480;
+        // MUST use native video coords so it aligns perfectly with OpenCV output
+        const videoWidth = videoRef.current.videoWidth || 640;
+        const videoHeight = videoRef.current.videoHeight || 480;
         const centerX = videoWidth / 2;
-        const centerY = (videoHeight - 60) / 2; // Subtract height of control panel at bottom
+        const centerY = videoHeight / 2;
 
         let closestDist = Infinity;
         let selectedFiducial = null;
@@ -732,62 +690,74 @@ export default function CameraPanel({
           return { ...detected, actualMachinePosition };
         });
 
+        const { effectiveOrigin, panelBoards, activeBoardName, cameraOffset } = latestPropsRef.current;
+        const pOrigin = effectiveOrigin || { x: 0, y: 0 };
+        const camOffset = cameraOffset || { dx: 0, dy: 0 };
+        
+        changedBoards = false;
+        nextBoards = [...(panelBoards || [])];
+        const activeBIdx = Math.max(0, nextBoards.findIndex(b => b.name === activeBoardName));
+
         correctedFiducials.forEach(detected => {
           if (!detected.actualMachinePosition) return;
 
-          let closestFid = null;
-          let minDist = Infinity;
+          // Per user request:
+          // 1. Convert physical machine coordinate back to nozzle machine coordinate by subtracting camera toolOffset
+          // 2. Add the PCB origin (which is stored as inverted offset) to get the final CAD Design coordinate
+          const rawDesignX = (detected.actualMachinePosition.x + pOrigin.x) - camOffset.dx;
+          const rawDesignY = (detected.actualMachinePosition.y + pOrigin.y) - camOffset.dy;
 
-          allFids.forEach(f => {
-            const dist = Math.hypot(f.design.x - detected.actualMachinePosition.x, f.design.y - detected.actualMachinePosition.y);
-            if (dist < minDist) {
-              minDist = dist;
-              closestFid = f;
-            }
-          });
+          // Match against EXISTING fiducials OR create a NEW one
+          if (nextBoards[activeBIdx]) {
+             let targetFidIdx = -1;
+             
+             // First check if this corresponds to an already marked fiducial (within 5mm) to update it 
+             nextBoards[activeBIdx].fiducials.forEach((f, fIdx) => {
+                if (!f.design) return;
+                const dist = Math.hypot(f.design.x - rawDesignX, f.design.y - rawDesignY);
+                if (dist < 5.0) targetFidIdx = fIdx; 
+             });
 
-          // Match if within 20mm of a design coordinate
-          if (minDist < 20 && closestFid) {
-            const bIdx = closestFid.bIdx;
-            console.log("bIdx", bIdx);
-            const fIdx = closestFid.fIdx;
-            console.log("fIdx", fIdx);
+             const newFiducials = [...nextBoards[activeBIdx].fiducials];
 
-            const newFiducials = [...nextBoards[bIdx].fiducials];
-            console.log("newFiducials", newFiducials);
-            newFiducials[fIdx] = {
-              ...newFiducials[fIdx],
-              machine: detected.actualMachinePosition,
-              pixelPosition: detected.pixelPosition,
-              autoDetected: true,
-              confidence: detected.confidence
-            };
-            nextBoards[bIdx] = { ...nextBoards[bIdx], fiducials: newFiducials };
-            changedBoards = true;
-            console.log(`[Camera Match] Assigned to ${closestFid.boardName} ${closestFid.id} (Proximity: ${minDist.toFixed(1)}mm)`);
+             if (targetFidIdx >= 0) {
+                // Update existing fiducial
+                newFiducials[targetFidIdx] = {
+                   ...newFiducials[targetFidIdx],
+                   machine: detected.actualMachinePosition,
+                   design: { x: parseFloat(rawDesignX.toFixed(3)), y: parseFloat(rawDesignY.toFixed(3)) },
+                   pixelPosition: detected.pixelPosition,
+                   autoDetected: true,
+                   confidence: detected.confidence
+                };
+             } else {
+                // Completely new fiducial discovered by camera! Create it dynamically!
+                targetFidIdx = newFiducials.findIndex(f => !f.design);
+                
+                const newFid = {
+                   id: targetFidIdx >= 0 ? newFiducials[targetFidIdx].id : `F${newFiducials.length + 1}`,
+                   color: targetFidIdx >= 0 ? newFiducials[targetFidIdx].color : `#${Math.floor(Math.random() * 16777215).toString(16)}`,
+                   design: { x: parseFloat(rawDesignX.toFixed(3)), y: parseFloat(rawDesignY.toFixed(3)) }, // Use direct math value
+                   machine: detected.actualMachinePosition,
+                   pixelPosition: detected.pixelPosition,
+                   autoDetected: true,
+                   confidence: detected.confidence
+                };
+                
+                if (targetFidIdx >= 0) {
+                   newFiducials[targetFidIdx] = newFid;
+                } else {
+                   newFiducials.push(newFid);
+                }
+             }
+
+             nextBoards[activeBIdx] = { ...nextBoards[activeBIdx], fiducials: newFiducials };
+             changedBoards = true;
           }
         });
 
-        if (changedBoards && setPBoards) {
-          setPBoards(nextBoards);
-          console.log("Global Panel State Updated:", nextBoards.map(b => ({ name: b.name, fiducials: b.fiducials })));
-        } else {
-          // Fallback legacy behavior if no design markers match
-          // ✅ FIX: read from latestPropsRef to avoid stale closures
-          const latestFids = latestPropsRef.current.fiducials;
-          const latestCb = latestPropsRef.current.onUpdateFiducials;
-          const updatedFiducials = correctedFiducials.map((detected, idx) => {
-            const existing = latestFids[idx] || { id: `F${idx + 1}`, color: `#${Math.floor(Math.random() * 16777215).toString(16)}` };
-            console.log("Fallback logging corrected absolute machine coordinate:", detected.actualMachinePosition);
-            return {
-              ...existing,
-              machine: detected.actualMachinePosition || null,
-              pixelPosition: detected.pixelPosition,
-              confidence: detected.confidence,
-              autoDetected: true
-            };
-          });
-          if (latestCb) latestCb(updatedFiducials);
+        if (changedBoards && latestPropsRef.current.setPanelBoards) {
+          latestPropsRef.current.setPanelBoards(nextBoards);
         }
         // --- DYNAMIC OFFSET EVALUATION ---
         let autoDx = 0;
@@ -795,20 +765,20 @@ export default function CameraPanel({
 
         if (correctedFiducials.length > 0) {
           const detected = correctedFiducials[0];
-          
+
           // 1. Where the camera crosshair points on screen, stored in a variable
           const crosshairCoord = getMachineCoordinateFromPixel(videoWidth / 2, videoHeight / 2, videoWidth, videoHeight);
-            
+
           // 2. Detected fiducial coordinate value via camera vision stored in another variable
           const detectedFidCoord = getMachineCoordinateFromPixel(detected.pixelPosition.x, detected.pixelPosition.y, videoWidth, videoHeight);
-            
+
           if (crosshairCoord && detectedFidCoord) {
             // 3. "camera crosshair coordinate value" subtracted from "detected fiducial coordinate value"
             autoDx = detectedFidCoord.x - crosshairCoord.x;
             autoDy = detectedFidCoord.y - crosshairCoord.y;
 
-            autoDx = parseFloat(autoDx.toFixed(3));
-            autoDy = parseFloat(autoDy.toFixed(3));
+            autoDx = parseFloat((autoDx / 2.0).toFixed(3));
+            autoDy = parseFloat((autoDy / 2.0).toFixed(3));
           }
         }
 
@@ -851,6 +821,10 @@ export default function CameraPanel({
     }
   };
 
+  // hasJoggedRef: resets when user starts a new detection session.
+  // Ensures jog fires exactly once per session, automatically.
+  const hasJoggedRef = useRef(false);
+
   // Start continuous fiducial monitoring
   const startContinuousDetection = () => {
     if (!videoRef.current || !streamOn) {
@@ -859,19 +833,23 @@ export default function CameraPanel({
     }
 
     if (detectionInterval) {
-      clearInterval(detectionInterval); // Just standard clearInterval since we mapped it cleanly
+      clearInterval(detectionInterval);
       setDetectionInterval(null);
-      setVisionResult(null); // Clear the green circles from the UI when stopped
+      setVisionResult(null);
+      hasJoggedRef.current = false; // Reset so next session can jog again
       return;
     }
+
+    // Reset jog flag for this new detection session
+    hasJoggedRef.current = false;
 
     const pxmm = pixelsPerMm || 20;
     const intervalId = fiducialDetector.startContinuousDetection(
       videoRef.current,
       (result) => {
         if (result.success && result.fiducials.length > 0) {
-          const videoWidth = videoRef.current.clientWidth || videoRef.current.videoWidth || 640;
-          const videoHeight = videoRef.current.clientHeight || videoRef.current.videoHeight || 480;
+          const videoWidth = videoRef.current.videoWidth || 640;
+          const videoHeight = videoRef.current.videoHeight || 480;
           const centerX = videoWidth / 2;
           const centerY = videoHeight / 2;
 
@@ -965,79 +943,78 @@ export default function CameraPanel({
           let fidsChanged = false;
           let nextFids = [...currentFids];
 
+          const pOrigin = cProps.effectiveOrigin || { x: 0, y: 0 };
+          const camOffset = cProps.cameraOffset || { dx: 0, dy: 0 };
+          const activeBIdx = hasMultiBoards ? Math.max(0, pBoards.findIndex(b => b.name === boardName)) : -1;
+
           incomingCandidates.forEach(cand => {
-            let closestFid = null;
-            let minDist = Infinity;
+            const rawDesignX = (cand.estimatedWorld.x + pOrigin.x) - camOffset.dx;
+            const rawDesignY = (cand.estimatedWorld.y + pOrigin.y) - camOffset.dy;
 
-            // Find closest matching design coordinate across all mapped boards
-            allFids.forEach(f => {
-              const dist = Math.hypot(f.design.x - cand.estimatedWorld.x, f.design.y - cand.estimatedWorld.y);
-              if (dist < minDist) {
-                minDist = dist;
-                closestFid = f;
-              }
-            });
+            if (hasMultiBoards && nextBoards[activeBIdx]) {
+              let targetFidIdx = -1;
 
-            // If a candidate is within 20mm of a Design fiducial, map it there!
-            if (minDist < 20 && closestFid) {
-              const bIdx = closestFid.bIdx;
-              const fIdx = closestFid.fIdx;
+              // Check if it's updating an already active fiducial (Proximity search)
+              nextBoards[activeBIdx].fiducials.forEach((f, fIdx) => {
+                 if (!f.design) return;
+                 const dist = Math.hypot(f.design.x - rawDesignX, f.design.y - rawDesignY);
+                 if (dist < 5.0) targetFidIdx = fIdx; 
+              });
 
-              const existingMachine = nextBoards[bIdx].fiducials[fIdx].machine;
-              // Only update if it moved significantly (more than 0.1mm) to avoid jitter
-              if (existingMachine) {
-                const distChange = Math.hypot(existingMachine.x - cand.estimatedWorld.x, existingMachine.y - cand.estimatedWorld.y);
-                if (distChange > 0.1) {
-                  const newFiducials = [...nextBoards[bIdx].fiducials];
-                  newFiducials[fIdx] = {
-                    ...newFiducials[fIdx],
+              const newFiducials = [...nextBoards[activeBIdx].fiducials];
+
+              if (targetFidIdx >= 0) {
+                 const existingMachine = newFiducials[targetFidIdx].machine;
+                 const distChange = existingMachine ? Math.hypot(existingMachine.x - cand.estimatedWorld.x, existingMachine.y - cand.estimatedWorld.y) : Infinity;
+                 
+                 // Only update if it moved significantly to avoid continuous jitter override logs
+                 if (distChange > 0.1) {
+                    newFiducials[targetFidIdx] = {
+                       ...newFiducials[targetFidIdx],
+                       machine: cand.estimatedWorld,
+                       design: { x: parseFloat(rawDesignX.toFixed(3)), y: parseFloat(rawDesignY.toFixed(3)) },
+                       pixelPosition: cand.pixelPosition,
+                       autoDetected: true,
+                       confidence: cand.confidence
+                    };
+                    nextBoards[activeBIdx] = { ...nextBoards[activeBIdx], fiducials: newFiducials };
+                    changedBoards = true;
+                 }
+              } else {
+                 // Create totally new fiducial dynamically using explicit math!
+                 targetFidIdx = newFiducials.findIndex(f => !f.design);
+                 
+                 const newFid = {
+                    id: targetFidIdx >= 0 ? newFiducials[targetFidIdx].id : `F${newFiducials.length + 1}`,
+                    color: targetFidIdx >= 0 ? newFiducials[targetFidIdx].color : `#${Math.floor(Math.random() * 16777215).toString(16)}`,
+                    design: { x: parseFloat(rawDesignX.toFixed(3)), y: parseFloat(rawDesignY.toFixed(3)) },
                     machine: cand.estimatedWorld,
                     pixelPosition: cand.pixelPosition,
                     autoDetected: true,
                     confidence: cand.confidence
-                  };
-                  nextBoards[bIdx] = { ...nextBoards[bIdx], fiducials: newFiducials };
-                  changedBoards = true;
-                  console.log(`[Continuous] Updated ${closestFid.boardName} ${closestFid.id} (Shift: ${distChange.toFixed(3)}mm)`);
-                }
-              } else { // If no existing machine position, just set it
-                const newFiducials = [...nextBoards[bIdx].fiducials];
-                newFiducials[fIdx] = {
-                  ...newFiducials[fIdx],
-                  machine: cand.estimatedWorld,
-                  autoDetected: true,
-                  confidence: cand.confidence
-                };
-                nextBoards[bIdx] = { ...nextBoards[bIdx], fiducials: newFiducials };
-                changedBoards = true;
-                console.log(`[Monitor Match] Snapped to ${closestFid.boardName} ${closestFid.id} (Proximity: ${minDist.toFixed(1)}mm)`);
+                 };
+                 
+                 if (targetFidIdx >= 0) {
+                    newFiducials[targetFidIdx] = newFid;
+                 } else {
+                    newFiducials.push(newFid);
+                 }
+                 nextBoards[activeBIdx] = { ...nextBoards[activeBIdx], fiducials: newFiducials };
+                 changedBoards = true;
               }
             } else {
-              // Fallback: Just drop into the currently active board's first empty slot (Legacy behavior)
-              const emptyIdx = nextFids.findIndex(f => !f.machine);
-              if (emptyIdx !== -1) {
-                const isDup = nextFids.some(f => f.machine && Math.hypot(f.machine.x - cand.estimatedWorld.x, f.machine.y - cand.estimatedWorld.y) < 5);
-                if (!isDup) {
-                  nextFids[emptyIdx] = {
-                    ...nextFids[emptyIdx],
-                    machine: cand.estimatedWorld,
-                    autoDetected: true,
-                    confidence: cand.confidence
-                  };
-                  fidsChanged = true;
-
-                  // Keep state in sync if multi-board is active
-                  if (hasMultiBoards) {
-                    const activeBIdx = pBoards.findIndex(b => b.name === boardName);
-                    if (activeBIdx !== -1) {
-                      const syncedFids = [...nextBoards[activeBIdx].fiducials];
-                      syncedFids[emptyIdx] = nextFids[emptyIdx];
-                      nextBoards[activeBIdx] = { ...nextBoards[activeBIdx], fiducials: syncedFids };
-                      changedBoards = true;
-                    }
-                  }
-                }
-              }
+              // Legacy non-multi-board mode
+              const emptyIdx = nextFids.findIndex(f => !f.design);
+              let pushIdx = emptyIdx !== -1 ? emptyIdx : nextFids.length;
+              
+              nextFids[pushIdx] = {
+                 ...(nextFids[pushIdx] || { id: `F${pushIdx + 1}`, color: '#2ea8ff' }),
+                 machine: cand.estimatedWorld,
+                 design: { x: parseFloat(rawDesignX.toFixed(3)), y: parseFloat(rawDesignY.toFixed(3)) },
+                 autoDetected: true,
+                 confidence: cand.confidence
+              };
+              fidsChanged = true;
             }
           });
 
@@ -1056,29 +1033,33 @@ export default function CameraPanel({
             confidence: result.fiducials.length > 0 ? result.fiducials[0].confidence : 0
           });
 
-          // --- DYNAMIC OFFSET EVALUATION FOR CONTINUOUS TRACKING ---
+          // --- LIVE OFFSET TRACKING + one-shot auto-jog ---
           if (result.fiducials.length > 0) {
             const detected = result.fiducials[0];
-            
-            // 1. Where the camera crosshair points on screen, stored in a variable
+
             const crosshairCoord = getMachineCoordinateFromPixel(videoWidth / 2, videoHeight / 2, videoWidth, videoHeight);
-            
-            // 2. Detected fiducial coordinate value via camera vision stored in another variable
             const detectedFidCoord = getMachineCoordinateFromPixel(detected.pixelPosition.x, detected.pixelPosition.y, videoWidth, videoHeight);
-            
+
             if (crosshairCoord && detectedFidCoord) {
-              // 3. "camera crosshair coordinate value" subtracted from "detected fiducial coordinate value"
               let autoDx = detectedFidCoord.x - crosshairCoord.x;
               let autoDy = detectedFidCoord.y - crosshairCoord.y;
 
-              autoDx = parseFloat(autoDx.toFixed(3));
-              autoDy = parseFloat(autoDy.toFixed(3));
+              // Halve the offset to avoid overshoot
+              autoDx = parseFloat((autoDx / 2.0).toFixed(3));
+              autoDy = parseFloat((autoDy / 2.0).toFixed(3));
 
-              // 1. Update UI section automatically
-              setCameraOffset({ dx: autoDx, dy: autoDy });
+              // Update display state only when meaningfully changed
+              setCameraOffset(prev => {
+                if (Math.abs(prev.dx - autoDx) > 0.005 || Math.abs(prev.dy - autoDy) > 0.005) {
+                  return { dx: autoDx, dy: autoDy };
+                }
+                return prev;
+              });
 
-              // 4. Then the head should move with the offset value calculated
-              if (Math.abs(autoDx) > 0.005 || Math.abs(autoDy) > 0.005) {
+              // Auto-jog ONCE per detection session — flag prevents repeat firing
+              if (!hasJoggedRef.current && (Math.abs(autoDx) > 0.005 || Math.abs(autoDy) > 0.005)) {
+                hasJoggedRef.current = true; // Lock immediately before async jog
+                console.log(`[FiducialAlign] Auto-jogging once by ΔX:${autoDx} ΔY:${autoDy}`);
                 jogCameraToNozzle({ dx: autoDx, dy: autoDy });
               }
             }
@@ -1119,17 +1100,38 @@ export default function CameraPanel({
       console.error('Quality analysis failed:', error);
     }
   };
+
   // Jog nozzle by the camera-to-nozzle offset so it aligns over the fiducial center.
   // Called once after a successful one-shot fiducial detection.
+  // const jogCameraToNozzle = async (offset) => {
+  //   if (!offset || (offset.dx === 0 && offset.dy === 0)) return;
+  //   // console.log("Offset:", offset);
+  //   const cmds = jogRel({ dx: offset.dx, dy: offset.dy, feed: 1000 });
+  //   if (window.serial && window.serial.writeLine) {
+  //     for (const cmd of cmds) await window.serial.writeLine(cmd);
+  //     console.log(`[FiducialOffset] Nozzle jogged ΔX:${offset.dx.toFixed(3)} ΔY:${offset.dy.toFixed(3)} mm → nozzle now over fiducial center`);
+  //   } else {
+  //     console.warn('[FiducialOffset] Serial not connected — offset jog skipped. Would have jogged:', offset);
+  //   }
+  // };
+
   const jogCameraToNozzle = async (offset) => {
     if (!offset || (offset.dx === 0 && offset.dy === 0)) return;
-    // console.log("Offset:", offset);
+
     const cmds = jogRel({ dx: offset.dx, dy: offset.dy, feed: 1000 });
+
     if (window.serial && window.serial.writeLine) {
-      for (const cmd of cmds) await window.serial.writeLine(cmd);
-      console.log(`[FiducialOffset] Nozzle jogged ΔX:${offset.dx.toFixed(3)} ΔY:${offset.dy.toFixed(3)} mm → nozzle now over fiducial center`);
+      for (const cmd of cmds) {
+        await window.serial.writeLine(cmd);
+      }
+      console.log(
+        `[FiducialOffset] Nozzle jogged ΔX:${offset.dx.toFixed(3)} ΔY:${offset.dy.toFixed(3)} mm`
+      );
     } else {
-      console.warn('[FiducialOffset] Serial not connected — offset jog skipped. Would have jogged:', offset);
+      console.warn(
+        '[FiducialOffset] Serial not connected — offset jog skipped. Would have jogged:',
+        offset
+      );
     }
   };
 
@@ -1241,6 +1243,22 @@ export default function CameraPanel({
           <legend style={{ fontSize: '0.85em', fontWeight: 'bold', color: '#495057', marginBottom: 6 }}>📐 Camera → Nozzle Offset</legend>
           <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 2, fontSize: '0.85em' }}>
+              <span style={{ color: '#6c757d', fontWeight: 'bold' }}>Camera Scale (px/mm)</span>
+              <input
+                type="number" step="0.1"
+                defaultValue={pixelsPerMm || 20}
+                onBlur={e => setPixelsPerMm(parseFloat(e.target.value) || 20)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') {
+                    setPixelsPerMm(parseFloat(e.target.value) || 20);
+                    e.target.blur();
+                  }
+                }}
+                style={{ width: 100, padding: '3px 6px', borderRadius: 4, border: '1px solid #007bff', background: '#e9ecef', fontFamily: 'monospace', fontWeight: 'bold' }}
+              />
+            </label>
+            <div style={{ width: '1px', height: '30px', background: '#dee2e6', margin: '0 4px' }}></div>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 2, fontSize: '0.85em' }}>
               <span style={{ color: '#6c757d' }}>ΔX (mm)</span>
               <input
                 type="number" step="0.001"
@@ -1267,18 +1285,17 @@ export default function CameraPanel({
             </button>
           </div>
           <small style={{ fontSize: '11px', color: '#6c757d', display: 'block', marginTop: 5 }}>
-            Formula: ΔX = machine − crosshair &nbsp;|&nbsp; ΔY = machine − crosshair.<br />
-            After each fiducial detection, the nozzle jogs by this offset to align over the fiducial center.
+            Run <b>Start Auto-Detect</b> — when a fiducial is found, the nozzle automatically jogs once by the detected offset to center over it.
           </small>
         </div>
       </div>
 
-      {/* Video Container */}
-      <div style={{ position: "relative", width: "100%", aspectRatio: "16 / 9", background: "#111", borderRadius: 8, overflow: "hidden" }}>
-        <video ref={videoRef} style={{ width: "100%", height: "100%", objectFit: "cover" }} muted playsInline />
+      {/* Video Container - No more Object-Fit Cover! Preserves mathematical alignment */}
+      <div style={{ position: "relative", width: "100%", background: "#111", borderRadius: 8, overflow: "hidden", pointerEvents: "auto" }}>
+        <video ref={videoRef} style={{ width: "100%", height: "auto", display: "block" }} muted playsInline />
         <canvas ref={canvasRef}
           onClick={onCanvasClick}
-          style={{ position: "absolute", inset: 0, pointerEvents: "auto" }} />
+          style={{ position: "absolute", inset: 0, pointerEvents: "auto", width: "100%", height: "100%" }} />
       </div>
 
       {/* Camera Controls */}
