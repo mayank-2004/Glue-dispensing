@@ -4,7 +4,7 @@ export class FiducialVisionDetector {
     this.homography = null;
   }
 
-  async detectFiducialsInFrame(videoElement, expectedFiducials = [], options = {}) {
+  async detectFiducialsInFrame(videoElement, _expectedFiducials = [], options = {}) {
     if (!videoElement || this.isDetecting) return { success: false };
 
     this.isDetecting = true;
@@ -203,7 +203,7 @@ export class FiducialVisionDetector {
 
   // Detects the centroid of a bright generic shaped pad (square, oval, round) near the dead center of the camera.
   // Used for micro-jog visual servoing after a primary G0 move.
-  async detectCenterFeature(videoElement, options = {}) {
+  async detectCenterFeature(videoElement, _options = {}) {
     if (this.isDetecting || !window.cv) return { success: false };
     this.isDetecting = true;
     
@@ -248,7 +248,6 @@ export class FiducialVisionDetector {
       const centerX = cw / 2;
       const centerY = ch / 2;
       
-      let bestContour = null;
       let bestScore = Infinity; // Lower is better (closest to center)
       let bestCentroid = null;
 
@@ -272,7 +271,6 @@ export class FiducialVisionDetector {
         // Only consider the contour if its centroid is within ~60 pixels of the crosshair
         if (dist < 60 && dist < bestScore) {
           bestScore = dist;
-          bestContour = cnt;
           bestCentroid = { x: cx, y: cy };
         }
       }

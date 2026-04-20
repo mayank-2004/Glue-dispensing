@@ -2,7 +2,7 @@
  * Coordinate System Debug Utilities
  */
 
-export function debugCoordinateConversion(clickEvent, svgElement, padData) {
+export function debugCoordinateConversion(clickEvent, svgElement) {
   console.group('🔍 Coordinate Debug Analysis');
   
   // 1. Mouse/Click coordinates

@@ -92,6 +92,7 @@ export default function CameraPanel({
   const [detectionInterval, setDetectionInterval] = useState(null);
 
   const [jogStep, setJogStep] = useState(1);
+  const [jogMultiplier, setJogMultiplier] = useState(1);
   const [isBusy, setIsBusy] = useState(false);
 
   // Single canonical Auto-Align Window Event Listener
@@ -278,7 +279,7 @@ export default function CameraPanel({
     // CRITICAL: Always use the raw internal video dimensions for canvas coordinate space!
     // This ensures OpenCV coordinates map exactly 1:1 with canvas overlay drawings.
     const W = v.videoWidth || 640;
-    const Hh = v.videoHeight || 480; 
+    const Hh = v.videoHeight || 480;
     c.width = W; c.height = Hh;
     const ctx = c.getContext("2d");
     ctx.clearRect(0, 0, W, Hh);
@@ -288,10 +289,6 @@ export default function CameraPanel({
     // --- CROSSHAIR REMAINS FIXED AT CENTER OF RAW FRAME ---
     let crosshairX = W / 2;
     let crosshairY = Hh / 2;
-
-    // (Visual magnetic snapping removed per user request: The target crosshair must always represent the true center of the camera view)
-    // if (visionResult && visionResult.detected && visionResult.fiducials && visionResult.fiducials.length > 0) { ... }
-
 
     // Draw Auto-Adjusting Center Crosshair (User requested 4 sections)
     ctx.strokeStyle = "rgba(0, 255, 255, 0.5)"; // Cyan transparent
@@ -445,8 +442,10 @@ export default function CameraPanel({
     const pixelDx = targetU - centerX;
     const pixelDy = centerY - targetV;
 
-    const dx = pixelDx / pxmm;
-    const dy = pixelDy / pxmm;
+    // jogMultiplier scales up the physical movement WITHOUT touching the calibrated px/mm value.
+    // e.g. at 10× — clicking 2px off-center moves 2/106.6×10 = 0.19mm instead of 0.019mm.
+    const dx = (pixelDx / pxmm) * jogMultiplier;
+    const dy = (pixelDy / pxmm) * jogMultiplier;
 
     // --- STEP 3: Handle Action (Map Fiducial & Jog Machine) ---
     const needsJog = (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01);
@@ -582,247 +581,7 @@ export default function CameraPanel({
     };
   };
 
-  // Automated fiducial detection using camera
-  const detectFiducialsWithCamera = async () => {
-    if (!videoRef.current || !streamOn) {
-      alert('Please start the camera first');
-      return;
-    }
-
-    setAutoDetecting(true);
-    try {
-      fiducialDetector.setHomography(H);
-
-      const pxPerMm = getScale();
-      console.log('Detecting with scale:', pxPerMm, 'px/mm');
-
-      const result = await fiducialDetector.detectFiducialsInFrame(videoRef.current, fiducials, { pxPerMm, debug: true });
-      console.log("result is: ", result);
-
-      if (result.success && result.fiducials.length > 0) {
-
-        // --- ONLY ACCEPT THE FIDUCIAL UNDER THE CROSSHAIRS ---
-        // MUST use native video coords so it aligns perfectly with OpenCV output
-        const videoWidth = videoRef.current.videoWidth || 640;
-        const videoHeight = videoRef.current.videoHeight || 480;
-        const centerX = videoWidth / 2;
-        const centerY = videoHeight / 2;
-
-        let closestDist = Infinity;
-        let selectedFiducial = null;
-        const newlyRejected = [];
-
-        result.fiducials.forEach(fid => {
-          const dist = Math.hypot(fid.pixelPosition.x - centerX, fid.pixelPosition.y - centerY);
-          if (dist < closestDist) {
-            // Move previous champion to rejected pile (if any)
-            if (selectedFiducial) {
-              newlyRejected.push({ ...selectedFiducial, reason: 'Off-Center' });
-            }
-            closestDist = dist;
-            selectedFiducial = fid;
-          } else {
-            // Too far away from the new champion, reject it
-            newlyRejected.push({ ...fid, reason: 'Off-Center' });
-          }
-        });
-
-        // Enforce a strict "must be near crosshairs" radius limit (e.g. within 60-80 pixels)
-        const SNAP_RADIUS_PX = 80;
-
-        let finalFiducials = [];
-        let finalRejected = [...(result.rejectedBlobs || []), ...newlyRejected];
-
-        if (selectedFiducial && closestDist <= SNAP_RADIUS_PX) {
-          finalFiducials = [selectedFiducial]; // Lock onto the single, centered pad
-        } else if (selectedFiducial) {
-          // It was the closest, but still too far away from the physical crosshairs
-          finalRejected.push({ ...selectedFiducial, reason: 'Too Far from Crosshair' });
-        }
-
-        console.log('Auto-detected fiducial:', finalFiducials);
-        console.log('Rejected shapes:', finalRejected);
-
-        setVisionResult({
-          detected: true,
-          fiducials: finalFiducials,
-          rejectedBlobs: finalRejected,
-          confidence: finalFiducials.length > 0 ? finalFiducials[0].confidence : 0
-        });
-
-        const cProps = latestPropsRef.current;
-        const pBoards = cProps.panelBoards;
-        const setPBoards = cProps.setPanelBoards;
-        const hasMultiBoards = pBoards && pBoards.length > 0 && setPBoards;
-
-        // Gather all fiducials across all boards
-        let allFids = [];
-        if (hasMultiBoards) {
-          pBoards.forEach((b, bIdx) => {
-            b.fiducials.forEach((f, fIdx) => {
-              if (f.design) allFids.push({ ...f, bIdx, fIdx, boardName: b.name });
-            });
-          });
-        }
-
-        let changedBoards = false;
-        let nextBoards = hasMultiBoards ? [...pBoards] : [];
-
-        // 1. Convert pixel coordinates to exact machine coordinates relative to current toolhead position.
-        const currentMPos = machinePositionRef.current;
-        // MUST use clientWidth to match the physical UI canvas rendering
-        // const videoWidth = videoRef.current.clientWidth || videoRef.current.videoWidth || 640;
-        // const videoHeight = videoRef.current.clientHeight || videoRef.current.videoHeight || 480;
-        // const centerX = videoWidth / 2;
-        // const centerY = videoHeight / 2;
-
-        const correctedFiducials = finalFiducials.map(detected => {
-          let actualMachinePosition = detected.machinePosition;
-          console.log("actualMachinePosition", actualMachinePosition);
-          if (currentMPos) {
-            // We use the same VideoWidth/Height as the canvas fallback array so it aligns perfectly with the visual overlay
-            const matchData = getMachineCoordinateFromPixel(detected.pixelPosition.x, detected.pixelPosition.y, videoWidth, videoHeight);
-            console.log("matchData", matchData);
-            if (matchData) {
-              actualMachinePosition = { x: matchData.x, y: matchData.y };
-            }
-          }
-          return { ...detected, actualMachinePosition };
-        });
-
-        const { effectiveOrigin, panelBoards, activeBoardName, cameraOffset } = latestPropsRef.current;
-        const pOrigin = effectiveOrigin || { x: 0, y: 0 };
-        const camOffset = cameraOffset || { dx: 0, dy: 0 };
-        
-        changedBoards = false;
-        nextBoards = [...(panelBoards || [])];
-        const activeBIdx = Math.max(0, nextBoards.findIndex(b => b.name === activeBoardName));
-
-        correctedFiducials.forEach(detected => {
-          if (!detected.actualMachinePosition) return;
-
-          // Per user request:
-          // 1. Convert physical machine coordinate back to nozzle machine coordinate by subtracting camera toolOffset
-          // 2. Add the PCB origin (which is stored as inverted offset) to get the final CAD Design coordinate
-          const rawDesignX = (detected.actualMachinePosition.x + pOrigin.x) - camOffset.dx;
-          const rawDesignY = (detected.actualMachinePosition.y + pOrigin.y) - camOffset.dy;
-
-          // Match against EXISTING fiducials OR create a NEW one
-          if (nextBoards[activeBIdx]) {
-             let targetFidIdx = -1;
-             
-             // First check if this corresponds to an already marked fiducial (within 5mm) to update it 
-             nextBoards[activeBIdx].fiducials.forEach((f, fIdx) => {
-                if (!f.design) return;
-                const dist = Math.hypot(f.design.x - rawDesignX, f.design.y - rawDesignY);
-                if (dist < 5.0) targetFidIdx = fIdx; 
-             });
-
-             const newFiducials = [...nextBoards[activeBIdx].fiducials];
-
-             if (targetFidIdx >= 0) {
-                // Update existing fiducial
-                newFiducials[targetFidIdx] = {
-                   ...newFiducials[targetFidIdx],
-                   machine: detected.actualMachinePosition,
-                   design: { x: parseFloat(rawDesignX.toFixed(3)), y: parseFloat(rawDesignY.toFixed(3)) },
-                   pixelPosition: detected.pixelPosition,
-                   autoDetected: true,
-                   confidence: detected.confidence
-                };
-             } else {
-                // Completely new fiducial discovered by camera! Create it dynamically!
-                targetFidIdx = newFiducials.findIndex(f => !f.design);
-                
-                const newFid = {
-                   id: targetFidIdx >= 0 ? newFiducials[targetFidIdx].id : `F${newFiducials.length + 1}`,
-                   color: targetFidIdx >= 0 ? newFiducials[targetFidIdx].color : `#${Math.floor(Math.random() * 16777215).toString(16)}`,
-                   design: { x: parseFloat(rawDesignX.toFixed(3)), y: parseFloat(rawDesignY.toFixed(3)) }, // Use direct math value
-                   machine: detected.actualMachinePosition,
-                   pixelPosition: detected.pixelPosition,
-                   autoDetected: true,
-                   confidence: detected.confidence
-                };
-                
-                if (targetFidIdx >= 0) {
-                   newFiducials[targetFidIdx] = newFid;
-                } else {
-                   newFiducials.push(newFid);
-                }
-             }
-
-             nextBoards[activeBIdx] = { ...nextBoards[activeBIdx], fiducials: newFiducials };
-             changedBoards = true;
-          }
-        });
-
-        if (changedBoards && latestPropsRef.current.setPanelBoards) {
-          latestPropsRef.current.setPanelBoards(nextBoards);
-        }
-        // --- DYNAMIC OFFSET EVALUATION ---
-        let autoDx = 0;
-        let autoDy = 0;
-
-        if (correctedFiducials.length > 0) {
-          const detected = correctedFiducials[0];
-
-          // 1. Where the camera crosshair points on screen, stored in a variable
-          const crosshairCoord = getMachineCoordinateFromPixel(videoWidth / 2, videoHeight / 2, videoWidth, videoHeight);
-
-          // 2. Detected fiducial coordinate value via camera vision stored in another variable
-          const detectedFidCoord = getMachineCoordinateFromPixel(detected.pixelPosition.x, detected.pixelPosition.y, videoWidth, videoHeight);
-
-          if (crosshairCoord && detectedFidCoord) {
-            // 3. "camera crosshair coordinate value" subtracted from "detected fiducial coordinate value"
-            autoDx = detectedFidCoord.x - crosshairCoord.x;
-            autoDy = detectedFidCoord.y - crosshairCoord.y;
-
-            autoDx = parseFloat((autoDx / 2.0).toFixed(3));
-            autoDy = parseFloat((autoDy / 2.0).toFixed(3));
-          }
-        }
-
-        // 1. Automatically put the evaluated value into the UI container ΔX and ΔY
-        setCameraOffset({ dx: autoDx, dy: autoDy });
-
-        // 2. Evaluate the value and move the nozzle by that distance
-        await jogCameraToNozzle({ dx: autoDx, dy: autoDy });
-
-        // // AUTO-CENTER: Jog machine so camera crosshair aligns perfectly with fiducial center
-        // if (selectedFiducial) {
-        //   const dx = (selectedFiducial.pixelPosition.x - centerX) / pxPerMm;
-        //   const dy = (centerY - selectedFiducial.pixelPosition.y) / pxPerMm; // Y flipped
-
-        //   if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
-        //     const cmds = jogRel({ dx, dy, feed: 3000 });
-        //     console.log('[AutoCenter] Sending jog commands:', cmds);
-        //     if (window.serial && window.serial.writeLine) {
-        //       for (const line of cmds) {
-        //         console.log('  > ', line);
-        //         window.serial.writeLine(line);
-        //       }
-        //     } else {
-        //       console.warn('[AutoCenter] window.serial.writeLine not available — machine not connected?');
-        //     }
-        //   } else {
-        //     console.log('[AutoCenter] Already centered, no jog needed');
-        //   }
-        // }
-
-        // alert(`Successfully detected ${result.fiducials.length} fiducials!`);
-      } else {
-        alert('No fiducials found matching constraints (Max 1.0mm dia, 2mm isolation).');
-      }
-    } catch (error) {
-      console.error('Camera fiducial detection failed:', error);
-      alert('Fiducial detection failed: ' + error.message);
-    } finally {
-      setAutoDetecting(false);
-    }
-  };
-
   // hasJoggedRef: resets when user starts a new detection session.
-  // Ensures jog fires exactly once per session, automatically.
   const hasJoggedRef = useRef(false);
 
   // Start continuous fiducial monitoring
@@ -836,7 +595,7 @@ export default function CameraPanel({
       clearInterval(detectionInterval);
       setDetectionInterval(null);
       setVisionResult(null);
-      hasJoggedRef.current = false; // Reset so next session can jog again
+      hasJoggedRef.current = false;
       return;
     }
 
@@ -886,25 +645,23 @@ export default function CameraPanel({
           const currentMPos = machinePositionRef.current;
           if (!currentMPos) {
             // Just show visual feedback if no MPos involved
-            setVisionResult(prev => ({
+            setVisionResult({
               detected: true,
               fiducials: finalFiducials,
               rejectedBlobs: finalRejected,
               confidence: finalFiducials.length > 0 ? finalFiducials[0].confidence : 0
-            }));
+            });
             return;
           }
 
-          setVisionResult(prev => ({
+          setVisionResult({
             detected: true,
             fiducials: finalFiducials,
             rejectedBlobs: finalRejected,
             confidence: finalFiducials.length > 0 ? finalFiducials[0].confidence : 0
-          }));
+          });
 
           // 1. Calculate World Positions for new potential fiducials
-          // MUST use clientWidth to match the physical UI canvas rendering
-          const pxPerMm = getScale(); // Approximate
 
           const incomingCandidates = finalFiducials.map(f => {
             const matchData = getMachineCoordinateFromPixel(f.pixelPosition.x, f.pixelPosition.y, videoWidth, videoHeight);
@@ -947,72 +704,75 @@ export default function CameraPanel({
           const camOffset = cProps.cameraOffset || { dx: 0, dy: 0 };
           const activeBIdx = hasMultiBoards ? Math.max(0, pBoards.findIndex(b => b.name === boardName)) : -1;
 
-          incomingCandidates.forEach(cand => {
-            const rawDesignX = (cand.estimatedWorld.x + pOrigin.x) - camOffset.dx;
-            const rawDesignY = (cand.estimatedWorld.y + pOrigin.y) - camOffset.dy;
+          // Use real machine firmware position as the design coordinate
+          const realMachinePos = machinePositionRef.current || { x: 0, y: 0 };
 
+          incomingCandidates.forEach(cand => {
             if (hasMultiBoards && nextBoards[activeBIdx]) {
               let targetFidIdx = -1;
 
-              // Check if it's updating an already active fiducial (Proximity search)
+              // Check if it's updating an already active fiducial (Proximity search using machine pos)
               nextBoards[activeBIdx].fiducials.forEach((f, fIdx) => {
-                 if (!f.design) return;
-                 const dist = Math.hypot(f.design.x - rawDesignX, f.design.y - rawDesignY);
-                 if (dist < 5.0) targetFidIdx = fIdx; 
+                if (!f.design) return;
+                const dist = Math.hypot(f.design.x - realMachinePos.x, f.design.y - realMachinePos.y);
+                if (dist < 5.0) targetFidIdx = fIdx;
               });
 
               const newFiducials = [...nextBoards[activeBIdx].fiducials];
 
               if (targetFidIdx >= 0) {
-                 const existingMachine = newFiducials[targetFidIdx].machine;
-                 const distChange = existingMachine ? Math.hypot(existingMachine.x - cand.estimatedWorld.x, existingMachine.y - cand.estimatedWorld.y) : Infinity;
-                 
-                 // Only update if it moved significantly to avoid continuous jitter override logs
-                 if (distChange > 0.1) {
-                    newFiducials[targetFidIdx] = {
-                       ...newFiducials[targetFidIdx],
-                       machine: cand.estimatedWorld,
-                       design: { x: parseFloat(rawDesignX.toFixed(3)), y: parseFloat(rawDesignY.toFixed(3)) },
-                       pixelPosition: cand.pixelPosition,
-                       autoDetected: true,
-                       confidence: cand.confidence
-                    };
-                    nextBoards[activeBIdx] = { ...nextBoards[activeBIdx], fiducials: newFiducials };
-                    changedBoards = true;
-                 }
-              } else {
-                 // Create totally new fiducial dynamically using explicit math!
-                 targetFidIdx = newFiducials.findIndex(f => !f.design);
-                 
-                 const newFid = {
-                    id: targetFidIdx >= 0 ? newFiducials[targetFidIdx].id : `F${newFiducials.length + 1}`,
-                    color: targetFidIdx >= 0 ? newFiducials[targetFidIdx].color : `#${Math.floor(Math.random() * 16777215).toString(16)}`,
-                    design: { x: parseFloat(rawDesignX.toFixed(3)), y: parseFloat(rawDesignY.toFixed(3)) },
+                const existingMachine = newFiducials[targetFidIdx].machine;
+                const distChange = existingMachine ? Math.hypot(existingMachine.x - cand.estimatedWorld.x, existingMachine.y - cand.estimatedWorld.y) : Infinity;
+
+                // Only update if machine has moved significantly to avoid continuous jitter override logs
+                if (distChange > 0.1) {
+                  newFiducials[targetFidIdx] = {
+                    ...newFiducials[targetFidIdx],
                     machine: cand.estimatedWorld,
+                    // Use REAL firmware machine position as design coordinate
+                    design: { x: parseFloat(realMachinePos.x.toFixed(3)), y: parseFloat(realMachinePos.y.toFixed(3)) },
                     pixelPosition: cand.pixelPosition,
                     autoDetected: true,
                     confidence: cand.confidence
-                 };
-                 
-                 if (targetFidIdx >= 0) {
-                    newFiducials[targetFidIdx] = newFid;
-                 } else {
-                    newFiducials.push(newFid);
-                 }
-                 nextBoards[activeBIdx] = { ...nextBoards[activeBIdx], fiducials: newFiducials };
-                 changedBoards = true;
+                  };
+                  nextBoards[activeBIdx] = { ...nextBoards[activeBIdx], fiducials: newFiducials };
+                  changedBoards = true;
+                }
+              } else {
+                // Create totally new fiducial dynamically using explicit math!
+                targetFidIdx = newFiducials.findIndex(f => !f.design);
+
+                const newFid = {
+                  id: targetFidIdx >= 0 ? newFiducials[targetFidIdx].id : `F${newFiducials.length + 1}`,
+                  color: targetFidIdx >= 0 ? newFiducials[targetFidIdx].color : `#${Math.floor(Math.random() * 16777215).toString(16)}`,
+                  // Use REAL firmware machine position as design coordinate
+                  design: { x: parseFloat(realMachinePos.x.toFixed(3)), y: parseFloat(realMachinePos.y.toFixed(3)) },
+                  machine: cand.estimatedWorld,
+                  pixelPosition: cand.pixelPosition,
+                  autoDetected: true,
+                  confidence: cand.confidence
+                };
+
+                if (targetFidIdx >= 0) {
+                  newFiducials[targetFidIdx] = newFid;
+                } else {
+                  newFiducials.push(newFid);
+                }
+                nextBoards[activeBIdx] = { ...nextBoards[activeBIdx], fiducials: newFiducials };
+                changedBoards = true;
               }
             } else {
               // Legacy non-multi-board mode
               const emptyIdx = nextFids.findIndex(f => !f.design);
               let pushIdx = emptyIdx !== -1 ? emptyIdx : nextFids.length;
-              
+
               nextFids[pushIdx] = {
-                 ...(nextFids[pushIdx] || { id: `F${pushIdx + 1}`, color: '#2ea8ff' }),
-                 machine: cand.estimatedWorld,
-                 design: { x: parseFloat(rawDesignX.toFixed(3)), y: parseFloat(rawDesignY.toFixed(3)) },
-                 autoDetected: true,
-                 confidence: cand.confidence
+                ...(nextFids[pushIdx] || { id: `F${pushIdx + 1}`, color: '#2ea8ff' }),
+                machine: cand.estimatedWorld,
+                // Use REAL firmware machine position as design coordinate
+                design: { x: parseFloat(realMachinePos.x.toFixed(3)), y: parseFloat(realMachinePos.y.toFixed(3)) },
+                autoDetected: true,
+                confidence: cand.confidence
               };
               fidsChanged = true;
             }
@@ -1066,7 +826,7 @@ export default function CameraPanel({
           }
         }
       },
-      1000,
+      1500,
       { pxPerMm: pxmm, debug: true }
     );
 
@@ -1256,6 +1016,33 @@ export default function CameraPanel({
                 }}
                 style={{ width: 100, padding: '3px 6px', borderRadius: 4, border: '1px solid #007bff', background: '#e9ecef', fontFamily: 'monospace', fontWeight: 'bold' }}
               />
+            </label>
+            <div style={{ width: '1px', height: '30px', background: '#dee2e6', margin: '0 4px' }}></div>
+            {/* Jog Sensitivity Multiplier */}
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 2, fontSize: '0.85em' }}>
+              <span style={{ color: '#6c757d', fontWeight: 'bold' }}>Jog Sensitivity</span>
+              <div style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
+                <input
+                  type="number" step="0.5" min="0.1" max="50"
+                  value={jogMultiplier}
+                  onChange={e => setJogMultiplier(parseFloat(e.target.value) || 1)}
+                  style={{ width: 52, padding: '3px 5px', borderRadius: 4, border: '1px solid #ced4da', fontFamily: 'monospace', fontWeight: 'bold' }}
+                />
+                <span style={{ color: '#6c757d', fontSize: '0.85em' }}>×</span>
+                {[1, 2, 5, 10].map(m => (
+                  <button
+                    key={m}
+                    onClick={() => setJogMultiplier(m)}
+                    style={{
+                      padding: '2px 6px', borderRadius: 3, fontSize: '0.8em', cursor: 'pointer',
+                      border: jogMultiplier === m ? '1px solid #007bff' : '1px solid #ced4da',
+                      background: jogMultiplier === m ? '#007bff' : '#f8f9fa',
+                      color: jogMultiplier === m ? '#fff' : '#495057',
+                      fontWeight: jogMultiplier === m ? 'bold' : 'normal',
+                    }}
+                  >{m}×</button>
+                ))}
+              </div>
             </label>
             <div style={{ width: '1px', height: '30px', background: '#dee2e6', margin: '0 4px' }}></div>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 2, fontSize: '0.85em' }}>

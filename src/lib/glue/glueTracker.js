@@ -12,27 +12,36 @@
  * Units: mm³  (1 mm³ ≈ 1 µL for incompressible paste/glue)
  */
 
-// ─── Dot-grid helpers ────────────────────────────────────────────────────────
-
 /**
  * Count how many dots fit on a pad given nozzle diameter.
  * Mirrors the logic in PasteVisualizer and App.jsx overlay.
  */
 export function dotCountForPad(pad, nozzleDia) {
   const nd = nozzleDia || 0.6;
-  const w = pad.width  || 1.0;
-  const h = pad.height || 1.0;
-  if (w < nd || h < nd) return 1;           // pad smaller than nozzle → single dot
-  const spacing = nd * 0.7;
-  const dotsX = Math.max(1, Math.floor(w / spacing));
-  const dotsY = Math.max(1, Math.floor(h / spacing));
+  const w = pad.width || 0;
+  const h = pad.height || 0;
+  
+  const dotRadiusMm = nd * 0.4;
+  const spacingMm = dotRadiusMm * 2.5;
+  
+  let dotsX = 1;
+  let dotsY = 1;
+  
+  if (w > 0 && h > 0) {
+    const availableXMm = w - (dotRadiusMm * 2);
+    const availableYMm = h - (dotRadiusMm * 2);
+    
+    dotsX = availableXMm >= 0 ? Math.floor(availableXMm / spacingMm) + 1 : 1;
+    dotsY = availableYMm >= 0 ? Math.floor(availableYMm / spacingMm) + 1 : 1;
+  }
+  
   return dotsX * dotsY;
 }
 
 /**
  * Volume of a single dispensed dot (hemisphere model), mm³.
  */
-export function dotVolumeMm3(nozzleDia, gapMm = 0.1) {
+export function dotVolumeMm3(nozzleDia, _gapMm = 0.1) {
   // Effective radius accounts for spread at the dispense gap
   const r = (nozzleDia / 2) * 1.15;   // 15% spread factor
   return (2 / 3) * Math.PI * r * r * r;

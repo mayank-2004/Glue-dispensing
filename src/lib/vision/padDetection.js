@@ -144,7 +144,7 @@ export class PadDetector {
   }
 
   // Simple edge detection
-  detectEdges(data, bounds) {
+  detectEdges(data, _bounds) {
     const edges = [];
     const threshold = 30; // Edge threshold
     
@@ -250,7 +250,7 @@ export class PadDetector {
   }
 
   // Calculate detection confidence
-  calculateConfidence(searchArea, detectedPos) {
+  calculateConfidence(_searchArea, _detectedPos) {
     // Simple confidence based on edge strength at detected position
     return Math.min(1.0, Math.random() * 0.3 + 0.7); // Placeholder
   }

@@ -16,12 +16,9 @@ export default function FiducialPanel({
   transformSummary,
   applyTransform,
   setApplyTransform,
-  detectionResult,
   onRedetectFiducials,
   onAutoAlign,
   onAutoDetectCamera,
-  alignmentInfo,
-  onCaptureAlignment,
   // Multi-board mapping state
   panelBoards = [],
   setPanelBoards,

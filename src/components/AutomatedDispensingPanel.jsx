@@ -26,7 +26,6 @@ export default function AutomatedDispensingPanel({
   currentBatch,
   onStartBatch,
   onJobComplete,
-  // Alignment Props
   fiducials = [],
   onInputMachine,
   onAutoAlign,
@@ -135,7 +134,6 @@ export default function AutomatedDispensingPanel({
       // }
 
       // 2. Handle ACKs (Marlin/GRBL sends 'ok')
-      // Handles standard 'ok' responses to keep sync
       if (line.trim().startsWith('ok')) {
         const resolver = ackQueue.current.shift();
         if (resolver) resolver(true);
@@ -165,7 +163,6 @@ export default function AutomatedDispensingPanel({
   };
 
   // --- Flow Logic ---
-
   const startJobFlow = async () => {
     if (!activeSequence.length) return alert("No dispensing sequence available.");
     if (!window.serial || !window.serial.writeLine) return alert("Serial API not available.");
@@ -455,7 +452,6 @@ export default function AutomatedDispensingPanel({
 
         {/* Flow UI */}
         <div className="flow-container">
-          {/* Status Header */}
           <div className="flow-header">
             <div className={`stage-indicator ${jobStage !== 'idle' ? 'active' : 'idle'}`}>
               <strong>Status:</strong> {jobStage.toUpperCase()}

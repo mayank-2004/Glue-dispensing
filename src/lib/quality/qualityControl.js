@@ -119,7 +119,7 @@ export class QualityController {
   }
 
   // Calculate pad coverage
-  calculateCoverage(padArea, padSize) {
+  calculateCoverage(padArea, _padSize) {
     const pastePixels = padArea.data.filter(p => p.isPaste);
     const totalPadPixels = padArea.width * padArea.height;
     

@@ -244,6 +244,37 @@ export default function App() {
   const [applyXf, setApplyXf] = useState(false);
   const [activeComponent, setActiveComponent] = useState('SerialPanel')
 
+  // Move nozzle to the PCB's Gerber origin point in machine coordinates
+  const goToPcbOrigin = useCallback(async () => {
+    if (!window.serial?.writeLine) {
+      alert("Machine not connected.");
+      return;
+    }
+
+    let targetX, targetY;
+
+    if (xf && applyXf && selectedOrigin) {
+      // Best case: fiducials solved — transform Gerber origin → machine coords
+      const machineOrigin = applyTransform(xf, { x: selectedOrigin.x, y: selectedOrigin.y });
+      targetX = machineOrigin.x;
+      targetY = machineOrigin.y;
+    } else if (pcbOriginOffset) {
+      // Fallback: use manually entered origin offset
+      targetX = pcbOriginOffset.x;
+      targetY = pcbOriginOffset.y;
+    } else {
+      alert("No PCB origin set. Please solve fiducials or set an origin offset first.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Move nozzle to PCB Origin?\nTarget: X${targetX.toFixed(3)}, Y${targetY.toFixed(3)} mm`
+    );
+    if (!confirmed) return;
+
+    await window.serial.writeLine(`G0 X${targetX.toFixed(3)} Y${targetY.toFixed(3)} F3000`);
+  }, [xf, applyXf, selectedOrigin, pcbOriginOffset]);
+
   const [collisionDetector] = useState(() => new CollisionDetector());
   const [padDetector] = useState(() => new PadDetector());
   const [qualityController] = useState(() => new QualityController());
@@ -843,92 +874,67 @@ export default function App() {
         const markerCoords = { x: selectedPad.x, y: selectedPad.y };
         const u = mmToCurrentUnits(markerCoords);
 
-        // Calculate marker radius based on actual pad dimensions
-        const padWidth = selectedPad.width || 1.0;
-        const padHeight = selectedPad.height || 1.0;
-        const maxDimension = Math.max(padWidth, padHeight);
-
-        // Marker radius should be slightly larger than the pad (110% of max dimension)
-        const markerRadius = (maxDimension * 1) / geom.mmPerUnit;
+        // Retrieve actual pad dimensions, if available (fallback to 0 so we just draw 1 dot if unknown)
+        const padWidth = selectedPad.width || 0;
+        const padHeight = selectedPad.height || 0;
 
         // Enhanced center marking with validation indicator
-        const crossSize = (maxDimension * 0.4) / geom.mmPerUnit;
         const centerColor = selectedPad.centerValid ? "#00ff00" : "#ff6600";
-
-        // Use the selectedMm coordinates directly (they already contain the center position)
         const centerCoords = mmToCurrentUnits(selectedMm);
 
-        // Calculate pad dimensions for paste dots
-        const padWidthSvg = padWidth / geom.mmPerUnit;
-        const padHeightSvg = padHeight / geom.mmPerUnit;
-
-        // Crosshair lines - both using calculated center position
-        const hLine = document.createElementNS(NS, "line");
-        hLine.setAttribute("x1", centerCoords.x - crossSize);
-        hLine.setAttribute("y1", centerCoords.y);
-        hLine.setAttribute("x2", centerCoords.x + crossSize);
-        hLine.setAttribute("y2", centerCoords.y);
-        hLine.setAttribute("stroke", centerColor);
-        hLine.setAttribute("stroke-width", markerRadius * 0.08);
-        gm.appendChild(hLine);
-
-        const vLine = document.createElementNS(NS, "line");
-        vLine.setAttribute("x1", centerCoords.x);
-        vLine.setAttribute("y1", centerCoords.y - crossSize);
-        vLine.setAttribute("x2", centerCoords.x);
-        vLine.setAttribute("y2", centerCoords.y + crossSize);
-        vLine.setAttribute("stroke", centerColor);
-        vLine.setAttribute("stroke-width", markerRadius * 0.08);
-        gm.appendChild(vLine);
+        // Fix: Use an absolute, tiny fixed radius (0.15mm width) instead of scaling to the component size
+        const absoluteDotRadius = 0.075 / geom.mmPerUnit;
 
         const centerDot = document.createElementNS(NS, "circle");
         centerDot.setAttribute("cx", centerCoords.x);
         centerDot.setAttribute("cy", centerCoords.y);
-        centerDot.setAttribute("r", markerRadius * 0.2);
+        centerDot.setAttribute("r", absoluteDotRadius); // Extremely small fixed dot
         centerDot.setAttribute("fill", centerColor);
         centerDot.setAttribute("stroke", "#ffffff");
-        centerDot.setAttribute("stroke-width", markerRadius * 0.05);
+        centerDot.setAttribute("stroke-width", absoluteDotRadius * 0.2); // Tiny crisp border
         gm.appendChild(centerDot);
 
-        const validationRing = document.createElementNS(NS, "circle");
-        validationRing.setAttribute("cx", centerCoords.x);
-        validationRing.setAttribute("cy", centerCoords.y);
-        validationRing.setAttribute("r", markerRadius * 0.35);
-        validationRing.setAttribute("fill", "none");
-        validationRing.setAttribute("stroke", centerColor);
-        validationRing.setAttribute("stroke-width", markerRadius * 0.04);
-        validationRing.setAttribute("stroke-dasharray", selectedPad.centerValid ? "none" : "2,2");
-        gm.appendChild(validationRing);
-
         if (showPasteDots) {
-          const dotRadius = (nozzleDia * 0.4) / geom.mmPerUnit;
-          const spacing = dotRadius * 2.5;
-          const dotsX = Math.max(1, Math.floor(padWidthSvg / spacing));
-          const dotsY = Math.max(1, Math.floor(padHeightSvg / spacing));
+          const dotRadiusMm = nozzleDia * 0.4;
+          const dotRadiusSvg = dotRadiusMm / geom.mmPerUnit;
+          const spacingMm = dotRadiusMm * 2.5;
+          const spacingSvg = spacingMm / geom.mmPerUnit;
 
-          const startX = centerCoords.x - ((dotsX - 1) * spacing) / 2;
-          const startY = centerCoords.y - ((dotsY - 1) * spacing) / 2;
+          let dotsX = 1;
+          let dotsY = 1;
+
+          if (padWidth > 0 && padHeight > 0) {
+            // Strictly calculate how many dot centers can fit within the pad's inner bounds
+            const availableXMm = padWidth - (dotRadiusMm * 2);
+            const availableYMm = padHeight - (dotRadiusMm * 2);
+
+            dotsX = availableXMm >= 0 ? Math.floor(availableXMm / spacingMm) + 1 : 1;
+            dotsY = availableYMm >= 0 ? Math.floor(availableYMm / spacingMm) + 1 : 1;
+          }
+
+          const startX = centerCoords.x - ((dotsX - 1) * spacingSvg) / 2;
+          const startY = centerCoords.y - ((dotsY - 1) * spacingSvg) / 2;
 
           let dotIndex = 1;
           for (let row = 0; row < dotsY; row++) {
             for (let col = 0; col < dotsX; col++) {
-              const dotX = startX + col * spacing;
-              const dotY = startY + row * spacing;
+              const dotX = startX + col * spacingSvg;
+              const dotY = startY + row * spacingSvg;
 
               const pasteCircle = document.createElementNS(NS, "circle");
               pasteCircle.setAttribute("cx", dotX);
               pasteCircle.setAttribute("cy", dotY);
-              pasteCircle.setAttribute("r", dotRadius);
+              pasteCircle.setAttribute("r", dotRadiusSvg);
               pasteCircle.setAttribute("fill", "rgba(0, 255, 0, 0.7)");
               pasteCircle.setAttribute("stroke", "#00ff00ff");
-              pasteCircle.setAttribute("stroke-width", dotRadius * 0.1);
+              pasteCircle.setAttribute("stroke-width", dotRadiusSvg * 0.1);
               gm.appendChild(pasteCircle);
 
               const dotText = document.createElementNS(NS, "text");
               dotText.setAttribute("x", dotX);
-              dotText.setAttribute("y", dotY + dotRadius * 0.25);
+              dotText.setAttribute("y", dotY + dotRadiusSvg * 0.25);
               dotText.setAttribute("text-anchor", "middle");
-              dotText.setAttribute("font-size", dotRadius * 0.8);
+              dotText.setAttribute("font-size", dotRadiusSvg * 0.8);
               dotText.setAttribute("fill", "#ffffff");
               dotText.setAttribute("font-weight", "bold");
               dotText.textContent = dotIndex++;
@@ -1420,7 +1426,7 @@ export default function App() {
 
     console.log('Pad selection details:', {
       clickMm: mm,
-      hitPad: hit.pad,
+      hitPad: hit.pad + 1,
       hitPos: hit.pos,
       padCenter,
       distanceToCenter: hit.distanceToCenter
@@ -2153,6 +2159,14 @@ export default function App() {
                 </div>
               )}
             </div>
+            <button
+              className="btn"
+              onClick={goToPcbOrigin}
+              disabled={!isSerialConnected || (!xf && !pcbOriginOffset)}
+              title="Move nozzle to PCB Gerber Origin"
+            >
+              🎯 Go to PCB Origin
+            </button>
           </div>
 
           <div style={{ display: activeComponent === 'CameraPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
@@ -2181,6 +2195,7 @@ export default function App() {
               layerData={layerData}
               onUpdateFiducials={handleFiducialsUpdate}
               activeBoardName={panelBoards[activeBoardIndexState]?.name || 'Unknown Board'}
+              panelBoards={panelBoards}
               setPanelBoards={setPanelBoards}
               pads={pads}
             />

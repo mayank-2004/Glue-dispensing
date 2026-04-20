@@ -24,17 +24,39 @@ export function extractPadsMm(gerberText) {
     if (macro) {
       const macroName = macro[1];
       const macroContent = macro[2];
-      // Extract approximate dimensions from macro content
-      const coords = macroContent.match(/([+-]?\d*\.?\d+)/g) || [];
-      const numbers = coords.map(parseFloat).filter(n => !isNaN(n) && n !== 0);
-
-      let width = 1.5, height = 1.7; // Default sizes
-      if (numbers.length >= 4) {
-        const xCoords = numbers.filter((_, i) => i % 2 === 0);
-        const yCoords = numbers.filter((_, i) => i % 2 === 1);
-        width = Math.max(...xCoords) - Math.min(...xCoords);
-        height = Math.max(...yCoords) - Math.min(...yCoords);
+      let width = 1.0, height = 1.0; // Default sizes
+      
+      const primLines = macroContent.split('*');
+      let maxWidth = 0, maxHeight = 0;
+      
+      for(const line of primLines) {
+        const parts = line.split(',').map(s => parseFloat(s));
+        if(parts.length > 0 && !isNaN(parts[0])) {
+          const prim = parts[0];
+          if(prim === 1 && parts.length >= 3 && !isNaN(parts[2])) {
+            // Circle: 1, exposure, diameter, cx, cy
+            const d = parts[2];
+            maxWidth = Math.max(maxWidth, d);
+            maxHeight = Math.max(maxHeight, d);
+          } else if(prim === 21 && parts.length >= 4 && !isNaN(parts[2]) && !isNaN(parts[3])) {
+            // Center rect: 21, exposure, width, height, cx, cy, rot
+            maxWidth = Math.max(maxWidth, parts[2]);
+            maxHeight = Math.max(maxHeight, parts[3]);
+          } else if((prim === 20 || prim === 2) && parts.length >= 7 && !isNaN(parts[2])) {
+            // Vector/Line: 20, exposure, width, x1, y1, x2, y2, rot
+            const w = parts[2] || 0;
+            const x1 = parts[3] || 0; const y1 = parts[4] || 0;
+            const x2 = parts[5] || 0; const y2 = parts[6] || 0;
+            const lx = Math.abs(x2 - x1) + w;
+            const ly = Math.abs(y2 - y1) + w;
+            maxWidth = Math.max(maxWidth, lx);
+            maxHeight = Math.max(maxHeight, ly);
+          }
+        }
       }
+      
+      if (maxWidth > 0) width = maxWidth;
+      if (maxHeight > 0) height = maxHeight;
 
       macros[macroName] = { width, height, shape: 'MACRO' };
     }

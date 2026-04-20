@@ -12,7 +12,7 @@ export class SafePathPlanner {
     let currentPoint = referencePoint;
 
     // Process pads in order (Linear Sequence)
-    pads.forEach((pad, index) => {
+    pads.forEach((pad) => {
       // Always generate a safe path (Lift -> Move -> Lower)
       // This guarantees no collisions with components between pads
       const safePath = this.generateSafePath(currentPoint, pad);
@@ -21,7 +21,7 @@ export class SafePathPlanner {
         ...pad,
         safePath,
         pathDistance: safePath.totalDistance,
-        sequenceOrder: index + 1,
+        sequenceOrder: sequence.length + 1,
         requiresHighClearance: false // Default to standard safe height
       });
 

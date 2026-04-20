@@ -147,7 +147,6 @@ export class DispensingSequencer {
       travelSpeed = this.travelSpeed,
       dispensingSpeed = this.dispensingSpeed,
       pressureSettings = {},
-      speedSettings = {},
       xf,
       applyXf,
       toolOffset = { dx: 0, dy: 0 },
@@ -186,7 +185,7 @@ export class DispensingSequencer {
       };
     };
 
-    const ref = transform(referencePoint);
+    transform(referencePoint); // Validate reference point can be transformed
 
     let gcode = [];
 

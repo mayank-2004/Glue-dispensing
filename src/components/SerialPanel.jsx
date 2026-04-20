@@ -112,7 +112,7 @@ export default function SerialPanel({
       if (window.pauseSerialPolling) return; // Prevent background M114s causing 'ok' spam
       try {
         await window.serial.writeLine('M114');
-      } catch (e) { /* ignore */ }
+      } catch { /* ignore */ }
     }, 500);
     return interval;
   };
@@ -225,11 +225,11 @@ export default function SerialPanel({
         {/* Left Panel: Control Grid */}
         <div className="control-pane">
           <h3>Control</h3>
-          <div className="control-grid-3">
+          {/* <div className="control-grid-3">
             <button className="btn-dark" onClick={() => sendCommand('M8')}>Left Air On</button>
             <button className="btn-dark" onClick={() => sendCommand('M8')}>Right Air On</button>
             <button className="btn-dark" onClick={() => sendCommand('M8')}>Ring Lights On</button>
-
+ 
             <button className="btn-dark" onClick={() => sendCommand('M9')}>Left Air Off</button>
             <button className="btn-dark" onClick={() => sendCommand('M9')}>Right Air Off</button>
             <button className="btn-dark" onClick={() => sendCommand('M9')}>Ring Lights Off</button>
@@ -237,7 +237,7 @@ export default function SerialPanel({
             <button className="btn-dark" onClick={() => sendCommand('M8')}>Left Vac</button>
             <button className="btn-dark" onClick={() => sendCommand('M8')}>Right Vac</button>
             <button className="btn-dark" onClick={() => sendCommand('M18')}>Disable<br />Steppers</button>
-          </div>
+          </div> */}
 
           <div className="control-grid-5" style={{ marginTop: 'auto' }}>
             <button className="btn-dark small" onClick={() => sendCommand('G28 X')}>Home<br />X</button>

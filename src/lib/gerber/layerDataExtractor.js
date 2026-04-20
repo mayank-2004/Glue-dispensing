@@ -45,39 +45,39 @@ export class LayerDataExtractor {
     return layerData;
   }
   
-  static extractPads(gerberText) {
+  static extractPads(_gerberText) {
     // Extract pad information
     const pads = [];
     // Implementation for pad extraction
     return pads;
   }
   
-  static extractOutline(gerberText) {
+  static extractOutline(_gerberText) {
     // Extract board outline
     return { width: 0, height: 0, points: [] };
   }
   
-  static extractTraces(gerberText) {
+  static extractTraces(_gerberText) {
     // Extract copper traces
     return { traces: [], vias: [] };
   }
   
-  static extractSilkscreen(gerberText) {
+  static extractSilkscreen(_gerberText) {
     // Extract silkscreen elements
     return { text: [], graphics: [] };
   }
   
-  static extractSoldermask(gerberText) {
+  static extractSoldermask(_gerberText) {
     // Extract soldermask openings
     return { openings: [] };
   }
   
-  static extractDrills(gerberText) {
+  static extractDrills(_gerberText) {
     // Extract drill holes
     return { holes: [] };
   }
   
-  static extractGenericFeatures(gerberText) {
+  static extractGenericFeatures(_gerberText) {
     // Extract generic features
     return { features: [] };
   }
