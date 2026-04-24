@@ -272,7 +272,7 @@ export default function App() {
     );
     if (!confirmed) return;
 
-    await window.serial.writeLine(`G0 X${targetX.toFixed(3)} Y${targetY.toFixed(3)} F3000`);
+    await window.serial.writeLine(`G0 X${targetX.toFixed(3)} Y${targetY.toFixed(3)} F6000`);
   }, [xf, applyXf, selectedOrigin, pcbOriginOffset]);
 
   const [collisionDetector] = useState(() => new CollisionDetector());
@@ -1096,14 +1096,33 @@ export default function App() {
 
     if (xf) {
       const grect = ensureGroup("overlay-ghost");
-      const board = [
-        { x: geom.minX * geom.mmPerUnit, y: geom.minY * geom.mmPerUnit },
-        { x: (geom.minX + geom.vbW) * geom.mmPerUnit, y: geom.minY * geom.mmPerUnit },
-        { x: (geom.minX + geom.vbW) * geom.mmPerUnit, y: (geom.minY + geom.vbH) * geom.mmPerUnit },
-        { x: geom.minX * geom.mmPerUnit, y: (geom.minY + geom.vbH) * geom.mmPerUnit },
-      ];
+
+      // Fix: Draw the actual board outline in DESIGN SPACE (no machine transform).
+      // The xf transform is design→machine. The SVG viewer is in design space.
+      // Applying xf here shifts the overlay by the full machine offset (~70mm) — wrong!
+      // Instead, draw boardOutline (already in design mm) directly on the SVG.
+      let boardCorners;
+      if (boardOutline) {
+        const { minX, minY, width, height } = boardOutline;
+        boardCorners = [
+          { x: minX,         y: minY          },
+          { x: minX + width, y: minY          },
+          { x: minX + width, y: minY + height },
+          { x: minX,         y: minY + height },
+        ];
+      } else {
+        // Fallback: use viewBox corners in design mm (no transform applied)
+        boardCorners = [
+          { x: geom.minX * geom.mmPerUnit,               y: geom.minY * geom.mmPerUnit },
+          { x: (geom.minX + geom.vbW) * geom.mmPerUnit,  y: geom.minY * geom.mmPerUnit },
+          { x: (geom.minX + geom.vbW) * geom.mmPerUnit,  y: (geom.minY + geom.vbH) * geom.mmPerUnit },
+          { x: geom.minX * geom.mmPerUnit,                y: (geom.minY + geom.vbH) * geom.mmPerUnit },
+        ];
+      }
+
       const poly = document.createElementNS(NS, "polyline");
-      const pts = board.map(p => applyTransform(xf, p)).map(mmToCurrentUnits).map(u => `${u.x},${u.y}`).join(" ");
+      // Map design-space mm → SVG display units (no xf applied)
+      const pts = boardCorners.map(mmToCurrentUnits).map(u => `${u.x},${u.y}`).join(" ");
       poly.setAttribute("points", pts + " " + pts.split(" ")[0]);
       poly.setAttribute("fill", "none");
       poly.setAttribute("stroke", "#00c4ff");
@@ -1113,7 +1132,7 @@ export default function App() {
     } else {
       ensureGroup("overlay-ghost");
     }
-  }, [multiSelectMode, selectedMm, fiducials, xf, selectedOrigin, generatedPath, pads, getSvgEl, getSvgGeom, livePreview, dispensingSequence, showPasteDots, nozzleDia, side]);
+  }, [multiSelectMode, selectedMm, fiducials, xf, selectedOrigin, generatedPath, pads, getSvgEl, getSvgGeom, livePreview, dispensingSequence, showPasteDots, nozzleDia, side, boardOutline]);
 
   const hexToRgba = (hex, a = 0.3) => {
     const h = hex.replace("#", "");
@@ -1875,37 +1894,44 @@ export default function App() {
               className="btn"
               disabled={!isSerialConnected || (referenceType === 'fiducial' && !referencePoint)}
               onClick={async () => {
-                let targetDesign = null;
+                let targetMachine = null;
+
                 if (referenceType === 'origin') {
-                  targetDesign = selectedOrigin;
-                } else if (referencePoint) {
-                  targetDesign = { x: referencePoint.x, y: referencePoint.y };
+                  // Move to Gerber Origin
+                  if (applyXf && xf && selectedOrigin) {
+                    // Best: use fiducial-solved transform
+                    targetMachine = applyTransform(xf, { x: selectedOrigin.x, y: selectedOrigin.y });
+                  } else if (pcbOriginOffset && (pcbOriginOffset.x !== 0 || pcbOriginOffset.y !== 0)) {
+                    // Fallback: user-entered manual offset
+                    targetMachine = { x: pcbOriginOffset.x, y: pcbOriginOffset.y };
+                  } else {
+                    alert("No PCB origin mapped to machine space.\nPlease solve fiducials first, or enter a manual PCB Origin Offset.");
+                    return;
+                  }
+                } else if (referenceType === 'fiducial' && referencePoint) {
+                  // Move to selected fiducial
+                  const fid = fiducials.find(f => f.id === referencePoint.id);
+                  if (fid?.machine) {
+                    // Use the real machine coordinate stored on the fiducial
+                    targetMachine = { x: fid.machine.x, y: fid.machine.y };
+                  } else if (applyXf && xf && fid?.design) {
+                    // Transform design → machine via solved xf
+                    targetMachine = applyTransform(xf, { x: fid.design.x, y: fid.design.y });
+                  } else {
+                    alert(`Fiducial ${referencePoint.id} has no machine coordinate.\nPlease jog to it and capture its machine position first.`);
+                    return;
+                  }
                 }
 
-                if (targetDesign && selectedOrigin) {
-                  let targetMachine = null;
-
-                  if (applyXf && xf) {
-                    targetMachine = applyTransform(xf, targetDesign);
-                  } else {
-                    targetMachine = {
-                      x: targetDesign.x - effectiveOrigin.x,
-                      y: targetDesign.y - effectiveOrigin.y
-                    };
-                  }
-
-                  if (targetMachine) {
-                    const travelF = speedSettings?.travelSpeed || 6000;
-                    const cmd = `G1 X${targetMachine.x.toFixed(3)} Y${targetMachine.y.toFixed(3)} F${travelF}`;
-                    if (confirm(`Move machine to X${targetMachine.x.toFixed(3)} Y${targetMachine.y.toFixed(3)} at F${travelF}?\n(Based on Ref: ${referenceType === 'origin' ? 'Gerber (0,0)' : referencePoint?.id})`)) {
-                      console.log('Moving to reference:', cmd);
-                      if (window.serial && window.serial.writeLine) {
-                        await window.serial.writeLine(cmd);
-                      }
+                if (targetMachine) {
+                  const travelF = speedSettings?.travelSpeed || 6000;
+                  const cmd = `G1 X${targetMachine.x.toFixed(3)} Y${targetMachine.y.toFixed(3)} F${travelF}`;
+                  if (confirm(`Move machine to X${targetMachine.x.toFixed(3)} Y${targetMachine.y.toFixed(3)} at F${travelF}?\n(Ref: ${referenceType === 'origin' ? 'Gerber (0,0)' : referencePoint?.id})`)) {
+                    console.log('Moving to reference:', cmd);
+                    if (window.serial && window.serial.writeLine) {
+                      await window.serial.writeLine(cmd);
                     }
                   }
-                } else {
-                  alert("Origin not detected or invalid reference.");
                 }
               }}
             >
@@ -2198,6 +2224,7 @@ export default function App() {
               panelBoards={panelBoards}
               setPanelBoards={setPanelBoards}
               pads={pads}
+              gerberFiducials={fiducialDetectionResult || []}
             />
           </div>
 

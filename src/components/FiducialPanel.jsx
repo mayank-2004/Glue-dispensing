@@ -190,7 +190,7 @@ export default function FiducialPanel({
                 {f.confidence && <span style={{ fontSize: '0.8em', color: '#666' }}> ({Math.round(f.confidence * 100)}%)</span>}
               </td>
               <td>
-                {f.design ? `X ${f.design.x.toFixed(3)}, Y ${f.design.y.toFixed(3)}` : <em>— click/drag on PCB —</em>}
+                {f.design ? `X ${f.design.x}, Y ${f.design.y}` : <em>— click/drag on PCB —</em>}
               </td>
               <td>
                 <div className="flex-row" style={{ gap: 6, alignItems: 'center' }}>

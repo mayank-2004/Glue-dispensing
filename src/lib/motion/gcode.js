@@ -23,7 +23,6 @@ export function setAbsolute(on = true) {
 }
 
 export function setWorkZero({ x, y, z, r }, axisMap = defaultAxisMap) {
-  // Any unset axis is omitted.
   const parts = [];
   if (x !== undefined) parts.push(`${axisMap.X}0`);
   if (y !== undefined) parts.push(`${axisMap.Y}0`);

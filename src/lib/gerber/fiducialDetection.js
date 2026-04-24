@@ -30,6 +30,7 @@ export function detectFiducials(gerberText) {
         // Some fiducials might have hole definitions (second parameter)
         const holeDia = ad[3] ? parseFloat(ad[3]) : 0;
         apertures.set(dCode, { type: 'circle', diameter, holeDiameter: holeDia });
+        console.log(`[FiducialParser] Aperture D${dCode}: CIRCLE diameter=${diameter}${units}${holeDia > 0 ? ` hole=${holeDia}` : ''}`);
       }
 
       // Also check for rectangular apertures that might be fiducial markers
@@ -41,6 +42,7 @@ export function detectFiducials(gerberText) {
         // Square apertures might be fiducial markers
         if (Math.abs(width - height) < 0.1) {
           apertures.set(dCode, { type: 'square', diameter: width });
+          console.log(`[FiducialParser] Aperture D${dCode}: SQUARE size=${width}${units}`);
         }
       }
     }
@@ -92,14 +94,19 @@ export function detectFiducials(gerberText) {
 
       if (/[XY]/i.test(t)) {
         const { x, y } = parseXY(t, { x: curX, y: curY });
+        curX = x;
+        curY = y;
+      }
 
-        if (currentD === 3 && currentAperture) { // FLASH operation
-          const diameter = currentAperture.diameter;
+      if (currentD === 3 && currentAperture) { // FLASH operation
+        const diameter = currentAperture.diameter;
 
-          // Convert to mm if needed
-          const xMm = units === 'in' ? x * IN2MM : x;
-          const yMm = units === 'in' ? y * IN2MM : y;
-          const diameterMm = units === 'in' ? diameter * IN2MM : diameter;
+        // Convert to mm if needed
+        const xMm = units === 'in' ? curX * IN2MM : curX;
+        const yMm = units === 'in' ? curY * IN2MM : curY;
+        const diameterMm = units === 'in' ? diameter * IN2MM : diameter;
+        
+        console.log(`[FiducialParser] Flash detected: X${xMm.toFixed(2)} Y${yMm.toFixed(2)} dia=${diameterMm.toFixed(2)}mm`);
 
           // Check if this could be a fiducial based on size
           // Fiducials are typically 0.5-5mm in diameter
@@ -126,13 +133,12 @@ export function detectFiducials(gerberText) {
           }
         }
 
-        curX = x;
-        curY = y;
-      }
     }
 
     // Sort candidates by fiducial score before filtering
     candidates.sort((a, b) => (b.fiducialScore || 1) - (a.fiducialScore || 1));
+
+    console.log(`[FiducialParser] Raw flash candidates (0.5-5mm circles): ${candidates.length}`, candidates.map(c => `(${c.x.toFixed(2)},${c.y.toFixed(2)}) dia=${c.diameter.toFixed(2)}mm score=${c.fiducialScore}`));
 
     return filterFiducialCandidates(candidates);
   } catch (error) {
@@ -161,7 +167,7 @@ function filterFiducialCandidates(candidates) {
   // Group candidates by diameter (fiducials usually have same size)
   const diameterGroups = new Map();
   filtered.forEach(c => {
-    const key = Math.round(c.diameter * 100) / 100; // Round to 0.01mm
+    const key = Math.round(c.diameter * 100) / 100;
     if (!diameterGroups.has(key)) {
       diameterGroups.set(key, []);
     }
@@ -276,11 +282,8 @@ function calculateDistributionScore(candidates) {
  * Analyze all layers to find fiducials
  */
 export function analyzeFiducialsInLayers(layers) {
-  console.log('Analyzing', layers.length, 'layers for fiducials...');
+  console.log('[FiducialParser] Layers available:', layers.map(l => `${l.filename}(${l.type})`));
   const allFiducials = [];
-
-  // Check copper layers, soldermask, and drill files for fiducials
-  // Also check any layer that might contain fiducials
   const relevantLayers = layers.filter(layer =>
     layer.type === 'copper' ||
     layer.type === 'soldermask' ||

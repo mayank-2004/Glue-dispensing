@@ -27,7 +27,8 @@ export default function CameraPanel({
   pixelsPerMm,
   setPixelsPerMm,
   fiducialVisionDetector,
-  pads = []
+  pads = [],
+  gerberFiducials = []  // Raw Gerber-parsed fiducial positions (design space)
 }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -61,6 +62,7 @@ export default function CameraPanel({
   const [pendingPick, setPendingPick] = useState(null);
   const [showOverlay, setShowOverlay] = useState(true);
   const [measureMode, setMeasureMode] = useState(false);
+  const [lastClickPx, setLastClickPx] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
 
   const visionResultRef = useRef(null);
@@ -379,7 +381,8 @@ export default function CameraPanel({
       const baseWorld = (applyXf && xf && selectedDesign) ? applyTransform(xf, selectedDesign) : (selectedDesign || { x: 0, y: 0 });
       const pxmm = pxPerMmAt(baseWorld) || pixelsPerMm;
       const mm = Math.hypot(dx, dy) / pxmm;
-      ctx.fillText(`${mm.toFixed(3)} mm (${dx.toFixed(1)}px, ${dy.toFixed(1)}px)`,
+      const pxDist = Math.hypot(dx, dy);
+      ctx.fillText(`${mm.toFixed(3)} mm  (${pxDist.toFixed(1)} pixels)`,
         predictedPx.u + 8, predictedPx.v - 8);
     }
   }
@@ -581,6 +584,54 @@ export default function CameraPanel({
     };
   };
 
+  // --- DYNAMIC FIDUCIAL API FOR AUTOMATED JOBS ---
+  useEffect(() => {
+    window.__SNAP_FIDUCIAL_MACHINE_COORD__ = async () => {
+      if (!streamOn || !canvasRef.current || !videoRef.current || !machinePositionRef.current) {
+        console.warn("[VisionBridge] Camera not ready or machine position unknown.");
+        return null;
+      }
+      
+      try {
+        const pxmm = pixelsPerMm || 20;
+        const result = await fiducialDetector.detectFiducialsInFrame(
+          videoRef.current, [], { pxPerMm: pxmm }
+        );
+
+        if (result && result.fiducials && result.fiducials.length > 0) {
+          const detected = result.fiducials[0];
+          
+          // Calculate how far the fiducial is from the dead center of the camera
+          const vw = videoRef.current.videoWidth;
+          const vh = videoRef.current.videoHeight;
+          const crosshairCoord = getMachineCoordinateFromPixel(vw / 2, vh / 2, vw, vh);
+          const detectedCoord = getMachineCoordinateFromPixel(detected.pixelPosition.x, detected.pixelPosition.y, vw, vh);
+          
+          if (crosshairCoord && detectedCoord) {
+            const dx = detectedCoord.x - crosshairCoord.x;
+            const dy = detectedCoord.y - crosshairCoord.y;
+            
+            // The true machine coordinate is where the CAMERA currently is, plus the visual offset
+            const realNozzleX = machinePositionRef.current.x;
+            const realNozzleY = machinePositionRef.current.y;
+            
+            return {
+              x: realNozzleX + dx,
+              y: realNozzleY + dy,
+              confidence: detected.confidence
+            };
+          }
+        }
+        return null; // Not found in frame
+      } catch (err) {
+        console.error("[VisionBridge] Snap failed:", err);
+        return null;
+      }
+    };
+    
+    return () => delete window.__SNAP_FIDUCIAL_MACHINE_COORD__;
+  }, [streamOn, fiducialDetector, pixelsPerMm, getMachineCoordinateFromPixel]);
+
   // hasJoggedRef: resets when user starts a new detection session.
   const hasJoggedRef = useRef(false);
 
@@ -605,7 +656,7 @@ export default function CameraPanel({
     const pxmm = pixelsPerMm || 20;
     const intervalId = fiducialDetector.startContinuousDetection(
       videoRef.current,
-      (result) => {
+      async (result) => {
         if (result.success && result.fiducials.length > 0) {
           const videoWidth = videoRef.current.videoWidth || 640;
           const videoHeight = videoRef.current.videoHeight || 480;
@@ -726,11 +777,24 @@ export default function CameraPanel({
 
                 // Only update if machine has moved significantly to avoid continuous jitter override logs
                 if (distChange > 0.1) {
+                  // --- DESIGN COORD: snap to nearest Gerber fiducial ---
+                  let designCoord = { x: parseFloat(realMachinePos.x.toFixed(3)), y: parseFloat(realMachinePos.y.toFixed(3)) };
+                  if (gerberFiducials && gerberFiducials.length > 0) {
+                    let nearestGerberFid = null;
+                    let nearestDist = Infinity;
+                    gerberFiducials.forEach(gf => {
+                      const d = Math.hypot(gf.x - newFiducials[targetFidIdx].design?.x, gf.y - newFiducials[targetFidIdx].design?.y);
+                      if (d < nearestDist) { nearestDist = d; nearestGerberFid = gf; }
+                    });
+                    if (nearestGerberFid && nearestDist < 5.0) {
+                      designCoord = { x: nearestGerberFid.x, y: nearestGerberFid.y };
+                      console.log(`[AutoDetect] Snapping F${targetFidIdx+1} design to Gerber fiducial (${designCoord.x.toFixed(3)}, ${designCoord.y.toFixed(3)}) [dist=${nearestDist.toFixed(2)}mm]`);
+                    }
+                  }
                   newFiducials[targetFidIdx] = {
                     ...newFiducials[targetFidIdx],
                     machine: cand.estimatedWorld,
-                    // Use REAL firmware machine position as design coordinate
-                    design: { x: parseFloat(realMachinePos.x.toFixed(3)), y: parseFloat(realMachinePos.y.toFixed(3)) },
+                    design: designCoord,
                     pixelPosition: cand.pixelPosition,
                     autoDetected: true,
                     confidence: cand.confidence
@@ -742,11 +806,29 @@ export default function CameraPanel({
                 // Create totally new fiducial dynamically using explicit math!
                 targetFidIdx = newFiducials.findIndex(f => !f.design);
 
+                // --- DESIGN COORD: snap to nearest Gerber fiducial for brand new fiducial ---
+                let newDesignCoord = { x: parseFloat(realMachinePos.x.toFixed(3)), y: parseFloat(realMachinePos.y.toFixed(3)) };
+                if (gerberFiducials && gerberFiducials.length > 0) {
+                  let nearestGerberFid = null;
+                  let nearestDist = Infinity;
+                  gerberFiducials.forEach(gf => {
+                    // Compare against all already-claimed design coords to avoid duplicates
+                    const alreadyClaimed = newFiducials.some(f => f.design && Math.hypot(f.design.x - gf.x, f.design.y - gf.y) < 1.0);
+                    if (alreadyClaimed) return;
+                    // Use machine position as a rough proxy; after zeroing, this should be close
+                    const d = Math.hypot(gf.x - realMachinePos.x, gf.y - realMachinePos.y);
+                    if (d < nearestDist) { nearestDist = d; nearestGerberFid = gf; }
+                  });
+                  if (nearestGerberFid && nearestDist < 20.0) {
+                    newDesignCoord = { x: nearestGerberFid.x, y: nearestGerberFid.y };
+                    console.log(`[AutoDetect] New fiducial snapped to Gerber (${newDesignCoord.x.toFixed(3)}, ${newDesignCoord.y.toFixed(3)}) [dist=${nearestDist.toFixed(2)}mm]`);
+                  }
+                }
+
                 const newFid = {
                   id: targetFidIdx >= 0 ? newFiducials[targetFidIdx].id : `F${newFiducials.length + 1}`,
                   color: targetFidIdx >= 0 ? newFiducials[targetFidIdx].color : `#${Math.floor(Math.random() * 16777215).toString(16)}`,
-                  // Use REAL firmware machine position as design coordinate
-                  design: { x: parseFloat(realMachinePos.x.toFixed(3)), y: parseFloat(realMachinePos.y.toFixed(3)) },
+                  design: newDesignCoord,
                   machine: cand.estimatedWorld,
                   pixelPosition: cand.pixelPosition,
                   autoDetected: true,
@@ -801,26 +883,41 @@ export default function CameraPanel({
             const detectedFidCoord = getMachineCoordinateFromPixel(detected.pixelPosition.x, detected.pixelPosition.y, videoWidth, videoHeight);
 
             if (crosshairCoord && detectedFidCoord) {
-              let autoDx = detectedFidCoord.x - crosshairCoord.x;
-              let autoDy = detectedFidCoord.y - crosshairCoord.y;
+              // Offset = (where fiducial IS) - (where camera crosshair IS)
+              const dx = parseFloat((detectedFidCoord.x - crosshairCoord.x).toFixed(4));
+              const dy = parseFloat((detectedFidCoord.y - crosshairCoord.y).toFixed(4));
 
-              // Halve the offset to avoid overshoot
-              autoDx = parseFloat((autoDx / 2.0).toFixed(3));
-              autoDy = parseFloat((autoDy / 2.0).toFixed(3));
-
-              // Update display state only when meaningfully changed
-              setCameraOffset(prev => {
-                if (Math.abs(prev.dx - autoDx) > 0.005 || Math.abs(prev.dy - autoDy) > 0.005) {
-                  return { dx: autoDx, dy: autoDy };
+              // Auto-jog ONCE per fiducial location
+              // If we moved more than 5mm away from the last auto-jog spot, reset the flag so we can jog again for the next fiducial!
+              if (hasJoggedRef.current && hasJoggedRef.current.x !== undefined) {
+                const distMoved = Math.hypot(crosshairCoord.x - hasJoggedRef.current.x, crosshairCoord.y - hasJoggedRef.current.y);
+                if (distMoved > 5.0) {
+                  console.log(`[FiducialAlign] Machine moved ${distMoved.toFixed(2)}mm. Resetting auto-jog for new fiducial.`);
+                  hasJoggedRef.current = false;
                 }
-                return prev;
-              });
+              }
 
-              // Auto-jog ONCE per detection session — flag prevents repeat firing
-              if (!hasJoggedRef.current && (Math.abs(autoDx) > 0.005 || Math.abs(autoDy) > 0.005)) {
-                hasJoggedRef.current = true; // Lock immediately before async jog
-                console.log(`[FiducialAlign] Auto-jogging once by ΔX:${autoDx} ΔY:${autoDy}`);
-                jogCameraToNozzle({ dx: autoDx, dy: autoDy });
+              if (!hasJoggedRef.current && (Math.abs(dx) > 0.005 || Math.abs(dy) > 0.005)) {
+                hasJoggedRef.current = { x: crosshairCoord.x, y: crosshairCoord.y }; // Lock immediately
+
+                console.log(`[FiducialAlign] --- Auto-Align Triggered ---`);
+                console.log(`[FiducialAlign] Fiducial: X${detectedFidCoord.x.toFixed(4)} Y${detectedFidCoord.y.toFixed(4)}`);
+                console.log(`[FiducialAlign] Crosshair: X${crosshairCoord.x.toFixed(4)} Y${crosshairCoord.y.toFixed(4)}`);
+                console.log(`[FiducialAlign] Offset: ΔX=${dx} ΔY=${dy}`);
+                console.log(`[FiducialAlign] Sending G-code relative move ΔX:${dx} ΔY:${dy}`);
+
+                try {
+                  // Step 1: Move camera crosshair to exactly center on the fiducial
+                  const camCorrCmds = jogRel({ dx, dy, feed: 800 });
+                  if (window.serial && window.serial.writeLine) {
+                    for (const line of camCorrCmds) await window.serial.writeLine(line);
+                    console.log(`[FiducialAlign] Camera is now perfectly centered on the fiducial.`);
+                  } else {
+                    console.warn('[FiducialAlign] Serial not available, skipping physical jog');
+                  }
+                } catch (err) {
+                  console.error('[FiducialAlign] Jog failed:', err);
+                }
               }
             }
           }

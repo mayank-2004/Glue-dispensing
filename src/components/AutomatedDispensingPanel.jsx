@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { header, home, moveAbs, dispensePoint, jogRel } from "../lib/motion/gcode.js";
-import { applyTransform } from "../lib/utils/transform2d.js";
+import { applyTransform, fitSimilarity } from "../lib/utils/transform2d.js";
 import "./AutomatedDispensingPanel.css";
 import { buildJobGlueSummary, GlueStore } from '../lib/glue/glueTracker.js';
 import { getZOffsetForPoint } from './BedCalibrationPanel.jsx';
@@ -40,6 +40,7 @@ export default function AutomatedDispensingPanel({
 }) {
   const [isJobRunning, setIsJobRunning] = useState(false);
   const [jobMode, setJobMode] = useState('single'); // 'single' or 'batch'
+  const [dynamicPanelCorrection, setDynamicPanelCorrection] = useState(true); // Default to ON if panelized
 
   const [nozzleDia, setNozzleDia] = useState(() => parseFloat(localStorage.getItem('nozzleDia') || '0.6'));
   const [glueStock, setGlueStock] = useState(() => GlueStore.getStock());
@@ -210,10 +211,86 @@ export default function AutomatedDispensingPanel({
 
       for (let bIdx = 0; bIdx < panelBoards.length; bIdx++) {
         const board = panelBoards[bIdx];
-        const transform = applyXf ? board.xf : null;
+        let transform = applyXf ? board.xf : null;
 
         if (applyXf && !transform) {
           throw new Error(`Board "${board.name}" has no alignment transform (xf) calculated! Please solve its fiducials first.`);
+        }
+
+        // --- DYNAMIC PER-BOARD FIDUCIAL RE-SOLVE ---
+        if (applyXf && dynamicPanelCorrection && board.fiducials?.length >= 2) {
+          console.log(`[Dynamic Vision] Auto-correcting board: ${board.name}`);
+          setJobStage('auto-aligning');
+          
+          let updatedMachineFiducials = [];
+          let success = true;
+
+          for (let f of board.fiducials) {
+            if (!isJobRunning) throw new Error("Job Aborted");
+            if (!f.design) continue;
+
+            // 1. Where do we EXPECT this fiducial to be? (Design -> Machine via global/baseline xf)
+            const expectedMachine = applyTransform(transform, f.design);
+            
+            // 2. We command the CAMERA to go look there. 
+            // The G-code needs to go to (expectedMachine.x - toolOffset.dx) so the camera lens is centered on the fiducial.
+            const camTargetX = expectedMachine.x - toolOffset.dx;
+            const camTargetY = expectedMachine.y - toolOffset.dy;
+            
+            await sendGcodeWait(`G1 Z${safeTravelHeight} F3000`); // Lift Safe
+            await sendGcodeWait(`G1 X${camTargetX.toFixed(3)} Y${camTargetY.toFixed(3)} F4000`); // Slower approach so it doesn't violently shake
+            
+            // 3. Let Camera Mechanics settle completely (give auto-focus time)
+            await sendGcodeWait('M400');
+            await new Promise(r => setTimeout(r, 800)); 
+            
+            // 4. Snap via vision API (with RETRY LOOP for auto-exposure/focus)
+            if (window.__SNAP_FIDUCIAL_MACHINE_COORD__) {
+              let snap = null;
+              for (let attempt = 1; attempt <= 3; attempt++) {
+                snap = await window.__SNAP_FIDUCIAL_MACHINE_COORD__();
+                if (snap && snap.confidence > 0.4) {
+                  break; // Successful snap!
+                }
+                if (attempt < 3) {
+                  console.log(`[Dynamic Vision] Attempt ${attempt} failed, waiting 400ms for autofocus/autoexposure...`);
+                  await new Promise(r => setTimeout(r, 400));
+                }
+              }
+
+              if (snap) {
+                if (snap.confidence > 0.4) {
+                  console.log(`[Dynamic Vision] Fiducial ${f.id} snapped! Machine:`, snap);
+                  updatedMachineFiducials.push({ design: f.design, machine: { x: snap.x, y: snap.y } });
+                } else {
+                  console.warn(`[Dynamic Vision] Fiducial ${f.id} found, but confidence was too low (${snap.confidence.toFixed(2)} <= 0.40). Falling back.`);
+                  success = false;
+                  break;
+                }
+              } else {
+                console.warn(`[Dynamic Vision] Failed to detect any fiducial for ${f.id} at expected coords! Camera sees no circles. Falling back to baseline.`);
+                success = false;
+                break; // Break fiducial loop for this board, fallback completely
+              }
+            } else {
+               console.warn(`[Dynamic Vision] Vision bridge unavailable.`);
+               success = false;
+               break;
+            }
+          }
+
+          if (success && updatedMachineFiducials.length >= 2) {
+            try {
+              const freshXf = fitSimilarity(updatedMachineFiducials.map(f => f.design), updatedMachineFiducials.map(f => f.machine));
+              if (freshXf) {
+                console.log(`[Dynamic Vision] Board ${board.name} corrected successfully! New XF applied.`);
+                transform = freshXf; 
+              }
+            } catch(e) {
+              console.warn(`[Dynamic Vision] Mathematical failure solving fresh XF, falling back to baseline.`);
+            }
+          }
+          setJobStage('dispensing');
         }
 
         console.log(`--- DISPENSING ${board.name.toUpperCase()} ---`);
@@ -450,6 +527,23 @@ export default function AutomatedDispensingPanel({
 
         {!refPoint && <div className="warning">⚠️ No Reference Point Selected</div>}
 
+        {applyXf && (
+          <div style={{ marginTop: 12, padding: '10px', background: '#ffebee', color: '#b71c1c', borderRadius: 4, fontSize: '0.86rem', display: 'flex', flexDirection: 'column', gap: 6, border: '1px solid #ffcdd2' }}>
+            <label style={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+              <input 
+                type="checkbox" 
+                checked={dynamicPanelCorrection} 
+                onChange={e => setDynamicPanelCorrection(e.target.checked)} 
+                style={{ width: 16, height: 16, cursor: 'pointer' }}
+              />
+              Dynamic Panel Auto-Correction (Recommended)
+            </label>
+            <span style={{ fontSize: '0.82rem', marginLeft: 22, opacity: 0.9 }}>
+              If enabled, the camera instantly re-solves the exact fiducials of each board inside the panel moments before dispensing it. This permanently fixes Y/X drift caused by warped or stretched FR4 panel margins!
+            </span>
+          </div>
+        )}
+
         {/* Flow UI */}
         <div className="flow-container">
           <div className="flow-header">
@@ -504,33 +598,12 @@ export default function AutomatedDispensingPanel({
             </div>
           )}
 
-          {/* STAGE: REGISTERING */}
-          {jobStage === 'registering' && (
+          {/* STAGE: AUTO-ALIGNING */}
+          {jobStage === 'auto-aligning' && (
             <div className="stage-box">
-              <h4>Align Fiducial {regIndex + 1}</h4>
-              <p>Fiducial ID: <strong>{fiducialsRef.current.filter(f => f.design)[regIndex]?.id}</strong></p>
-
-              {/* Jog Controls */}
-              <div className="jog-controls-mini">
-                <button onClick={() => jog('Y', -1)} className="btn">Y+</button>
-                <div className="flex-row">
-                  <button onClick={() => jog('X', -1)} className="btn">X-</button>
-                  <button onClick={() => jog('X', 1)} className="btn">X+</button>
-                </div>
-                <button onClick={() => jog('Y', 1)} className="btn">Y-</button>
-                <div className="flex-row mt-1">
-                  <button onClick={() => jogZ(1)} className="btn sm">Z Up</button>
-                  <button onClick={() => jogZ(-1)} className="btn sm">Z Down</button>
-                </div>
-              </div>
-              <div className="step-sel">
-                Step:
-                {[0.1, 1, 5, 10].map(s => (
-                  <button key={s} onClick={() => setJogStep(s)} className={`btn sm ${jogStep === s ? 'primary' : 'secondary'}`}>{s}</button>
-                ))}
-              </div>
-
-              <button className="btn primary full-width mt-2" onClick={confirmFiducial}>✅ Confirm Aligned</button>
+              <h4>Vision Alignment</h4>
+              <p>Camera is precisely scanning fiducials to eliminate stretch/rotation errors...</p>
+              <div className="spinner"></div>
             </div>
           )}
 
