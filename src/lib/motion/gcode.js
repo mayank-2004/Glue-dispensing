@@ -59,7 +59,8 @@ export function jogRel({ dx, dy, dz, dr, feed }, axisMap = defaultAxisMap) {
   if (dr) parts.push(`${axisMap.R}${fmt(dr)}`);
   if (!parts.length) return [];
   const f = feed != null ? ` F${Math.max(1, Math.round(feed))}` : "";
-  return ["G91", `G1 ${parts.join(" ")}${f}`, "G90"];
+  // Bundle into a single string with newlines to prevent async interleaving race conditions!
+  return [`G91\nG1 ${parts.join(" ")}${f}\nG90`];
 }
 
 export function dwell(ms = 50) {

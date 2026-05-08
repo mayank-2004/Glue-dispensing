@@ -120,6 +120,7 @@ export default function JogPanel({
                     <label>
                         Step Size (mm)
                         <select value={stepSize} onChange={(e) => setStepSize(Number(e.target.value))}>
+                            <option value={0.01}>0.01 mm</option>
                             <option value={0.1}>0.1 mm</option>
                             <option value={1}>1.0 mm</option>
                             <option value={5}>5.0 mm</option>

@@ -5,8 +5,10 @@
   "description": "Offline PCB Gerber viewer + SVG export + direct G-code + camera + serial",
   "main": "electron/main.js",
   "scripts": {
-    "dev": "concurrently -k -n VITE,ELECTRON -c blue,green \"vite\" \"npm:dev:electron\"",
+    "dev": "concurrently -k -n VITE,ELECTRON,PYTHON -c blue,green,yellow \"vite\" \"npm:dev:electron\" \"npm:dev:python\"",
     "dev:electron": "wait-on tcp:5173 && electron .",
+    "dev:python": "cd python-vision && python server.py",
+    "install:python": "cd python-vision && pip install -r requirements.txt",
     "build": "vite build && node scripts/copy-vendor.mjs && electron-builder",
     "postinstall": "node scripts/copy-vendor.mjs",
     "lint": "eslint .",

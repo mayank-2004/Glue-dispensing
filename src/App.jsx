@@ -275,6 +275,42 @@ export default function App() {
     await window.serial.writeLine(`G0 X${targetX.toFixed(3)} Y${targetY.toFixed(3)} F6000`);
   }, [xf, applyXf, selectedOrigin, pcbOriginOffset]);
 
+  // Always-fresh ref so the homing callback (fired from SerialPanel timeout) gets current origin state
+  const originStateRef = useRef({ xf, applyXf, selectedOrigin, pcbOriginOffset });
+  useEffect(() => {
+    originStateRef.current = { xf, applyXf, selectedOrigin, pcbOriginOffset };
+  }, [xf, applyXf, selectedOrigin, pcbOriginOffset]);
+
+  const handleHomingComplete = useCallback(async () => {
+    const { xf: curXf, applyXf: curApplyXf, selectedOrigin: curOrigin, pcbOriginOffset: curOffset } = originStateRef.current;
+    let targetX, targetY;
+
+    if (curXf && curApplyXf && curOrigin) {
+      // Transform exists — map gerber origin → machine coords
+      const mo = applyTransform(curXf, { x: curOrigin.x, y: curOrigin.y });
+      targetX = mo.x; targetY = mo.y;
+    } else if (curOrigin) {
+      // Treat gerber origin coords as machine coords (best guess before first solve)
+      targetX = curOrigin.x; targetY = curOrigin.y;
+    } else if (curOffset && (curOffset.x !== 0 || curOffset.y !== 0)) {
+      targetX = curOffset.x; targetY = curOffset.y;
+    } else {
+      console.log('[AutoMove] No PCB origin configured — skipping auto-move after homing.');
+      return;
+    }
+
+    // Clamp to bed limits (235×235 mm)
+    targetX = Math.max(0, Math.min(235, targetX));
+    targetY = Math.max(0, Math.min(235, targetY));
+
+    if (window.serial?.writeLine) {
+      console.log(`[AutoMove] Homing done — moving to PCB origin X${targetX.toFixed(3)} Y${targetY.toFixed(3)}`);
+      await window.serial.writeLine(`G90`);
+      await window.serial.writeLine(`G0 X${targetX.toFixed(3)} Y${targetY.toFixed(3)} F3000`);
+
+    }
+  }, []);
+
   const [collisionDetector] = useState(() => new CollisionDetector());
   const [padDetector] = useState(() => new PadDetector());
   const [qualityController] = useState(() => new QualityController());
@@ -488,6 +524,16 @@ export default function App() {
     setPasteIdx(pi >= 0 ? pi : null);
     if (pi >= 0) {
       const padData = extractPadsMm(ls[pi].text).map(padCenter);
+      console.log("pad data: ", padData);
+      
+      // Calculate and log the distance of each pad from the Gerber design origin (0,0)
+      // console.log('--- Pad Distances from Origin (0,0) ---');
+      // padData.forEach((pad, index) => {
+      //   const distance = Math.sqrt(pad.x * pad.x + pad.y * pad.y);
+      //   console.log(`Pad ${index + 1}: X=${pad.x.toFixed(3)} Y=${pad.y.toFixed(3)} | Distance=${distance.toFixed(3)}mm`);
+      // });
+      // console.log(`Total Pads Extracted: ${padData.length}`);
+      
       setPads(processPads(padData));
       if (ls[pi].side === 'bottom') {
         setSide('bottom');
@@ -498,6 +544,63 @@ export default function App() {
 
     let detectedFiducials = analyzeFiducialsInLayers(ls);
     setFiducialDetectionResult(detectedFiducials);
+
+    // ── GERBER UPLOAD SUMMARY LOG ─────────────────────────────────────────────
+    console.group('%c[Gerber Upload] Parsed file summary', 'color:#4ade80;font-weight:bold;font-size:13px');
+
+    // 1. All files in the upload (recognized + unrecognized)
+    const unrecognized = read.filter(r => !ls.some(l => l.filename === r.name));
+    console.log(`%cFiles uploaded: ${read.length} total | ${ls.length} recognized | ${unrecognized.length} unrecognized`,
+      'font-weight:bold');
+    console.table(
+      ls.map(l => ({
+        filename: l.filename,
+        type:     l.type    || '—',
+        side:     l.side    || '—',
+        chars:    l.text?.length ?? 0,
+      }))
+    );
+    if (unrecognized.length > 0) {
+      console.warn('Unrecognized files (skipped):', unrecognized.map(r => r.name));
+    }
+
+    // 2. Pads (solderpaste layer)
+    const pasteLayerIdx = ls.findIndex(l => l.type === 'solderpaste');
+    if (pasteLayerIdx >= 0) {
+      const rawPads = extractPadsMm(ls[pasteLayerIdx].text);
+      console.log(`%cPads (solderpaste): ${rawPads.length} pads extracted`, 'font-weight:bold');
+      if (rawPads.length > 0) {
+        console.table(rawPads.slice(0, 5).map(p => ({
+          x: p.x, y: p.y, width: p.width, height: p.height, shape: p.shape,
+          component: p.componentIdentifier || '—',
+        })));
+        if (rawPads.length > 5) console.log(`  ... and ${rawPads.length - 5} more pads`);
+      }
+    } else {
+      console.warn('No solderpaste layer found — pad extraction skipped');
+    }
+
+    // 3. Fiducial check — the key output
+    if (detectedFiducials.length > 0) {
+      console.log(`%c✅ FIDUCIALS FOUND: ${detectedFiducials.length}`, 'color:#4ade80;font-weight:bold;font-size:12px');
+      console.table(detectedFiducials.map(f => ({
+        id:             f.id,
+        x_mm:           parseFloat(f.x.toFixed(4)),
+        y_mm:           parseFloat(f.y.toFixed(4)),
+        diameter_mm:    parseFloat((f.diameter || 0).toFixed(3)),
+        confidence_pct: Math.round((f.confidence || 0) * 100),
+        sourceLayer:    f.sourceLayer,
+      })));
+    } else {
+      console.warn(
+        '❌ NO FIDUCIALS DETECTED — Gerber has no circular pads matching the fiducial pattern ' +
+        '(needs ≥2 circular pads, 0.5–5mm ⌀, well-separated). ' +
+        'You will need to place fiducials manually in the Fiducial Panel.'
+      );
+    }
+
+    console.groupEnd();
+    // ── END GERBER UPLOAD SUMMARY LOG ────────────────────────────────────────
 
     const outlineLayer = ls.find(l => l.filename.toLowerCase().includes('outline') || l.filename.toLowerCase().includes('edge'));
     if (outlineLayer) {
@@ -525,29 +628,19 @@ export default function App() {
 
     if (detectedFiducials.length > 0) {
       const colors = ["#2ea8ff", "#8e2bff", "#00c49a", "#ff6b35", "#9c27b0", "#4caf50"];
-      const autoFiducials = detectedFiducials.slice(0, 3).map((fid, idx) => ({
+      // Populate design coords for ALL detected fiducials; leave machine null (user fills via camera)
+      const autoFiducials = detectedFiducials.map((fid, idx) => ({
         id: fid.id || `F${idx + 1}`,
-        design: { x: fid.x, y: fid.y },
-        machine: { x: fid.x, y: fid.y },
+        design: { x: parseFloat(fid.x.toFixed(4)), y: parseFloat(fid.y.toFixed(4)) },
+        machine: null,
         color: colors[idx % colors.length],
         confidence: fid.confidence
       }));
-
-      while (autoFiducials.length < 3) {
-        autoFiducials.push({
-          id: `F${autoFiducials.length + 1}`,
-          design: null,
-          machine: null,
-          color: colors[autoFiducials.length % colors.length]
-        });
-      }
-
       setFiducials(autoFiducials);
     } else {
       setFiducials([
         { id: "F1", design: null, machine: null, color: "#2ea8ff" },
         { id: "F2", design: null, machine: null, color: "#8e2bff" },
-        { id: "F3", design: null, machine: null, color: "#00c49a" },
       ]);
       setFiducialDetectionResult([]);
     }
@@ -1071,6 +1164,45 @@ export default function App() {
       });
     });
 
+    // Draw Gerber-detected fiducials — top side only
+    const ggf = ensureGroup("overlay-gerber-fids");
+    if (side === 'top' && fiducialDetectionResult && fiducialDetectionResult.length > 0) {
+      fiducialDetectionResult.forEach((fid) => {
+        const u = mmToCurrentUnits({ x: fid.x, y: fid.y });
+        const fidColor = '#00e5ff';
+        const ringR = u.r * 1.5;
+        const crossSize = u.r * 2.2;
+
+        const ring = document.createElementNS(NS, 'circle');
+        ring.setAttribute('cx', u.x); ring.setAttribute('cy', u.y);
+        ring.setAttribute('r', ringR);
+        ring.setAttribute('fill', 'rgba(0,229,255,0.15)');
+        ring.setAttribute('stroke', fidColor);
+        ring.setAttribute('stroke-width', u.r * 0.2);
+        ggf.appendChild(ring);
+
+        const dot = document.createElementNS(NS, 'circle');
+        dot.setAttribute('cx', u.x); dot.setAttribute('cy', u.y);
+        dot.setAttribute('r', u.r * 0.3);
+        dot.setAttribute('fill', fidColor);
+        ggf.appendChild(dot);
+
+        const hLine = document.createElementNS(NS, 'line');
+        hLine.setAttribute('x1', u.x - crossSize); hLine.setAttribute('y1', u.y);
+        hLine.setAttribute('x2', u.x + crossSize); hLine.setAttribute('y2', u.y);
+        hLine.setAttribute('stroke', fidColor); hLine.setAttribute('stroke-width', u.r * 0.15);
+        ggf.appendChild(hLine);
+
+        const vLine = document.createElementNS(NS, 'line');
+        vLine.setAttribute('x1', u.x); vLine.setAttribute('y1', u.y - crossSize);
+        vLine.setAttribute('x2', u.x); vLine.setAttribute('y2', u.y + crossSize);
+        vLine.setAttribute('stroke', fidColor); vLine.setAttribute('stroke-width', u.r * 0.15);
+        ggf.appendChild(vLine);
+
+        drawText(ggf, u.x + u.r * 2.4, u.y - u.r * 0.6, fid.id, u.r * 1.0, fidColor, 'rgba(0,0,0,0.7)');
+      });
+    }
+
     if (selectedOrigin) {
       const go = ensureGroup("overlay-origin");
       const uo = mmToCurrentUnits({ x: selectedOrigin.x, y: selectedOrigin.y });
@@ -1132,7 +1264,7 @@ export default function App() {
     } else {
       ensureGroup("overlay-ghost");
     }
-  }, [multiSelectMode, selectedMm, fiducials, xf, selectedOrigin, generatedPath, pads, getSvgEl, getSvgGeom, livePreview, dispensingSequence, showPasteDots, nozzleDia, side, boardOutline]);
+  }, [multiSelectMode, selectedMm, fiducials, xf, selectedOrigin, generatedPath, pads, getSvgEl, getSvgGeom, livePreview, dispensingSequence, showPasteDots, nozzleDia, side, boardOutline, fiducialDetectionResult]);
 
   const hexToRgba = (hex, a = 0.3) => {
     const h = hex.replace("#", "");
@@ -1564,8 +1696,11 @@ export default function App() {
     if (validFiducials.length === 1) {
       const T = fitTranslation(validFiducials.map(f => f.design), validFiducials.map(f => f.machine));
       setXf(T);
-    } else if (validFiducials.length >= 2) {
+    } else if (validFiducials.length === 2) {
       const T = fitSimilarity(validFiducials.map(f => f.design), validFiducials.map(f => f.machine));
+      setXf(T);
+    } else if (validFiducials.length >= 3) {
+      const T = fitAffine(validFiducials.map(f => f.design), validFiducials.map(f => f.machine));
       setXf(T);
     }
   };
@@ -1616,8 +1751,11 @@ export default function App() {
       if (validFiducials.length === 1) {
         const T = fitTranslation(validFiducials.map(f => f.design), validFiducials.map(f => f.machine));
         setXf(T);
-      } else if (validFiducials.length >= 2) {
+      } else if (validFiducials.length === 2) {
         const T = fitSimilarity(validFiducials.map(f => f.design), validFiducials.map(f => f.machine));
+        setXf(T);
+      } else if (validFiducials.length >= 3) {
+        const T = fitAffine(validFiducials.map(f => f.design), validFiducials.map(f => f.machine));
         setXf(T);
       }
     };
@@ -2019,6 +2157,7 @@ export default function App() {
                   isConnected={isSerialConnected}
                   onConnect={() => handleSerialConnect(true)}
                   onDisconnect={() => handleSerialDisconnect()}
+                  onHomingComplete={handleHomingComplete}
                   dispensingSequence={dispensingSequence}
                   jobStatistics={jobStatistics}
                   pressureSettings={pressureSettings}

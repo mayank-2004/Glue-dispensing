@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { header, home, moveAbs, dispensePoint, jogRel } from "../lib/motion/gcode.js";
-import { applyTransform, fitSimilarity } from "../lib/utils/transform2d.js";
+import { applyTransform, fitSimilarity, fitAffine } from "../lib/utils/transform2d.js";
 import "./AutomatedDispensingPanel.css";
 import { buildJobGlueSummary, GlueStore } from '../lib/glue/glueTracker.js';
 import { getZOffsetForPoint } from './BedCalibrationPanel.jsx';
@@ -54,6 +54,26 @@ export default function AutomatedDispensingPanel({
   // const [currentPos, setCurrentPos] = useState({ x: 0, y: 0, z: 0 }); // Replaced by prop
   const [jogStep, setJogStep] = useState(1);
 
+  // Fine-tune residual offset correction (applied on top of everything else)
+  // const [fineTuneX, setFineTuneX] = useState(() => parseFloat(localStorage.getItem('fineTuneX') || '0'));
+  // const [fineTuneY, setFineTuneY] = useState(() => parseFloat(localStorage.getItem('fineTuneY') || '0'));
+
+  // Pad Alignment Preview state
+  const [previewPadIdx, setPreviewPadIdx] = useState(0);
+
+  // Live Calibration Correction — accumulated from user's 'Capture True Center' actions
+  // Each entry: { predicted: {x,y}, actual: {x,y}, delta: {x,y} }
+  const [calibCaptures, setCalibCaptures] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('calibCaptures') || '[]'); } catch { return []; }
+  });
+  // Averaged correction vector applied to every pad
+  const calibCorrection = calibCaptures.length > 0
+    ? {
+        x: calibCaptures.reduce((s, c) => s + c.delta.x, 0) / calibCaptures.length,
+        y: calibCaptures.reduce((s, c) => s + c.delta.y, 0) / calibCaptures.length,
+      }
+    : { x: 0, y: 0 };
+
   // Machine Configuration State
   const [valveOnCmd, setValveOnCmd] = useState('M106 S255');
   const [valveOffCmd, setValveOffCmd] = useState('M107');
@@ -92,6 +112,9 @@ export default function AutomatedDispensingPanel({
   useEffect(() => { xfRef.current = xf; }, [xf]);
   useEffect(() => { fiducialsRef.current = fiducials; }, [fiducials]);
   useEffect(() => { localStorage.setItem('nozzleDia', String(nozzleDia)); }, [nozzleDia]);
+  // useEffect(() => { localStorage.setItem('fineTuneX', String(fineTuneX)); }, [fineTuneX]);
+  // useEffect(() => { localStorage.setItem('fineTuneY', String(fineTuneY)); }, [fineTuneY]);
+  useEffect(() => { localStorage.setItem('calibCaptures', JSON.stringify(calibCaptures)); }, [calibCaptures]);
 
   // Stabilize board dimension calculation
   const currentBoardSize = useMemo(() => {
@@ -218,79 +241,75 @@ export default function AutomatedDispensingPanel({
         }
 
         // --- DYNAMIC PER-BOARD FIDUCIAL RE-SOLVE ---
-        if (applyXf && dynamicPanelCorrection && board.fiducials?.length >= 2) {
-          console.log(`[Dynamic Vision] Auto-correcting board: ${board.name}`);
+        // Only runs if board has fiducials with BOTH design AND machine coords solved
+        const solvedFiducials = board.fiducials?.filter(f => f.design && f.machine) || [];
+        if (applyXf && dynamicPanelCorrection && solvedFiducials.length >= 2) {
+          console.log(`[Dynamic Vision] Auto-correcting board: ${board.name} using ${solvedFiducials.length} fiducials`);
           setJobStage('auto-aligning');
           
           let updatedMachineFiducials = [];
           let success = true;
 
-          for (let f of board.fiducials) {
+          for (let f of solvedFiducials) {
             if (!isJobRunning) throw new Error("Job Aborted");
-            if (!f.design) continue;
 
-            // 1. Where do we EXPECT this fiducial to be? (Design -> Machine via global/baseline xf)
+            // 1. Where do we EXPECT this fiducial to be in machine space?
+            //    The transform maps design → camera machine coords directly.
+            //    No toolOffset subtraction needed here — the transform already
+            //    produces the position where the CAMERA crosshair should be.
             const expectedMachine = applyTransform(transform, f.design);
             
-            // 2. We command the CAMERA to go look there. 
-            // The G-code needs to go to (expectedMachine.x - toolOffset.dx) so the camera lens is centered on the fiducial.
-            const camTargetX = expectedMachine.x - toolOffset.dx;
-            const camTargetY = expectedMachine.y - toolOffset.dy;
+            console.log(`[Dynamic Vision] Moving camera to expected fiducial ${f.id}: X${expectedMachine.x.toFixed(3)} Y${expectedMachine.y.toFixed(3)}`);
+            await sendGcodeWait(`G1 Z${safeTravelHeight} F3000`);
+            await sendGcodeWait(`G1 X${expectedMachine.x.toFixed(3)} Y${expectedMachine.y.toFixed(3)} F4000`);
             
-            await sendGcodeWait(`G1 Z${safeTravelHeight} F3000`); // Lift Safe
-            await sendGcodeWait(`G1 X${camTargetX.toFixed(3)} Y${camTargetY.toFixed(3)} F4000`); // Slower approach so it doesn't violently shake
-            
-            // 3. Let Camera Mechanics settle completely (give auto-focus time)
+            // 2. Wait for camera mechanics to settle
             await sendGcodeWait('M400');
             await new Promise(r => setTimeout(r, 800)); 
             
-            // 4. Snap via vision API (with RETRY LOOP for auto-exposure/focus)
+            // 3. Snap via vision API
             if (window.__SNAP_FIDUCIAL_MACHINE_COORD__) {
               let snap = null;
               for (let attempt = 1; attempt <= 3; attempt++) {
                 snap = await window.__SNAP_FIDUCIAL_MACHINE_COORD__();
-                if (snap && snap.confidence > 0.4) {
-                  break; // Successful snap!
-                }
+                if (snap && snap.confidence > 0.4) break;
                 if (attempt < 3) {
-                  console.log(`[Dynamic Vision] Attempt ${attempt} failed, waiting 400ms for autofocus/autoexposure...`);
+                  console.log(`[Dynamic Vision] Attempt ${attempt} failed, retrying in 400ms...`);
                   await new Promise(r => setTimeout(r, 400));
                 }
               }
 
-              if (snap) {
-                if (snap.confidence > 0.4) {
-                  console.log(`[Dynamic Vision] Fiducial ${f.id} snapped! Machine:`, snap);
-                  updatedMachineFiducials.push({ design: f.design, machine: { x: snap.x, y: snap.y } });
-                } else {
-                  console.warn(`[Dynamic Vision] Fiducial ${f.id} found, but confidence was too low (${snap.confidence.toFixed(2)} <= 0.40). Falling back.`);
-                  success = false;
-                  break;
-                }
+              if (snap && snap.confidence > 0.4) {
+                console.log(`[Dynamic Vision] Fiducial ${f.id} snapped at Machine(${snap.x.toFixed(3)}, ${snap.y.toFixed(3)}) confidence=${snap.confidence.toFixed(2)}`);
+                updatedMachineFiducials.push({ design: f.design, machine: { x: snap.x, y: snap.y } });
               } else {
-                console.warn(`[Dynamic Vision] Failed to detect any fiducial for ${f.id} at expected coords! Camera sees no circles. Falling back to baseline.`);
+                console.warn(`[Dynamic Vision] Fiducial ${f.id}: ${snap ? `low confidence (${snap.confidence.toFixed(2)})` : 'not detected'}. Falling back to baseline.`);
                 success = false;
-                break; // Break fiducial loop for this board, fallback completely
+                break;
               }
             } else {
-               console.warn(`[Dynamic Vision] Vision bridge unavailable.`);
-               success = false;
-               break;
+              console.warn(`[Dynamic Vision] Vision bridge unavailable. Skipping dynamic correction.`);
+              success = false;
+              break;
             }
           }
 
           if (success && updatedMachineFiducials.length >= 2) {
             try {
-              const freshXf = fitSimilarity(updatedMachineFiducials.map(f => f.design), updatedMachineFiducials.map(f => f.machine));
+              const freshXf = updatedMachineFiducials.length >= 3 
+                ? fitAffine(updatedMachineFiducials.map(f => f.design), updatedMachineFiducials.map(f => f.machine))
+                : fitSimilarity(updatedMachineFiducials.map(f => f.design), updatedMachineFiducials.map(f => f.machine));
               if (freshXf) {
-                console.log(`[Dynamic Vision] Board ${board.name} corrected successfully! New XF applied.`);
+                console.log(`[Dynamic Vision] Board ${board.name} corrected. New XF applied.`);
                 transform = freshXf; 
               }
             } catch(e) {
-              console.warn(`[Dynamic Vision] Mathematical failure solving fresh XF, falling back to baseline.`);
+              console.warn(`[Dynamic Vision] XF solve failed, falling back to baseline: ${e.message}`);
             }
           }
           setJobStage('dispensing');
+        } else if (applyXf && dynamicPanelCorrection && solvedFiducials.length < 2) {
+          console.log(`[Dynamic Vision] Skipping for board "${board.name}" — need ≥2 solved fiducials, got ${solvedFiducials.length}. Using baseline transform.`);
         }
 
         console.log(`--- DISPENSING ${board.name.toUpperCase()} ---`);
@@ -327,14 +346,17 @@ export default function AutomatedDispensingPanel({
             p = { ...p, x: p.x - ox, y: p.y - oy };
           }
 
+          // ─── APPLY CALIBRATION CORRECTION (same as "Move Camera Here") ──────
+          const finalX = p.x + calibCorrection.x;
+          const finalY = p.y + calibCorrection.y;
+
           const pressure = pressureSettings.customPressure || 25;
           const configDwell = pressureSettings.customDwellTime || baseDwellTime;
           const dwell = dispensingSequencer.calculateDwellTime(p, { customDwellTime: configDwell });
 
-          const zCompensated = dispenseHeight + getZOffsetForPoint(p.x, p.y);
           const cmds = dispensePoint({
-            x: p.x, y: p.y,
-            zWork: dispenseHeight + getZOffsetForPoint(p.x, p.y),
+            x: finalX, y: finalY,
+            zWork: dispenseHeight + getZOffsetForPoint(finalX, finalY),
             zSafe: safeTravelHeight,
             feedXY: speedSettings.travelSpeed || 6000,
             feedZ: speedSettings.dispenseSpeed || 300,
@@ -392,6 +414,18 @@ export default function AutomatedDispensingPanel({
   const jogZ = async (dir) => {
     const cmds = jogRel({ dz: dir * 0.5, feed: 500 });
     for (const c of cmds) await sendGcodeWait(c);
+  };
+
+  // Move CAMERA crosshair to a pad position (no tool offset — camera is the reference)
+  // Applies the live calibration correction so the crosshair lands precisely on-center
+  const moveCameraToMachineCoord = async (mx, my) => {
+    if (!window.serial || !window.serial.writeLine) return alert('Serial not connected');
+    const feed = speedSettings?.travelSpeed || 4000;
+    const corrX = mx + calibCorrection.x;
+    const corrY = my + calibCorrection.y;
+    await window.serial.writeLine(`G1 Z${safeTravelHeight} F3000`);
+    await window.serial.writeLine(`G1 X${corrX.toFixed(3)} Y${corrY.toFixed(3)} F${feed}`);
+    console.log(`[AlignPreview] Camera → predicted(${mx.toFixed(3)},${my.toFixed(3)}) corrected(${corrX.toFixed(3)},${corrY.toFixed(3)}) correction(${calibCorrection.x.toFixed(3)},${calibCorrection.y.toFixed(3)})`);
   };
 
   const handleDownloadGCode = () => {
@@ -460,6 +494,8 @@ export default function AutomatedDispensingPanel({
               <input type="number" step="10" value={baseDwellTime} onChange={e => setBaseDwellTime(Number(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
             </label>
           </div>
+
+          {/* Fine-Tune XY Correction UI disabled — fineTuneX and fineTuneY state removed */}
           <div style={{ marginTop: 14 }}>
             <GlueGauge
               summary={glueSummary}
@@ -544,6 +580,140 @@ export default function AutomatedDispensingPanel({
           </div>
         )}
 
+        {/* ── Pad Alignment Preview ─────────────────────────── */}
+        {activeSequence.length > 0 && fiducials.some(f => f.design && f.machine) && (
+          <div style={{ marginTop: 14, padding: '12px', background: '#0d1117', border: '1px solid #30363d', borderRadius: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <span style={{ fontWeight: 'bold', color: '#58a6ff', fontSize: '0.9em' }}>🔍 Pad Alignment Preview</span>
+              {calibCaptures.length > 0 && (
+                <span style={{ fontSize: '0.75em', color: '#3fb950', background: '#0d2a0d', border: '1px solid #3fb950', borderRadius: 4, padding: '2px 6px' }}>
+                  ✓ {calibCaptures.length} calibration point{calibCaptures.length > 1 ? 's' : ''} · correction: X{calibCorrection.x >= 0 ? '+' : ''}{calibCorrection.x.toFixed(3)} Y{calibCorrection.y >= 0 ? '+' : ''}{calibCorrection.y.toFixed(3)} mm
+                </span>
+              )}
+            </div>
+            <div style={{ fontSize: '0.78em', color: '#8b949e', marginBottom: 10 }}>
+              Move camera crosshair over each pad to verify alignment. Jog precisely onto a pad center, then click
+              <strong style={{ color: '#f0a500' }}> 📌 Capture True Center</strong> to measure &amp; correct systematic offset.
+            </div>
+
+            {calibCaptures.length > 0 && (
+              <div style={{ marginBottom: 10, padding: '6px 10px', background: '#161b22', borderRadius: 6, fontSize: '0.78em', border: '1px solid #3fb950' }}>
+                <div style={{ color: '#3fb950', fontWeight: 'bold', marginBottom: 4 }}>📐 Active Correction (applied to camera preview moves)</div>
+                <div style={{ color: '#e6edf3', fontFamily: 'monospace' }}>
+                  ΔX = <span style={{ color: '#56d364' }}>{calibCorrection.x >= 0 ? '+' : ''}{calibCorrection.x.toFixed(4)} mm</span>
+                  &nbsp;&nbsp;ΔY = <span style={{ color: '#56d364' }}>{calibCorrection.y >= 0 ? '+' : ''}{calibCorrection.y.toFixed(4)} mm</span>
+                  &nbsp;&nbsp;<span style={{ color: '#8b949e' }}>(avg of {calibCaptures.length} captures)</span>
+                </div>
+                <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                  {/* Apply-to-Dispensing button disabled — fineTuneX/Y state removed */}
+                  <button
+                    style={{ fontSize: '0.75em', padding: '3px 8px', background: '#3a1111', color: '#f85149', border: '1px solid #f85149', borderRadius: 4, cursor: 'pointer' }}
+                    onClick={() => setCalibCaptures([])}
+                  >✕ Clear Calibration Points</button>
+                </div>
+                {/* Fine-tune sync warning disabled — fineTuneX/Y state removed */}
+              </div>
+            )}
+
+            {(() => {
+              const pad = activeSequence[previewPadIdx];
+              let previewP = { ...pad };
+              if (side === 'bottom' && currentBoardSize?.width) {
+                previewP.x = currentBoardSize.width - previewP.x;
+              }
+              const machineCoord = (applyXf && xf) ? applyTransform(xf, previewP) : null;
+              // Apply calibration correction to show the corrected target
+              const correctedCoord = machineCoord
+                ? { x: machineCoord.x + calibCorrection.x, y: machineCoord.y + calibCorrection.y }
+                : null;
+
+              const captureCurrentAsCenter = () => {
+                if (!machineCoord) return alert('No predicted machine coordinate for this pad.');
+                if (!machinePosition || !isConnected) return alert('Machine position unknown. Connect machine first.');
+                // delta = actual (current machine pos) - predicted
+                // So correction = actual - predicted
+                const deltaX = machinePosition.x - (machineCoord.x + calibCorrection.x);
+                const deltaY = machinePosition.y - (machineCoord.y + calibCorrection.y);
+                const newCapture = {
+                  padIdx: previewPadIdx,
+                  predicted: { x: machineCoord.x, y: machineCoord.y },
+                  actual: { x: machinePosition.x, y: machinePosition.y },
+                  delta: { x: deltaX + calibCorrection.x, y: deltaY + calibCorrection.y },
+                  timestamp: Date.now()
+                };
+                setCalibCaptures(prev => {
+                  // Replace any previous capture for this same pad index
+                  const filtered = prev.filter(c => c.padIdx !== previewPadIdx);
+                  return [...filtered, newCapture];
+                });
+                console.log(`[CalibCapture] Pad ${previewPadIdx + 1}: predicted=(${machineCoord.x.toFixed(3)},${machineCoord.y.toFixed(3)}) actual=(${machinePosition.x.toFixed(3)},${machinePosition.y.toFixed(3)}) correction=(${newCapture.delta.x.toFixed(3)},${newCapture.delta.y.toFixed(3)})`);
+              };
+
+              return (
+                <>
+                  <div style={{ background: '#161b22', borderRadius: 6, padding: '8px 12px', marginBottom: 10, fontFamily: 'monospace', fontSize: '0.82em' }}>
+                    <div style={{ color: '#8b949e', marginBottom: 4 }}>Pad {previewPadIdx + 1} / {activeSequence.length}</div>
+                    <div>Design: X<span style={{ color: '#79c0ff' }}>{pad.x.toFixed(3)}</span> Y<span style={{ color: '#79c0ff' }}>{pad.y.toFixed(3)}</span> mm</div>
+                    {machineCoord ? (
+                      <div style={{ marginTop: 4 }}>
+                        <div>Predicted: X<span style={{ color: '#56d364' }}>{machineCoord.x.toFixed(3)}</span> Y<span style={{ color: '#56d364' }}>{machineCoord.y.toFixed(3)}</span> mm</div>
+                        {calibCaptures.length > 0 && (
+                          <div style={{ color: '#f0a500' }}>Corrected: X<span style={{ color: '#f0a500' }}>{correctedCoord.x.toFixed(3)}</span> Y<span style={{ color: '#f0a500' }}>{correctedCoord.y.toFixed(3)}</span> mm</div>
+                        )}
+                        <div style={{ color: '#6e7681', marginTop: 2 }}>Current machine: X{machinePosition.x.toFixed(3)} Y{machinePosition.y.toFixed(3)}</div>
+                      </div>
+                    ) : (
+                      <div style={{ color: '#f85149', marginTop: 4 }}>⚠ No transform / fiducials available</div>
+                    )}
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
+                    <button
+                      className="btn secondary" style={{ flex: 1, minWidth: 60 }}
+                      disabled={previewPadIdx <= 0}
+                      onClick={() => setPreviewPadIdx(i => i - 1)}
+                    >◀ Prev</button>
+
+                    <button
+                      className="btn"
+                      style={{ flex: 2, background: machineCoord ? '#1f6feb' : '#444', minWidth: 80 }}
+                      disabled={!machineCoord || !isConnected}
+                      onClick={() => correctedCoord && moveCameraToMachineCoord(machineCoord.x, machineCoord.y)}
+                    >📷 Move Camera Here</button>
+
+                    <button
+                      className="btn secondary" style={{ flex: 1, minWidth: 60 }}
+                      disabled={previewPadIdx >= activeSequence.length - 1}
+                      onClick={() => setPreviewPadIdx(i => i + 1)}
+                    >Next ▶</button>
+                  </div>
+
+                  {/* Live Calibration Capture */}
+                  <div style={{ borderTop: '1px solid #21262d', paddingTop: 8, marginTop: 4 }}>
+                    <div style={{ fontSize: '0.75em', color: '#8b949e', marginBottom: 6 }}>
+                      <strong style={{ color: '#f0a500' }}>📌 Calibration:</strong> Click "Move Camera Here", then jog the machine until the crosshair is <em>exactly</em> on the pad center, then capture.
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button
+                        className="btn"
+                        style={{ flex: 1, background: isConnected && machineCoord ? '#4a3000' : '#333', border: '1px solid #f0a500', color: '#f0a500', fontWeight: 'bold' }}
+                        disabled={!isConnected || !machineCoord}
+                        onClick={captureCurrentAsCenter}
+                        title="Record current machine position as true center of this pad. Computes systematic offset correction."
+                      >📌 Capture True Center</button>
+                    </div>
+                    {calibCaptures.find(c => c.padIdx === previewPadIdx) && (
+                      <div style={{ marginTop: 6, fontSize: '0.75em', color: '#3fb950', fontFamily: 'monospace' }}>
+                        ✓ This pad captured: correction applied (ΔX={calibCaptures.find(c => c.padIdx === previewPadIdx).delta.x.toFixed(3)}, ΔY={calibCaptures.find(c => c.padIdx === previewPadIdx).delta.y.toFixed(3)} mm)
+                      </div>
+                    )}
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        )}
+
         {/* Flow UI */}
         <div className="flow-container">
           <div className="flow-header">
@@ -624,7 +794,6 @@ export default function AutomatedDispensingPanel({
               <button className="btn full-width" onClick={() => setJobStage('idle')}>Done</button>
             </div>
           )}
-
         </div>
       </div>
     </div>

@@ -115,8 +115,8 @@ export default function Viewer({
           </div>
         </div>
       </div>
-      <div className="viewer" style={{ position: 'relative' }}>
-        {/* {side === 'bottom' && (
+      {/* <div className="viewer" style={{ position: 'relative' }}>
+        {side === 'bottom' && (
           <div style={{
             position: 'absolute',
             top: 20,
@@ -136,14 +136,14 @@ export default function Viewer({
           }}>
             ⚠️ BOTTOM VIEW (Mirrored) ⚠️
           </div>
-        )} */}
-        <div
-          ref={canvasRef}
-          className="canvas"
-          onClick={handleCanvasClick}
-          onMouseDown={onMouseDown}
-        />
-      </div>
+        )}
+      </div> */}
+      <div
+        ref={canvasRef}
+        className="canvas"
+        onClick={handleCanvasClick}
+        onMouseDown={onMouseDown}
+      />
     </>
   );
 }

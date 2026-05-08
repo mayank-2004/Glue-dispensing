@@ -6,6 +6,7 @@ export default function SerialPanel({
   isConnected = false,
   onConnect,
   onDisconnect,
+  onHomingComplete,
   machinePosition = { x: 0, y: 0, z: 0 } // Default for safety
 }) {
   const [ports, setPorts] = useState([]);
@@ -96,7 +97,10 @@ export default function SerialPanel({
           setIsHoming(true);
           await window.serial.writeLine('G28');
           // Clear homing status after a reasonable time since we are no longer tracking reach
-          setTimeout(() => setIsHoming(false), 5000);
+          setTimeout(() => {
+            setIsHoming(false);
+            if (onHomingComplete) onHomingComplete();
+          }, 5000);
         } catch (e) {
           console.error(e);
           setIsHoming(false);
