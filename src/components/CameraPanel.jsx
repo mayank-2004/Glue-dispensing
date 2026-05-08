@@ -50,6 +50,39 @@ export default function CameraPanel({
 
   const [streamOn, setStreamOn] = useState(false);
 
+  // ─── Python Vision Mode ────────────────────────────────────────────
+  const [pythonMode, setPythonMode] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('pythonVisionMode') || 'false'); } catch { return false; }
+  });
+  const [pythonServerOk, setPythonServerOk] = useState(false);
+  const [pythonVisionData, setPythonVisionData] = useState(null);
+  const pythonPollRef = useRef(null);  // setInterval handle for vision data polling
+  const PYTHON_URL = 'http://localhost:8000';
+
+  // Persist mode preference
+  useEffect(() => { localStorage.setItem('pythonVisionMode', JSON.stringify(pythonMode)); }, [pythonMode]);
+
+  // Sync pixelsPerMm to Python server whenever it changes
+  useEffect(() => {
+    if (pythonMode && pythonServerOk && pixelsPerMm) {
+      fetch(`${PYTHON_URL}/api/set_px_per_mm/${pixelsPerMm}`, { method: 'POST' }).catch(() => { });
+    }
+  }, [pixelsPerMm, pythonMode, pythonServerOk]);
+
+  // Ping the Python server every 3s to show live status in UI
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const r = await fetch(`${PYTHON_URL}/api/status`, { signal: AbortSignal.timeout(1500) });
+        const d = await r.json();
+        setPythonServerOk(d.ok === true);
+      } catch { setPythonServerOk(false); }
+    };
+    check();
+    const id = setInterval(check, 3000);
+    return () => clearInterval(id);
+  }, []);
+
   useEffect(() => { machinePositionRef.current = machinePosition; }, [machinePosition]);
 
   const [pairs, setPairs] = useState(() => {
@@ -255,18 +288,35 @@ export default function CameraPanel({
 
   async function startCam() {
     if (streamOn) return;
+    if (pythonMode) {
+      // Python mode: camera is managed by Python server. Just mark as streaming.
+      if (!pythonServerOk) {
+        alert('Python Vision Server is not running!\nRun: npm run install:python\nThen restart npm run dev');
+        return;
+      }
+      setStreamOn(true);
+      return;
+    }
+    // Browser mode: use getUserMedia
     try {
-      const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+      const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
       videoRef.current.srcObject = s;
       await videoRef.current.play();
       setStreamOn(true);
       tick();
     } catch (e) {
       console.error(e);
-      alert("Could not start camera. Check permissions or device.");
+      alert('Could not start camera. Check permissions or device.');
     }
   }
   function stopCam() {
+    if (pythonMode) {
+      // Stop Python detection polling if running
+      if (pythonPollRef.current) { clearInterval(pythonPollRef.current); pythonPollRef.current = null; }
+      fetch(`${PYTHON_URL}/api/stop_detect`).catch(() => { });
+      setStreamOn(false);
+      return;
+    }
     const v = videoRef.current;
     if (v?.srcObject) { v.srcObject.getTracks().forEach(t => t.stop()); v.srcObject = null; }
     setStreamOn(false);
@@ -332,8 +382,6 @@ export default function CameraPanel({
       ctx.fillText(`X: ${displayX.toFixed(3)} mm`, crosshairX + 12, crosshairY + 0);
       ctx.fillText(`Y: ${displayY.toFixed(3)} mm`, crosshairX + 12, crosshairY + 14);
     }
-
-    // Vision detection overlay removed — the cyan crosshair already marks the fiducial center accurately.
 
     // Draw quality analysis result
     if (qualityEnabled && qualityResult) {
@@ -587,56 +635,257 @@ export default function CameraPanel({
   // --- DYNAMIC FIDUCIAL API FOR AUTOMATED JOBS ---
   useEffect(() => {
     window.__SNAP_FIDUCIAL_MACHINE_COORD__ = async () => {
-      if (!streamOn || !canvasRef.current || !videoRef.current || !machinePositionRef.current) {
+      if (!streamOn || !machinePositionRef.current) {
         console.warn("[VisionBridge] Camera not ready or machine position unknown.");
         return null;
       }
-      
-      try {
-        const pxmm = pixelsPerMm || 20;
-        const result = await fiducialDetector.detectFiducialsInFrame(
-          videoRef.current, [], { pxPerMm: pxmm }
-        );
 
-        if (result && result.fiducials && result.fiducials.length > 0) {
-          const detected = result.fiducials[0];
-          
-          // Calculate how far the fiducial is from the dead center of the camera
-          const vw = videoRef.current.videoWidth;
-          const vh = videoRef.current.videoHeight;
-          const crosshairCoord = getMachineCoordinateFromPixel(vw / 2, vh / 2, vw, vh);
-          const detectedCoord = getMachineCoordinateFromPixel(detected.pixelPosition.x, detected.pixelPosition.y, vw, vh);
-          
-          if (crosshairCoord && detectedCoord) {
-            const dx = detectedCoord.x - crosshairCoord.x;
-            const dy = detectedCoord.y - crosshairCoord.y;
-            
-            // The true machine coordinate is where the CAMERA currently is, plus the visual offset
-            const realNozzleX = machinePositionRef.current.x;
-            const realNozzleY = machinePositionRef.current.y;
-            
+      try {
+        if (pythonMode) {
+          // --- Python Vision Mode ---
+          const r = await fetch(`${PYTHON_URL}/api/vision_data`);
+          const data = await r.json();
+          if (data && data.best_circle) {
+            const dx = data.offset_dx;
+            const dy = data.offset_dy;
+            const realNozzleX = machinePositionRef.current.x + (cameraOffset?.dx || 0);
+            const realNozzleY = machinePositionRef.current.y + (cameraOffset?.dy || 0);
             return {
               x: realNozzleX + dx,
               y: realNozzleY + dy,
-              confidence: detected.confidence
+              confidence: 1.0
             };
           }
+          return null; // Not found in frame
+        } else {
+          // --- Browser OpenCV.js Mode ---
+          if (!canvasRef.current || !videoRef.current) {
+            console.warn("[VisionBridge] Browser video element not ready.");
+            return null;
+          }
+          const pxmm = pixelsPerMm || 20;
+          const result = await fiducialDetector.detectFiducialsInFrame(
+            videoRef.current, [], { pxPerMm: pxmm }
+          );
+
+          if (result && result.fiducials && result.fiducials.length > 0) {
+            const detected = result.fiducials[0];
+            const vw = videoRef.current.videoWidth;
+            const vh = videoRef.current.videoHeight;
+            const crosshairCoord = getMachineCoordinateFromPixel(vw / 2, vh / 2, vw, vh);
+            const detectedCoord = getMachineCoordinateFromPixel(detected.pixelPosition.x, detected.pixelPosition.y, vw, vh);
+
+            if (crosshairCoord && detectedCoord) {
+              const dx = detectedCoord.x - crosshairCoord.x;
+              const dy = detectedCoord.y - crosshairCoord.y;
+
+              const realNozzleX = machinePositionRef.current.x + (cameraOffset?.dx || 0);
+              const realNozzleY = machinePositionRef.current.y + (cameraOffset?.dy || 0);
+
+              return {
+                x: realNozzleX + dx,
+                y: realNozzleY + dy,
+                confidence: detected.confidence
+              };
+            }
+          }
+          return null; // Not found in frame
         }
-        return null; // Not found in frame
       } catch (err) {
         console.error("[VisionBridge] Snap failed:", err);
         return null;
       }
     };
-    
+
     return () => delete window.__SNAP_FIDUCIAL_MACHINE_COORD__;
-  }, [streamOn, fiducialDetector, pixelsPerMm, getMachineCoordinateFromPixel]);
+  }, [streamOn, pythonMode, cameraOffset, pixelsPerMm, fiducialDetector, getMachineCoordinateFromPixel]);
+
+  // --- PAD OFFSET BRIDGE FOR VISUAL SERVO (browser fallback) ---
+  // AutomatedDispensingPanel calls window.__DETECT_PAD_OFFSET__() when the
+  // Python server is unreachable. Returns { found, offset_dx, offset_dy } in mm
+  // so the servo loop can apply the same damped correction in browser-only mode.
+  useEffect(() => {
+    window.__DETECT_PAD_OFFSET__ = async () => {
+      if (!streamOn || !videoRef.current) return { found: false };
+      try {
+        const pxmm = pixelsPerMm || 20;
+        const result = await fiducialDetector.detectCenterFeature(videoRef.current);
+        if (result && result.success && result.detected && result.pixelDelta) {
+          return {
+            found: true,
+            offset_dx: result.pixelDelta.pixelDx / pxmm,
+            offset_dy: result.pixelDelta.pixelDy / pxmm,
+          };
+        }
+        return { found: false };
+      } catch {
+        return { found: false };
+      }
+    };
+    return () => delete window.__DETECT_PAD_OFFSET__;
+  }, [streamOn, pixelsPerMm, fiducialDetector]);
+
+  // --- FIDUCIAL STORAGE HELPER ---
+  // Takes a confirmed machine coordinate for a fiducial and saves it into the panelBoards state
+  const saveFiducialCoordinate = (estimatedWorld, confidence = 1.0) => {
+    const cProps = latestPropsRef.current;
+    const currentFids = cProps.fiducials || [];
+    const updateCallback = cProps.onUpdateFiducials;
+    const boardName = cProps.activeBoardName || 'Unknown Board';
+    const pBoards = cProps.panelBoards;
+    const setPBoards = cProps.setPanelBoards;
+
+    const hasMultiBoards = pBoards && pBoards.length > 0 && setPBoards;
+    let changedBoards = false;
+    let nextBoards = hasMultiBoards ? [...pBoards] : [];
+    let fidsChanged = false;
+    let nextFids = [...currentFids];
+    const activeBIdx = hasMultiBoards ? Math.max(0, pBoards.findIndex(b => b.name === boardName)) : -1;
+
+    // Sort Gerber fiducials top-left first (ascending Y, then X within same row).
+    // This gives a consistent 1-to-1 mapping: snap 1 → gerberFids[0], snap 2 → gerberFids[1], ...
+    const sortedGerberFids = gerberFiducials && gerberFiducials.length > 0
+      ? [...gerberFiducials].sort((a, b) => Math.abs(a.y - b.y) < 2 ? a.x - b.x : a.y - b.y)
+      : [];
+
+    if (hasMultiBoards && nextBoards[activeBIdx]) {
+      const newFiducials = [...nextBoards[activeBIdx].fiducials];
+
+      // How many slots already have a machine coord from camera snapping?
+      const snapCount = newFiducials.filter(f => f.machine && f.autoDetected).length;
+
+      // Find the first slot that doesn't have a machine coord yet
+      const targetFidIdx = newFiducials.findIndex(f => !f.machine);
+
+      // Pick the Gerber design coordinate by sequential index — avoids cross-space distance comparisons
+      let designCoord;
+      if (sortedGerberFids.length > snapCount) {
+        const gf = sortedGerberFids[snapCount];
+        designCoord = { x: gf.x, y: gf.y };
+        console.log(`[FiducialDetect] Snap #${snapCount + 1} → Gerber design (${gf.x.toFixed(3)}, ${gf.y.toFixed(3)}), machine (${estimatedWorld.x.toFixed(3)}, ${estimatedWorld.y.toFixed(3)})`);
+      } else {
+        // Fallback: no Gerber fiducials available, keep slot's existing design or leave null
+        const existing = targetFidIdx >= 0 ? newFiducials[targetFidIdx].design : null;
+        designCoord = existing || null;
+        console.warn('[FiducialDetect] No Gerber fiducial for this snap — design coord not set');
+      }
+
+      const newFid = {
+        id: targetFidIdx >= 0 ? newFiducials[targetFidIdx].id : `F${newFiducials.length + 1}`,
+        color: targetFidIdx >= 0 ? newFiducials[targetFidIdx].color : '#2ea8ff',
+        design: designCoord,
+        machine: estimatedWorld,
+        autoDetected: true,
+        confidence
+      };
+
+      if (targetFidIdx >= 0) newFiducials[targetFidIdx] = newFid;
+      else newFiducials.push(newFid);
+      nextBoards[activeBIdx] = { ...nextBoards[activeBIdx], fiducials: newFiducials };
+      changedBoards = true;
+    } else {
+      // Legacy single-board path
+      const emptyIdx = nextFids.findIndex(f => !f.machine);
+      const snapCount = nextFids.filter(f => f.machine && f.autoDetected).length;
+      const pushIdx = emptyIdx !== -1 ? emptyIdx : nextFids.length;
+
+      let designCoord = null;
+      if (sortedGerberFids.length > snapCount) {
+        const gf = sortedGerberFids[snapCount];
+        designCoord = { x: gf.x, y: gf.y };
+      }
+
+      nextFids[pushIdx] = {
+        ...(nextFids[pushIdx] || { id: `F${pushIdx + 1}`, color: '#2ea8ff' }),
+        machine: estimatedWorld,
+        design: designCoord,
+        autoDetected: true,
+        confidence
+      };
+      fidsChanged = true;
+      console.log(`[FiducialDetect] Saved fiducial snap #${snapCount + 1} at Machine(${estimatedWorld.x.toFixed(3)}, ${estimatedWorld.y.toFixed(3)})`);
+    }
+
+    if (changedBoards && setPBoards) {
+      setPBoards(nextBoards);
+      console.log(`[FiducialStorage] Saved machine coord (${estimatedWorld.x.toFixed(3)}, ${estimatedWorld.y.toFixed(3)}) to board [${boardName}]`);
+    } else if (fidsChanged && updateCallback) {
+      updateCallback(nextFids);
+    }
+  };
 
   // hasJoggedRef: resets when user starts a new detection session.
   const hasJoggedRef = useRef(false);
 
-  // Start continuous fiducial monitoring
+  // Start continuous fiducial detection — branches on pythonMode
   const startContinuousDetection = () => {
+    if (pythonMode) {
+      // ── Python Mode ─────────────────────────────────────────────────
+      if (!streamOn) { alert('Start the camera first!'); return; }
+      if (detectionInterval) {
+        // Toggle off
+        clearInterval(pythonPollRef.current); pythonPollRef.current = null;
+        fetch(`${PYTHON_URL}/api/stop_detect`, { method: 'POST' }).catch(() => { });
+        setDetectionInterval(null);
+        hasJoggedRef.current = false;
+        return;
+      }
+      // Sync px/mm calibration to Python
+      fetch(`${PYTHON_URL}/api/set_px_per_mm/${pixelsPerMm || 98.5}`, { method: 'POST' }).catch(() => { });
+      // Tell Python to start detecting
+      fetch(`${PYTHON_URL}/api/start_detect`, { method: 'POST' }).catch(() => { });
+      // Poll vision data
+      const pollId = setInterval(async () => {
+        try {
+          const r = await fetch(`${PYTHON_URL}/api/vision_data`);
+          const data = await r.json();
+          setPythonVisionData(data);
+          if (!data.best_circle) return;
+          const dx = parseFloat(data.offset_dx.toFixed(4));
+          const dy = parseFloat(data.offset_dy.toFixed(4));
+          // Reset jog lock if machine moved > 5mm from last jog position
+          if (hasJoggedRef.current && hasJoggedRef.current.x !== undefined) {
+            const machPos = machinePositionRef.current;
+            if (machPos) {
+              const distMoved = Math.hypot(machPos.x - hasJoggedRef.current.x, machPos.y - hasJoggedRef.current.y);
+              if (distMoved > 5.0) {
+                console.log(`[PyFiducialAlign] Machine moved ${distMoved.toFixed(2)}mm — resetting jog lock`);
+                hasJoggedRef.current = false;
+              }
+            }
+          }
+          if (!hasJoggedRef.current && (Math.abs(dx) > 0.005 || Math.abs(dy) > 0.005)) {
+            const machPos = machinePositionRef.current || { x: 0, y: 0 };
+            hasJoggedRef.current = { x: machPos.x, y: machPos.y };
+
+            const camOffset = cameraOffset || { dx: 0, dy: 0 };
+            const fiducialWorldX = machPos.x + camOffset.dx + dx;
+            const fiducialWorldY = machPos.y + camOffset.dy + dy;
+
+            console.log(`[PyFiducialAlign] Auto-jogging ΔX:${dx} ΔY:${dy}`);
+            try {
+              const cmds = jogRel({ dx, dy, feed: 800 });
+              if (window.serial && window.serial.writeLine) {
+                for (const line of cmds) await window.serial.writeLine(line);
+                console.log('[PyFiducialAlign] Jog commands sent. Waiting for physical movement...');
+
+                // Wait for the physical machine to complete its move before accepting new auto-jogs
+                setTimeout(() => {
+                  console.log('[PyFiducialAlign] Done — physical movement complete.');
+                }, 3000);
+              }
+            } catch (err) { console.error('[PyFiducialAlign] Jog failed:', err); }
+          } else if (hasJoggedRef.current && Math.abs(dx) <= 0.005 && Math.abs(dy) <= 0.005) {
+          }
+        } catch (err) { console.warn('[PyFiducialAlign] Poll error:', err); }
+      }, 600);
+      pythonPollRef.current = pollId;
+      setDetectionInterval(pollId);
+      hasJoggedRef.current = false;
+      return;
+    }
+
+    // ── Browser Mode (original OpenCV.js path) ───────────────────────
     if (!videoRef.current || !streamOn) {
       alert('Please start the camera first');
       return;
@@ -712,162 +961,13 @@ export default function CameraPanel({
             confidence: finalFiducials.length > 0 ? finalFiducials[0].confidence : 0
           });
 
-          // 1. Calculate World Positions for new potential fiducials
-
+          // Calculate World Positions for visual feedback only — NOT auto-saved
           const incomingCandidates = finalFiducials.map(f => {
             const matchData = getMachineCoordinateFromPixel(f.pixelPosition.x, f.pixelPosition.y, videoWidth, videoHeight);
             if (!matchData) return f;
-
-            return {
-              ...f,
-              estimatedWorld: {
-                x: matchData.x,
-                y: matchData.y
-              }
-            };
+            return { ...f, estimatedWorld: { x: matchData.x, y: matchData.y } };
           });
-
-          const cProps = latestPropsRef.current;
-          const currentFids = cProps.fiducials;
-          const updateCallback = cProps.onUpdateFiducials;
-          const boardName = cProps.activeBoardName || 'Unknown Board';
-          const pBoards = cProps.panelBoards;
-          const setPBoards = cProps.setPanelBoards;
-
-          const hasMultiBoards = pBoards && pBoards.length > 0 && setPBoards;
-
-          // Gather all defined design fiducials across all boards
-          let allFids = [];
-          if (hasMultiBoards) {
-            pBoards.forEach((b, bIdx) => {
-              b.fiducials.forEach((f, fIdx) => {
-                if (f.design) allFids.push({ ...f, bIdx, fIdx, boardName: b.name });
-              });
-            });
-          }
-
-          let changedBoards = false;
-          let nextBoards = hasMultiBoards ? [...pBoards] : [];
-          let fidsChanged = false;
-          let nextFids = [...currentFids];
-
-          const pOrigin = cProps.effectiveOrigin || { x: 0, y: 0 };
-          const camOffset = cProps.cameraOffset || { dx: 0, dy: 0 };
-          const activeBIdx = hasMultiBoards ? Math.max(0, pBoards.findIndex(b => b.name === boardName)) : -1;
-
-          // Use real machine firmware position as the design coordinate
-          const realMachinePos = machinePositionRef.current || { x: 0, y: 0 };
-
-          incomingCandidates.forEach(cand => {
-            if (hasMultiBoards && nextBoards[activeBIdx]) {
-              let targetFidIdx = -1;
-
-              // Check if it's updating an already active fiducial (Proximity search using machine pos)
-              nextBoards[activeBIdx].fiducials.forEach((f, fIdx) => {
-                if (!f.design) return;
-                const dist = Math.hypot(f.design.x - realMachinePos.x, f.design.y - realMachinePos.y);
-                if (dist < 5.0) targetFidIdx = fIdx;
-              });
-
-              const newFiducials = [...nextBoards[activeBIdx].fiducials];
-
-              if (targetFidIdx >= 0) {
-                const existingMachine = newFiducials[targetFidIdx].machine;
-                const distChange = existingMachine ? Math.hypot(existingMachine.x - cand.estimatedWorld.x, existingMachine.y - cand.estimatedWorld.y) : Infinity;
-
-                // Only update if machine has moved significantly to avoid continuous jitter override logs
-                if (distChange > 0.1) {
-                  // --- DESIGN COORD: snap to nearest Gerber fiducial ---
-                  let designCoord = { x: parseFloat(realMachinePos.x.toFixed(3)), y: parseFloat(realMachinePos.y.toFixed(3)) };
-                  if (gerberFiducials && gerberFiducials.length > 0) {
-                    let nearestGerberFid = null;
-                    let nearestDist = Infinity;
-                    gerberFiducials.forEach(gf => {
-                      const d = Math.hypot(gf.x - newFiducials[targetFidIdx].design?.x, gf.y - newFiducials[targetFidIdx].design?.y);
-                      if (d < nearestDist) { nearestDist = d; nearestGerberFid = gf; }
-                    });
-                    if (nearestGerberFid && nearestDist < 5.0) {
-                      designCoord = { x: nearestGerberFid.x, y: nearestGerberFid.y };
-                      console.log(`[AutoDetect] Snapping F${targetFidIdx+1} design to Gerber fiducial (${designCoord.x.toFixed(3)}, ${designCoord.y.toFixed(3)}) [dist=${nearestDist.toFixed(2)}mm]`);
-                    }
-                  }
-                  newFiducials[targetFidIdx] = {
-                    ...newFiducials[targetFidIdx],
-                    machine: cand.estimatedWorld,
-                    design: designCoord,
-                    pixelPosition: cand.pixelPosition,
-                    autoDetected: true,
-                    confidence: cand.confidence
-                  };
-                  nextBoards[activeBIdx] = { ...nextBoards[activeBIdx], fiducials: newFiducials };
-                  changedBoards = true;
-                }
-              } else {
-                // Create totally new fiducial dynamically using explicit math!
-                targetFidIdx = newFiducials.findIndex(f => !f.design);
-
-                // --- DESIGN COORD: snap to nearest Gerber fiducial for brand new fiducial ---
-                let newDesignCoord = { x: parseFloat(realMachinePos.x.toFixed(3)), y: parseFloat(realMachinePos.y.toFixed(3)) };
-                if (gerberFiducials && gerberFiducials.length > 0) {
-                  let nearestGerberFid = null;
-                  let nearestDist = Infinity;
-                  gerberFiducials.forEach(gf => {
-                    // Compare against all already-claimed design coords to avoid duplicates
-                    const alreadyClaimed = newFiducials.some(f => f.design && Math.hypot(f.design.x - gf.x, f.design.y - gf.y) < 1.0);
-                    if (alreadyClaimed) return;
-                    // Use machine position as a rough proxy; after zeroing, this should be close
-                    const d = Math.hypot(gf.x - realMachinePos.x, gf.y - realMachinePos.y);
-                    if (d < nearestDist) { nearestDist = d; nearestGerberFid = gf; }
-                  });
-                  if (nearestGerberFid && nearestDist < 20.0) {
-                    newDesignCoord = { x: nearestGerberFid.x, y: nearestGerberFid.y };
-                    console.log(`[AutoDetect] New fiducial snapped to Gerber (${newDesignCoord.x.toFixed(3)}, ${newDesignCoord.y.toFixed(3)}) [dist=${nearestDist.toFixed(2)}mm]`);
-                  }
-                }
-
-                const newFid = {
-                  id: targetFidIdx >= 0 ? newFiducials[targetFidIdx].id : `F${newFiducials.length + 1}`,
-                  color: targetFidIdx >= 0 ? newFiducials[targetFidIdx].color : `#${Math.floor(Math.random() * 16777215).toString(16)}`,
-                  design: newDesignCoord,
-                  machine: cand.estimatedWorld,
-                  pixelPosition: cand.pixelPosition,
-                  autoDetected: true,
-                  confidence: cand.confidence
-                };
-
-                if (targetFidIdx >= 0) {
-                  newFiducials[targetFidIdx] = newFid;
-                } else {
-                  newFiducials.push(newFid);
-                }
-                nextBoards[activeBIdx] = { ...nextBoards[activeBIdx], fiducials: newFiducials };
-                changedBoards = true;
-              }
-            } else {
-              // Legacy non-multi-board mode
-              const emptyIdx = nextFids.findIndex(f => !f.design);
-              let pushIdx = emptyIdx !== -1 ? emptyIdx : nextFids.length;
-
-              nextFids[pushIdx] = {
-                ...(nextFids[pushIdx] || { id: `F${pushIdx + 1}`, color: '#2ea8ff' }),
-                machine: cand.estimatedWorld,
-                // Use REAL firmware machine position as design coordinate
-                design: { x: parseFloat(realMachinePos.x.toFixed(3)), y: parseFloat(realMachinePos.y.toFixed(3)) },
-                autoDetected: true,
-                confidence: cand.confidence
-              };
-              fidsChanged = true;
-            }
-          });
-
-          if (changedBoards && setPBoards) {
-            console.log("Global Panel State Updated:", nextBoards.map(b => ({ name: b.name, fiducials: b.fiducials })));
-            setPBoards(nextBoards);
-          } else if (fidsChanged && updateCallback) {
-            console.log(`[${boardName}] Fallback Local Update:`, nextFids);
-            updateCallback(nextFids);
-          }
-
+          // Fiducial positions are ONLY saved when the user explicitly clicks "Snap to Fiducial".
           // Visual Feedback: Show current frame results
           setVisionResult({
             detected: true,
@@ -934,6 +1034,57 @@ export default function CameraPanel({
     // Clear machine coordinates from all fiducials
     const cleared = fiducials.map(f => ({ ...f, machine: null, autoDetected: false }));
     if (onUpdateFiducials) onUpdateFiducials(cleared);
+  };
+
+  // Single-shot snap using subpixel brightness centroid from Python.
+  // Calls /api/snap_offset which grabs a FRESH camera frame, crops a tight ROI
+  // around the detected circle, and returns the Otsu centroid — more accurate than
+  // HoughCircles integer centre. One fetch → one jog → crosshair on fiducial centre.
+  const snapToFiducial = async () => {
+    if (!pythonVisionData?.best_circle) return;
+    setIsBusy(true);
+
+    const machPos = machinePositionRef.current || { x: 0, y: 0 };
+    hasJoggedRef.current = { x: machPos.x, y: machPos.y }; // Lock auto-detect loop
+
+    try {
+      const r = await fetch(`${PYTHON_URL}/api/snap_offset`, { signal: AbortSignal.timeout(2000) });
+      const data = await r.json();
+
+      if (!data.found) {
+        console.warn('[SnapToFiducial] No fiducial in fresh frame:', data.error);
+        return;
+      }
+
+      const dx = parseFloat(data.offset_dx.toFixed(4));
+      const dy = parseFloat(data.offset_dy.toFixed(4));
+      console.log(`[SnapToFiducial] Centroid offset ΔX:${dx} ΔY:${dy} mm`);
+
+      const camOffset = cameraOffset || { dx: 0, dy: 0 };
+
+      if (Math.abs(dx) < 0.005 && Math.abs(dy) < 0.005) {
+        console.log('[SnapToFiducial] Already centred — saving coordinate.');
+        saveFiducialCoordinate({ x: machPos.x + camOffset.dx, y: machPos.y + camOffset.dy });
+        return;
+      }
+
+      const cmds = jogRel({ dx, dy, feed: 800 });
+      if (window.serial?.writeLine) {
+        for (const line of cmds) await window.serial.writeLine(line);
+        console.log('[SnapToFiducial] Jog sent — waiting for motion to settle...');
+        await new Promise(res => setTimeout(res, 2000));
+        const finalPos = machinePositionRef.current || { x: 0, y: 0 };
+        saveFiducialCoordinate({ x: finalPos.x + camOffset.dx, y: finalPos.y + camOffset.dy });
+        console.log('[SnapToFiducial] Done — fiducial saved.');
+      } else {
+        console.warn('[SnapToFiducial] Serial not connected.');
+      }
+
+    } catch (err) {
+      console.error('[SnapToFiducial] Failed:', err);
+    } finally {
+      setIsBusy(false);
+    }
   };
 
   const analyzeQuality = async () => {
@@ -1078,7 +1229,7 @@ export default function CameraPanel({
 
         <div className="fiducial-detection-section">
           <h4>Automated Fiducial Detection</h4>
-          <div className="flex-row" style={{ gap: 8, flexWrap: 'wrap' }}>
+          <div className="flex-row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
             <button
               className={`btn ${detectionInterval ? 'primary' : ''}`}
               onClick={startContinuousDetection}
@@ -1090,9 +1241,12 @@ export default function CameraPanel({
               Clear
             </button>
           </div>
-          <small style={{ fontSize: '12px', color: '#6c757d' }}>
-            Start the camera and click 'Start Auto-Detect'. As you jog the machine, any fiducials seen by the camera will be instantly logged and saved to the active board automatically!
-          </small>
+
+          {!pythonMode && (
+            <small style={{ fontSize: '12px', color: '#6c757d' }}>
+              Start the camera and click 'Start Auto-Detect'. As you jog the machine, any fiducials seen by the camera will be instantly logged and saved to the active board automatically!
+            </small>
+          )}
         </div>
 
         {/* Camera → Nozzle Offset */}
@@ -1174,29 +1328,161 @@ export default function CameraPanel({
         </div>
       </div>
 
-      {/* Video Container - No more Object-Fit Cover! Preserves mathematical alignment */}
-      <div style={{ position: "relative", width: "100%", background: "#111", borderRadius: 8, overflow: "hidden", pointerEvents: "auto" }}>
-        <video ref={videoRef} style={{ width: "100%", height: "auto", display: "block" }} muted playsInline />
-        <canvas ref={canvasRef}
-          onClick={onCanvasClick}
-          style={{ position: "absolute", inset: 0, pointerEvents: "auto", width: "100%", height: "100%" }} />
+      {/* Video Container */}
+      <div style={{ position: 'relative', width: '100%', background: '#111', borderRadius: 8, overflow: 'hidden', pointerEvents: 'auto' }}>
+        {pythonMode ? (
+          // ── Python MJPEG Stream ─────────────────────────────────────
+          streamOn ? (
+            <img
+              src={`${PYTHON_URL}/video_feed`}
+              alt="Python MJPEG Stream"
+              style={{ width: '100%', height: 'auto', display: 'block', cursor: 'crosshair' }}
+              onError={(e) => {
+                // Stream dropped (ERR_INCOMPLETE_CHUNKED_ENCODING etc.) — auto-reconnect after 2s
+                console.warn('[CameraPanel] MJPEG stream dropped, reconnecting in 2s...');
+                setTimeout(() => {
+                  if (e.target) {
+                    e.target.src = `${PYTHON_URL}/video_feed?t=${Date.now()}`;
+                  }
+                }, 2000);
+              }}
+              onClick={async (e) => {
+                if (isBusy) return;
+                const rect = e.currentTarget.getBoundingClientRect();
+                const u = e.clientX - rect.left;
+                const v = e.clientY - rect.top;
+                // Native frame size from Python matches our restored 720p config
+                const W = 1280;
+                const Hh = 720;
+                // Map DOM click → native frame pixel
+                const clickU = (u / rect.width) * W;
+                const clickV = (v / rect.height) * Hh;
+                const centerX = W / 2;
+                const centerY = Hh / 2;
+
+                // Pixel → mm offset from crosshair
+                const pxmm = pixelsPerMm || 98.5;
+                const pixDx = clickU - centerX;
+                const pixDy = centerY - clickV;   // Invert Y: screen down → machine up
+                const dx = (pixDx / pxmm) * (jogMultiplier || 1);
+                const dy = (pixDy / pxmm) * (jogMultiplier || 1);
+
+                if (Math.abs(dx) < 0.005 && Math.abs(dy) < 0.005) return;
+
+                setIsBusy(true);
+                try {
+                  const cmds = jogRel({ dx, dy, feed: 1500 });
+                  if (window.serial && window.serial.writeLine) {
+                    for (const line of cmds) await window.serial.writeLine(line);
+                    console.log(`[PythonClick] Jogged ΔX:${dx.toFixed(3)} ΔY:${dy.toFixed(3)} mm`);
+                  } else {
+                    console.warn('[PythonClick] Serial not connected');
+                  }
+                } catch (err) {
+                  console.error('[PythonClick] Jog failed:', err);
+                } finally {
+                  setIsBusy(false);
+                }
+              }}
+            />
+          ) : (
+            <div style={{ width: '100%', aspectRatio: '16/9', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 8, color: '#888' }}>
+              <span style={{ fontSize: 40 }}>🐍</span>
+              <span>Python Vision Server {pythonServerOk ? '🟢 Online' : '🔴 Offline'}</span>
+              <small>Click Start Camera to begin streaming</small>
+            </div>
+          )
+        ) : (
+          // ── Browser OpenCV.js Mode ──
+          <>
+            <video ref={videoRef} style={{ width: '100%', height: 'auto', display: 'block' }} muted playsInline />
+            <canvas ref={canvasRef}
+              onClick={onCanvasClick}
+              style={{ position: 'absolute', inset: 0, pointerEvents: 'auto', width: '100%', height: '100%' }} />
+          </>
+        )}
       </div>
 
       {/* Camera Controls */}
-      <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+      <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
         {!streamOn ? (
           <button className="btn" onClick={startCam}>Start Camera</button>
         ) : (
           <button className="btn secondary" onClick={stopCam}>Stop Camera</button>
         )}
-        <label className="row" style={{ gap: 8, marginLeft: 8 }}>
-          <input type="checkbox" checked={showOverlay} onChange={e => setShowOverlay(e.target.checked)} />
-          Show overlay
-        </label>
-        <label className="row" style={{ gap: 8, marginLeft: 8 }}>
-          <input type="checkbox" checked={measureMode} onChange={e => setMeasureMode(e.target.checked)} />
-          Measure error
-        </label>
+        {/* Python Mode Toggle */}
+        <button
+          onClick={() => { if (streamOn) stopCam(); setPythonMode(m => !m); }}
+          style={{
+            padding: '4px 10px', borderRadius: 6, fontSize: '0.8em', cursor: 'pointer', fontWeight: 'bold',
+            border: '1px solid ' + (pythonMode ? '#28a745' : '#6c757d'),
+            background: pythonMode ? '#d4edda' : '#f8f9fa',
+            color: pythonMode ? '#155724' : '#495057',
+          }}
+          title={pythonMode ? 'Switch to browser mode (OpenCV.js)' : 'Switch to Python mode (recommended)'}
+        >
+          {pythonMode ? '🐍 Python Mode' : '🌐 Browser Mode'}
+          {pythonMode && <span style={{ marginLeft: 6, fontSize: '0.75em' }}>{pythonServerOk ? '🟢' : '🔴'}</span>}
+        </button>
+        {!pythonMode && (
+          <>
+            <label className="row" style={{ gap: 8, marginLeft: 8 }}>
+              <input type="checkbox" checked={showOverlay} onChange={e => setShowOverlay(e.target.checked)} />
+              Show overlay
+            </label>
+            <label className="row" style={{ gap: 8, marginLeft: 8 }}>
+              <input type="checkbox" checked={measureMode} onChange={e => setMeasureMode(e.target.checked)} />
+              Measure error
+            </label>
+          </>
+        )}
+        {pythonMode && pythonVisionData && (
+          <small style={{ color: '#495057', marginLeft: 8 }}>
+            Sharpness: <b>{pythonVisionData.sharpness}</b> | Circles found: <b>{pythonVisionData.circles?.length ?? 0}</b>
+          </small>
+        )}
+        {machinePosition && (
+          <small style={{ color: '#0056b3', marginLeft: 8 }}>
+            Pos: <b>X: {machinePosition.x.toFixed(3)} Y: {machinePosition.y.toFixed(3)}</b>
+          </small>
+        )}
+
+        {/* Python Mode: live offset readout + one-shot snap button */}
+        {pythonMode && (
+          <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {/* Live offset display */}
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', fontFamily: 'monospace', fontSize: '0.9em' }}>
+              <span style={{ color: '#6c757d' }}>Offset:</span>
+              <span style={{
+                color: pythonVisionData?.best_circle ? (Math.abs(pythonVisionData.offset_dx) < 0.05 && Math.abs(pythonVisionData.offset_dy) < 0.05 ? '#28a745' : '#dc3545') : '#aaa',
+                fontWeight: 'bold'
+              }}>
+                {pythonVisionData?.best_circle
+                  ? `ΔX: ${pythonVisionData.offset_dx >= 0 ? '+' : ''}${pythonVisionData.offset_dx.toFixed(3)} mm  ΔY: ${pythonVisionData.offset_dy >= 0 ? '+' : ''}${pythonVisionData.offset_dy.toFixed(3)} mm`
+                  : 'No fiducial detected'}
+              </span>
+            </div>
+            {/* Snap button */}
+            <button
+              onClick={snapToFiducial}
+              disabled={!pythonVisionData?.best_circle || isBusy}
+              style={{
+                padding: '6px 14px', borderRadius: 6, fontWeight: 'bold', fontSize: '0.9em',
+                cursor: pythonVisionData?.best_circle && !isBusy ? 'pointer' : 'not-allowed',
+                border: '2px solid ' + (pythonVisionData?.best_circle ? '#28a745' : '#ccc'),
+                background: pythonVisionData?.best_circle ? '#d4edda' : '#f8f9fa',
+                color: pythonVisionData?.best_circle ? '#155724' : '#aaa',
+                alignSelf: 'flex-start',
+                transition: 'all 0.15s',
+              }}
+            >
+              {isBusy ? '⏳ Moving...' : '⊕ Snap to Fiducial'}
+            </button>
+            <small style={{ fontSize: '11px', color: '#6c757d' }}>
+              Jogs the machine by the detected offset so the yellow crosshair overlaps the green circle exactly.
+            </small>
+          </div>
+        )}
       </div>
 
       <div className="camera-controls-row" style={{ marginTop: 12 }}>
