@@ -748,23 +748,34 @@ export default function CameraPanel({
       ? [...gerberFiducials].sort((a, b) => Math.abs(a.y - b.y) < 2 ? a.x - b.x : a.y - b.y)
       : [];
 
+    // OVERWRITE RADIUS: if an already-saved slot has a machine coord within this
+    // distance of estimatedWorld, update that slot rather than filling the next empty one.
+    // This prevents multiple snap attempts from writing to different rows.
+    const OVERWRITE_RADIUS_MM = 5.0;
+
     if (hasMultiBoards && nextBoards[activeBIdx]) {
       const newFiducials = [...nextBoards[activeBIdx].fiducials];
 
       // How many slots already have a machine coord from camera snapping?
       const snapCount = newFiducials.filter(f => f.machine && f.autoDetected).length;
 
-      // Find the first slot that doesn't have a machine coord yet
-      const targetFidIdx = newFiducials.findIndex(f => !f.machine);
+      // Check if any filled slot is close enough to overwrite
+      const nearbyIdx = newFiducials.findIndex(f =>
+        f.machine && Math.hypot(f.machine.x - estimatedWorld.x, f.machine.y - estimatedWorld.y) < OVERWRITE_RADIUS_MM
+      );
+
+      // Use nearby slot if found, otherwise use the first empty slot
+      const targetFidIdx = nearbyIdx >= 0 ? nearbyIdx : newFiducials.findIndex(f => !f.machine);
+      const effectiveSnapCount = nearbyIdx >= 0 ? newFiducials.slice(0, nearbyIdx).filter(f => f.machine && f.autoDetected).length : snapCount;
 
       // Pick the Gerber design coordinate by sequential index — avoids cross-space distance comparisons
       let designCoord;
-      if (sortedGerberFids.length > snapCount) {
-        const gf = sortedGerberFids[snapCount];
+      if (sortedGerberFids.length > effectiveSnapCount) {
+        const gf = sortedGerberFids[effectiveSnapCount];
         designCoord = { x: gf.x, y: gf.y };
-        console.log(`[FiducialDetect] Snap #${snapCount + 1} → Gerber design (${gf.x.toFixed(3)}, ${gf.y.toFixed(3)}), machine (${estimatedWorld.x.toFixed(3)}, ${estimatedWorld.y.toFixed(3)})`);
+        const action = nearbyIdx >= 0 ? 'Overwriting' : 'New snap';
+        console.log(`[FiducialDetect] ${action} #${effectiveSnapCount + 1} → Gerber (${gf.x.toFixed(3)}, ${gf.y.toFixed(3)}), machine (${estimatedWorld.x.toFixed(3)}, ${estimatedWorld.y.toFixed(3)})`);
       } else {
-        // Fallback: no Gerber fiducials available, keep slot's existing design or leave null
         const existing = targetFidIdx >= 0 ? newFiducials[targetFidIdx].design : null;
         designCoord = existing || null;
         console.warn('[FiducialDetect] No Gerber fiducial for this snap — design coord not set');
@@ -785,16 +796,24 @@ export default function CameraPanel({
       changedBoards = true;
     } else {
       // Legacy single-board path
-      const emptyIdx = nextFids.findIndex(f => !f.machine);
+      // Check for a nearby already-saved slot to overwrite
+      const nearbyIdx = nextFids.findIndex(f =>
+        f.machine && Math.hypot(f.machine.x - estimatedWorld.x, f.machine.y - estimatedWorld.y) < OVERWRITE_RADIUS_MM
+      );
+      const emptyIdx  = nextFids.findIndex(f => !f.machine);
       const snapCount = nextFids.filter(f => f.machine && f.autoDetected).length;
-      const pushIdx = emptyIdx !== -1 ? emptyIdx : nextFids.length;
+      const pushIdx   = nearbyIdx >= 0 ? nearbyIdx : (emptyIdx !== -1 ? emptyIdx : nextFids.length);
+      const effectiveSnapCount = nearbyIdx >= 0
+        ? nextFids.slice(0, nearbyIdx).filter(f => f.machine && f.autoDetected).length
+        : snapCount;
 
       let designCoord = null;
-      if (sortedGerberFids.length > snapCount) {
-        const gf = sortedGerberFids[snapCount];
+      if (sortedGerberFids.length > effectiveSnapCount) {
+        const gf = sortedGerberFids[effectiveSnapCount];
         designCoord = { x: gf.x, y: gf.y };
       }
 
+      const action = nearbyIdx >= 0 ? 'Overwrote' : 'New';
       nextFids[pushIdx] = {
         ...(nextFids[pushIdx] || { id: `F${pushIdx + 1}`, color: '#2ea8ff' }),
         machine: estimatedWorld,
@@ -803,7 +822,7 @@ export default function CameraPanel({
         confidence
       };
       fidsChanged = true;
-      console.log(`[FiducialDetect] Saved fiducial snap #${snapCount + 1} at Machine(${estimatedWorld.x.toFixed(3)}, ${estimatedWorld.y.toFixed(3)})`);
+      console.log(`[FiducialDetect] ${action} slot #${pushIdx + 1} at Machine(${estimatedWorld.x.toFixed(3)}, ${estimatedWorld.y.toFixed(3)})`);
     }
 
     if (changedBoards && setPBoards) {
@@ -814,7 +833,16 @@ export default function CameraPanel({
     }
   };
 
-  // hasJoggedRef: resets when user starts a new detection session.
+  // ── Servo state ─────────────────────────────────────────────────────────
+  // phase: 'idle' → jogging toward fiducial; 'fine' → sub-pixel snap; 'converged' → done.
+  // lockedAt: machine position when converged, used to detect when user moves to new fiducial.
+  const servoStateRef   = useRef({ phase: 'idle', lockedAt: null });
+  const settleUntilRef  = useRef(0);     // suppress detection until this timestamp (ms)
+  const SERVO_FEED      = 800;           // mm/min jog speed
+  const SERVO_SETTLE_MS = 800;           // ms to wait after each jog before re-checking
+  const CONVERGE_MM     = 0.05;          // crosshair within 0.05mm → declare converged & save
+
+  // hasJoggedRef: legacy ref kept for snapToFiducial lock (browser mode uses it too)
   const hasJoggedRef = useRef(false);
 
   // Start continuous fiducial detection — branches on pythonMode
@@ -823,65 +851,92 @@ export default function CameraPanel({
       // ── Python Mode ─────────────────────────────────────────────────
       if (!streamOn) { alert('Start the camera first!'); return; }
       if (detectionInterval) {
-        // Toggle off
         clearInterval(pythonPollRef.current); pythonPollRef.current = null;
-        fetch(`${PYTHON_URL}/api/stop_detect`, { method: 'POST' }).catch(() => { });
+        fetch(`${PYTHON_URL}/api/stop_detect`, { method: 'POST' }).catch(() => {});
         setDetectionInterval(null);
-        hasJoggedRef.current = false;
+        servoStateRef.current = { phase: 'idle', lockedAt: null };
         return;
       }
-      // Sync px/mm calibration to Python
-      fetch(`${PYTHON_URL}/api/set_px_per_mm/${pixelsPerMm || 98.5}`, { method: 'POST' }).catch(() => { });
-      // Tell Python to start detecting
-      fetch(`${PYTHON_URL}/api/start_detect`, { method: 'POST' }).catch(() => { });
-      // Poll vision data
+      fetch(`${PYTHON_URL}/api/set_px_per_mm/${pixelsPerMm || 98.5}`, { method: 'POST' }).catch(() => {});
+      fetch(`${PYTHON_URL}/api/start_detect`, { method: 'POST' }).catch(() => {});
+
       const pollId = setInterval(async () => {
         try {
-          const r = await fetch(`${PYTHON_URL}/api/vision_data`);
+          const r    = await fetch(`${PYTHON_URL}/api/vision_data`);
           const data = await r.json();
           setPythonVisionData(data);
-          if (!data.best_circle) return;
-          const dx = parseFloat(data.offset_dx.toFixed(4));
-          const dy = parseFloat(data.offset_dy.toFixed(4));
-          // Reset jog lock if machine moved > 5mm from last jog position
-          if (hasJoggedRef.current && hasJoggedRef.current.x !== undefined) {
-            const machPos = machinePositionRef.current;
-            if (machPos) {
-              const distMoved = Math.hypot(machPos.x - hasJoggedRef.current.x, machPos.y - hasJoggedRef.current.y);
-              if (distMoved > 5.0) {
-                console.log(`[PyFiducialAlign] Machine moved ${distMoved.toFixed(2)}mm — resetting jog lock`);
-                hasJoggedRef.current = false;
-              }
+
+          if (Date.now() < settleUntilRef.current) return;
+
+          const machPos = machinePositionRef.current || { x: 0, y: 0 };
+
+          // Reset servo if the user manually jogged to a new fiducial (> 5 mm away)
+          if (servoStateRef.current.phase === 'converged') {
+            const locked = servoStateRef.current.lockedAt;
+            if (locked && Math.hypot(machPos.x - locked.x, machPos.y - locked.y) > 5.0) {
+              servoStateRef.current = { phase: 'idle', lockedAt: null };
+            } else {
+              return; // same slot — already converged, nothing to do
             }
           }
-          if (!hasJoggedRef.current && (Math.abs(dx) > 0.005 || Math.abs(dy) > 0.005)) {
-            const machPos = machinePositionRef.current || { x: 0, y: 0 };
-            hasJoggedRef.current = { x: machPos.x, y: machPos.y };
 
-            const camOffset = cameraOffset || { dx: 0, dy: 0 };
-            const fiducialWorldX = machPos.x + camOffset.dx + dx;
-            const fiducialWorldY = machPos.y + camOffset.dy + dy;
+          const servoPhase = servoStateRef.current.phase; // 'idle' | 'fine'
+          let dx, dy, dist;
 
-            console.log(`[PyFiducialAlign] Auto-jogging ΔX:${dx} ΔY:${dy}`);
+          if (servoPhase === 'fine') {
+            // Phase 2: sub-pixel centroid via fresh frame ROI — ±1px accuracy
             try {
-              const cmds = jogRel({ dx, dy, feed: 800 });
-              if (window.serial && window.serial.writeLine) {
-                for (const line of cmds) await window.serial.writeLine(line);
-                console.log('[PyFiducialAlign] Jog commands sent. Waiting for physical movement...');
-
-                // Wait for the physical machine to complete its move before accepting new auto-jogs
-                setTimeout(() => {
-                  console.log('[PyFiducialAlign] Done — physical movement complete.');
-                }, 3000);
+              const sr   = await fetch(`${PYTHON_URL}/api/snap_offset`);
+              const snap = await sr.json();
+              if (!snap.found) { servoStateRef.current = { phase: 'idle', lockedAt: null }; return; }
+              dx   = parseFloat(snap.offset_dx.toFixed(4));
+              dy   = parseFloat(snap.offset_dy.toFixed(4));
+              dist = Math.hypot(dx, dy);
+              // Sanity: sudden large offset after coarse move = false positive, restart
+              if (dist > 1.5) {
+                servoStateRef.current = { phase: 'idle', lockedAt: null };
+                return;
               }
-            } catch (err) { console.error('[PyFiducialAlign] Jog failed:', err); }
-          } else if (hasJoggedRef.current && Math.abs(dx) <= 0.005 && Math.abs(dy) <= 0.005) {
+            } catch { servoStateRef.current = { phase: 'idle', lockedAt: null }; return; }
+          } else {
+            // Phase 1: coarse positioning via Hough circle
+            if (!data.best_circle) return;
+            dx   = parseFloat(data.offset_dx.toFixed(4));
+            dy   = parseFloat(data.offset_dy.toFixed(4));
+            dist = Math.hypot(dx, dy);
+            if (dist > 8.0) return; // no fiducial in view
           }
-        } catch (err) { console.warn('[PyFiducialAlign] Poll error:', err); }
+
+          if (dist <= CONVERGE_MM) {
+            // ✅ Crosshair is on fiducial center — save coordinate
+            servoStateRef.current = { phase: 'converged', lockedAt: { x: machPos.x, y: machPos.y } };
+            const camOffset  = cameraOffset || { dx: 0, dy: 0 };
+            const savedCoord = { x: machPos.x + camOffset.dx, y: machPos.y + camOffset.dy };
+            saveFiducialCoordinate(savedCoord, 1.0);
+            console.log(`[PyServo] ✅ Converged. Saved X${savedCoord.x.toFixed(3)} Y${savedCoord.y.toFixed(3)}`);
+            return;
+          }
+
+          // Jog toward fiducial center. Coarse: faster + longer settle; Fine: normal.
+          const jogFeed  = servoPhase === 'idle' ? SERVO_FEED * 1.5 : SERVO_FEED;
+          const settleMs = servoPhase === 'idle' ? SERVO_SETTLE_MS + 400 : SERVO_SETTLE_MS;
+          settleUntilRef.current = Date.now() + settleMs;
+          console.log(`[PyServo] ${servoPhase === 'idle' ? 'Coarse' : 'Fine  '} jog ΔX:${dx.toFixed(3)} ΔY:${dy.toFixed(3)} mm`);
+          try {
+            const cmds = jogRel({ dx, dy, feed: jogFeed });
+            if (window.serial?.writeLine) for (const line of cmds) await window.serial.writeLine(line);
+          } catch (err) { console.error('[PyServo] Jog failed:', err); }
+
+          // After the coarse jog, switch to fine mode for sub-pixel correction
+          if (servoPhase === 'idle') servoStateRef.current = { ...servoStateRef.current, phase: 'fine' };
+
+        } catch (err) { console.warn('[PyServo] Poll error:', err); }
       }, 600);
+
       pythonPollRef.current = pollId;
       setDetectionInterval(pollId);
-      hasJoggedRef.current = false;
+      servoStateRef.current = { phase: 'idle', lockedAt: null };
+      settleUntilRef.current = 0;
       return;
     }
 
@@ -1030,6 +1085,7 @@ export default function CameraPanel({
     setDetectionInterval(intervalId);
   };
 
+
   const clearAccumulatedFiducials = () => {
     // Clear machine coordinates from all fiducials
     const cleared = fiducials.map(f => ({ ...f, machine: null, autoDetected: false }));
@@ -1045,7 +1101,8 @@ export default function CameraPanel({
     setIsBusy(true);
 
     const machPos = machinePositionRef.current || { x: 0, y: 0 };
-    hasJoggedRef.current = { x: machPos.x, y: machPos.y }; // Lock auto-detect loop
+    // Lock the servo loop while we run our own jog
+    servoStateRef.current = { phase: 'converged', lockedAt: { x: machPos.x, y: machPos.y } };
 
     try {
       const r = await fetch(`${PYTHON_URL}/api/snap_offset`, { signal: AbortSignal.timeout(2000) });
@@ -1053,6 +1110,7 @@ export default function CameraPanel({
 
       if (!data.found) {
         console.warn('[SnapToFiducial] No fiducial in fresh frame:', data.error);
+        servoStateRef.current = { phase: 'idle', lockedAt: null };
         return;
       }
 
@@ -1071,13 +1129,12 @@ export default function CameraPanel({
       const cmds = jogRel({ dx, dy, feed: 800 });
       if (window.serial?.writeLine) {
         for (const line of cmds) await window.serial.writeLine(line);
-        console.log('[SnapToFiducial] Jog sent — waiting for motion to settle...');
-        await new Promise(res => setTimeout(res, 2000));
-        const finalPos = machinePositionRef.current || { x: 0, y: 0 };
-        saveFiducialCoordinate({ x: finalPos.x + camOffset.dx, y: finalPos.y + camOffset.dy });
-        console.log('[SnapToFiducial] Done — fiducial saved.');
+        console.log('[SnapToFiducial] Jog sent — servo will re-check after settle.');
+        settleUntilRef.current = Date.now() + 2000;
+        servoStateRef.current = { phase: 'idle', lockedAt: null }; // let servo do the final save
       } else {
         console.warn('[SnapToFiducial] Serial not connected.');
+        servoStateRef.current = { phase: 'idle', lockedAt: null };
       }
 
     } catch (err) {

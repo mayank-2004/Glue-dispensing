@@ -210,38 +210,38 @@ def vision_loop():
                     # that may appear darker due to camera auto-exposure favouring bright through-holes.
                     if core_mean < 70:
                         continue
-                        
+
                     # CHECK 4: Strict Physical Size Constraint
                     # Most fiducials are ~1.0mm diameter (0.5mm radius).
                     # Reject microscopic curves (like silkscreen letters) and massive pads.
                     radius_mm = pr / PX_PER_MM
                     if radius_mm < 0.20 or radius_mm > 0.8:
                         continue
-                    
+
                     # --- Filter 2: Solid Fill Check (Rejects False Geometries) ---
                     # Bumpy, shiny solder has extreme bright spots (255) and dark shadows (120).
-                    # We use Otsu's method to automatically find the perfect split between the 
+                    # We use Otsu's method to automatically find the perfect split between the
                     # silver metal foreground and the dark green board background.
                     blurred_roi = cv2.GaussianBlur(roi, (5, 5), 0)
                     _, thresh = cv2.threshold(blurred_roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                    
+
                     # Create a perfect circular mask for the detected area
                     mask = np.zeros_like(roi)
                     cv2.circle(mask, (roi_cx, roi_cy), pr, 255, -1)
-                    
+
                     # Count how much of the circle is actually filled with bright metal
                     filled_pixels = cv2.bitwise_and(thresh, mask)
                     fill_count = cv2.countNonZero(filled_pixels)
                     expected_area = np.pi * (pr * pr)
-                    
+
                     # A solid fiducial is mostly filled. A through-hole is hollow (e.g. 40-50% filled).
                     if expected_area == 0 or (fill_count / expected_area) < 0.65:
                         continue  # Reject hollow through-holes
-                        
+
                     # --- Filter 2: Strict Circularity Check (Rejects Trace Pads / Lollipops) ---
                     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                     if not contours: continue
-                    
+
                     best_cnt = None
                     min_dist = float('inf')
                     for cnt in contours:
@@ -253,13 +253,13 @@ def vision_loop():
                         if dist < min_dist:
                             min_dist = dist
                             best_cnt = cnt
-                            
+
                     if best_cnt is None: continue
-                    
+
                     area = cv2.contourArea(best_cnt)
                     perimeter = cv2.arcLength(best_cnt, True)
                     if perimeter == 0 or area == 0: continue
-                    
+
                     # Relaxed slightly to 0.65 to allow for jagged edges caused by solder bumps
                     circularity = (4 * np.pi * area) / (perimeter * perimeter)
                     if circularity < 0.65:
