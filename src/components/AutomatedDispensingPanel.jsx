@@ -39,6 +39,7 @@ export default function AutomatedDispensingPanel({
   toolOffset = { dx: 0, dy: 0 }
 }) {
   const [isJobRunning, setIsJobRunning] = useState(false);
+  const isJobRunningRef = useRef(false);
   const [jobMode, setJobMode] = useState('single'); // 'single' or 'batch'
   const [dynamicPanelCorrection, setDynamicPanelCorrection] = useState(true); // Default to ON if panelized
 
@@ -85,6 +86,13 @@ export default function AutomatedDispensingPanel({
   const [currentPadInfo, setCurrentPadInfo] = useState(null);
   const [jobReport, setJobReport] = useState(null);
   const jobStartTimeRef = useRef(null);
+
+  // Dot verification
+  const [enableDotVerification, setEnableDotVerification] = useState(false);
+  const [dotCheckResults, setDotCheckResults] = useState([]); // {padIndex, passed, diameter_mm, confidence}
+
+  // Per-pad log accumulator (ref so it's readable inside async loop without stale closure)
+  const padLogRef = useRef([]);
 
   // Apply viscosity presets automatically when changed
   useEffect(() => {
@@ -198,6 +206,7 @@ export default function AutomatedDispensingPanel({
     setJobStage('homing');
     setMachineStatus('busy');
     setIsJobRunning(true);
+    isJobRunningRef.current = true;
 
     try {
       window.pauseSerialPolling = true;
@@ -210,6 +219,7 @@ export default function AutomatedDispensingPanel({
       alert("Homing/Connection failed: " + e.message);
       setJobStage('idle');
       setMachineStatus('idle');
+      isJobRunningRef.current = false;
       setIsJobRunning(false);
     }
   };
@@ -224,6 +234,8 @@ export default function AutomatedDispensingPanel({
     jobStartTimeRef.current = Date.now();
     setJobReport(null);
     setCurrentPadInfo(null);
+    setDotCheckResults([]);
+    padLogRef.current = [];
     try {
       if (!panelBoards || panelBoards.length === 0) {
         throw new Error("No boards defined in panel configuration.");
@@ -258,7 +270,7 @@ export default function AutomatedDispensingPanel({
           let success = true;
 
           for (let f of solvedFiducials) {
-            if (!isJobRunning) throw new Error("Job Aborted");
+            if (!isJobRunningRef.current) throw new Error("Job Aborted");
 
             // 1. Where do we EXPECT this fiducial to be in machine space?
             //    The transform maps design → camera machine coords directly.
@@ -343,8 +355,9 @@ export default function AutomatedDispensingPanel({
             p = { ...p, x: currentBoardSize.width - p.x };
           }
 
+          let tp = null;
           if (transform) {
-            const tp = applyTransform(transform, p);
+            tp = applyTransform(transform, p);
             // Move the machine so the camera crosshair is over the pad center before dispensing.
             // Camera is at (machine + toolOffset), so machine must be at (tp - toolOffset) for
             // the crosshair to show the pad. calibCorrection shifts both moves identically.
@@ -376,6 +389,19 @@ export default function AutomatedDispensingPanel({
             volumeUl: padVolUl.toFixed ? padVolUl.toFixed(3) : '—',
           });
 
+          // Accumulate log entry for this pad
+          padLogRef.current.push({
+            padIndex: globalPointCount,
+            padId: p.id || p.componentIdentifier || `P${globalPointCount}`,
+            x: finalX.toFixed(3),
+            y: finalY.toFixed(3),
+            pressure,
+            dwellMs: dwell,
+            volumeUl: padVolUl.toFixed ? padVolUl.toFixed(4) : '0',
+            dotPassed: null,
+            dotDiameter_mm: '',
+          });
+
           const cmds = dispensePoint({
             x: finalX, y: finalY,
             zWork: dispenseHeight + getZOffsetForPoint(finalX, finalY),
@@ -387,6 +413,27 @@ export default function AutomatedDispensingPanel({
           });
           for (const c of cmds) {
             await sendGcodeWait(c);
+          }
+
+          // ── Post-dispense dot verification ─────────────────────────────
+          if (enableDotVerification && tp) {
+            // Move camera back over the just-dispensed pad (tp = transformed machine coord)
+            const camX = tp.x - (toolOffset?.dx || 0) + calibCorrection.x;
+            const camY = tp.y - (toolOffset?.dy || 0) + calibCorrection.y;
+            await sendGcodeWait(`G1 X${camX.toFixed(3)} Y${camY.toFixed(3)} F${speedSettings.travelSpeed || 6000}`);
+            await sendGcodeWait('M400');
+            await new Promise(r => setTimeout(r, 400)); // settle
+            try {
+              const res = await fetch('http://localhost:8000/api/check_glue_dot');
+              if (res.ok) {
+                const dot = await res.json();
+                const result = { padIndex: globalPointCount, passed: dot.found, diameter_mm: dot.diameter_mm ?? 0, confidence: dot.confidence ?? 0 };
+                setDotCheckResults(prev => [...prev, result]);
+                // Backfill dot result into the log entry for this pad
+                const entry = padLogRef.current.find(e => e.padIndex === globalPointCount);
+                if (entry) { entry.dotPassed = dot.found; entry.dotDiameter_mm = dot.diameter_mm ?? ''; }
+              }
+            } catch (_e) { /* vision server offline — skip silently */ }
           }
         }
         if (glueSummary) {
@@ -400,17 +447,49 @@ export default function AutomatedDispensingPanel({
       await sendGcodeWait('M400'); // Wait for all moves to complete
 
       const jobDurationMs = Date.now() - (jobStartTimeRef.current || Date.now());
-      setJobReport({
-        totalPads: totalPoints,
-        totalVolUl: glueSummary?.totalVolUl != null ? glueSummary.totalVolUl.toFixed(2) : '—',
-        jobDurationSec: (jobDurationMs / 1000).toFixed(1),
-        avgDwellMs: baseDwellTime,
-        basePressure: localPressure,
+      setDotCheckResults(prev => {
+        const failed = prev.filter(r => !r.passed).length;
+        setJobReport({
+          totalPads: totalPoints,
+          totalVolUl: glueSummary?.totalVolUl != null ? glueSummary.totalVolUl.toFixed(2) : '—',
+          jobDurationSec: (jobDurationMs / 1000).toFixed(1),
+          avgDwellMs: baseDwellTime,
+          basePressure: localPressure,
+          dotsFailed: enableDotVerification ? failed : null,
+          dotsChecked: enableDotVerification ? prev.length : null,
+        });
+        return prev;
       });
+
+      // ── Write job log CSV ──────────────────────────────────────────
+      if (window.fs?.saveJobLog) {
+        const now = new Date();
+        // const ts = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const filename = `glue-job.csv`; 
+        const header = [
+          `# Glue Dispensing Job Log`,
+          `# Date: ${now.toISOString()}`,
+          `# Total Pads: ${totalPoints}`,
+          `# Total Volume (µL): ${glueSummary?.totalVolUl != null ? glueSummary.totalVolUl.toFixed(4) : 'N/A'}`,
+          `# Duration (s): ${(jobDurationMs / 1000).toFixed(1)}`,
+          `# Base Pressure (PSI): ${localPressure}`,
+          `# Avg Dwell (ms): ${baseDwellTime}`,
+          `# Dot Verification: ${enableDotVerification ? 'ON' : 'OFF'}`,
+          `#`,
+          `Pad#,PadID,X_mm,Y_mm,Pressure_PSI,Dwell_ms,Volume_uL,DotPassed,DotDiameter_mm`,
+        ].join('\n');
+        const rows = padLogRef.current.map(e =>
+          `${e.padIndex},${e.padId},${e.x},${e.y},${e.pressure},${e.dwellMs},${e.volumeUl},${e.dotPassed ?? ''},${e.dotDiameter_mm}`
+        ).join('\n');
+        window.fs.saveJobLog({ filename, content: header + '\n' + rows })
+          .then(r => { if (r.ok) console.log(`[JobLog] Saved: ${r.path}`); });
+      }
+
       setCurrentPadInfo(null);
       if (onJobComplete) onJobComplete();
       setJobStage('finished');
       setMachineStatus('idle');
+      isJobRunningRef.current = false;
       setIsJobRunning(false);
 
     } catch (e) {
@@ -418,6 +497,7 @@ export default function AutomatedDispensingPanel({
       if (e.message !== "Job Aborted") alert("Error: " + e.message);
       setJobStage('idle');
       setMachineStatus('idle');
+      isJobRunningRef.current = false;
       setIsJobRunning(false);
     } finally {
       window.pauseSerialPolling = false;
@@ -425,15 +505,17 @@ export default function AutomatedDispensingPanel({
   };
 
   const cancelJob = async () => {
+    isJobRunningRef.current = false;
     setIsJobRunning(false);
-    // Emergency: Send M42/G1 without wait to ensure it goes out ASAP
+    ackQueue.current = []; // Unblock any pending sendGcodeWait
+    // Emergency: bypass the queue — send directly so the machine stops immediately
     try {
       await window.serial.writeLine('M42 P4 S0');
       await window.serial.writeLine('G1 Z10 F3000');
     } catch (e) { }
     setJobStage('idle');
     setMachineStatus('idle');
-    ackQueue.current = []; // Clear queue
+    setCurrentPadInfo(null);
   };
 
   const jog = async (axis, dir) => {
@@ -526,6 +608,15 @@ export default function AutomatedDispensingPanel({
             <label>
               Dispense Pressure (PSI):
               <input type="number" step="1" min="5" max="100" value={localPressure} onChange={e => setLocalPressure(Number(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={enableDotVerification}
+                onChange={e => setEnableDotVerification(e.target.checked)}
+                style={{ width: 'auto', marginTop: 0 }}
+              />
+              <span>Verify glue dot after each pad</span>
             </label>
           </div>
 
@@ -772,7 +863,7 @@ export default function AutomatedDispensingPanel({
               <div className="row">
                 <button
                   className={`btn ${isJobRunning ? 'danger' : 'primary'}`}
-                  onClick={isJobRunning ? () => setIsJobRunning(false) : startJobFlow}
+                  onClick={isJobRunning ? cancelJob : startJobFlow}
                   disabled={!isConnected && !isJobRunning}
                 >
                   {isJobRunning ? '⏹ ABORT JOB' : '▶ START JOB'}
@@ -828,6 +919,19 @@ export default function AutomatedDispensingPanel({
                   <span style={{ color: '#00c49a' }}>💧 {currentPadInfo.volumeUl} µL</span>
                 </div>
               )}
+              {enableDotVerification && dotCheckResults.length > 0 && (() => {
+                const last = dotCheckResults[dotCheckResults.length - 1];
+                const failed = dotCheckResults.filter(r => !r.passed).length;
+                return (
+                  <div style={{ marginTop: 6, padding: '6px 10px', background: last.passed ? 'rgba(0,180,100,0.12)' : 'rgba(220,50,50,0.15)', border: `1px solid ${last.passed ? '#2da44e' : '#f85149'}`, borderRadius: 5, fontFamily: 'monospace', fontSize: '0.80em' }}>
+                    <span style={{ color: last.passed ? '#3fb950' : '#f85149', fontWeight: 600 }}>
+                      {last.passed ? '✓ Dot OK' : '✗ Dot MISSING'} — pad #{last.padIndex}
+                      {last.passed && last.diameter_mm > 0 ? ` (∅${last.diameter_mm}mm)` : ''}
+                    </span>
+                    {failed > 0 && <span style={{ color: '#f85149', marginLeft: 12 }}>{failed} failed so far</span>}
+                  </div>
+                );
+              })()}
               <button className="btn danger full-width" onClick={cancelJob}>STOP</button>
             </div>
           )}
@@ -844,9 +948,30 @@ export default function AutomatedDispensingPanel({
                     <tr><td style={{ color: '#8b949e', padding: '2px 6px' }}>Duration</td><td style={{ color: '#e6edf3', textAlign: 'right' }}>{jobReport.jobDurationSec} s</td></tr>
                     <tr><td style={{ color: '#8b949e', padding: '2px 6px' }}>Avg dwell</td><td style={{ color: '#d32f2f', textAlign: 'right' }}>{jobReport.avgDwellMs} ms</td></tr>
                     <tr><td style={{ color: '#8b949e', padding: '2px 6px' }}>Base pressure</td><td style={{ color: '#ffa726', textAlign: 'right' }}>{jobReport.basePressure} PSI</td></tr>
+                    {jobReport.dotsChecked != null && (
+                      <tr>
+                        <td style={{ color: '#8b949e', padding: '2px 6px' }}>Dot verification</td>
+                        <td style={{ textAlign: 'right', color: jobReport.dotsFailed === 0 ? '#3fb950' : '#f85149', fontWeight: 600 }}>
+                          {jobReport.dotsFailed === 0
+                            ? `✓ All ${jobReport.dotsChecked} passed`
+                            : `✗ ${jobReport.dotsFailed} / ${jobReport.dotsChecked} failed`}
+                        </td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
               )}
+              {jobReport?.dotsFailed > 0 && dotCheckResults.length > 0 && (
+                <div style={{ marginBottom: 10, padding: '6px 10px', background: 'rgba(220,50,50,0.1)', border: '1px solid #f85149', borderRadius: 5, fontSize: '0.78em', fontFamily: 'monospace' }}>
+                  <div style={{ color: '#f85149', fontWeight: 600, marginBottom: 4 }}>Failed pads:</div>
+                  {dotCheckResults.filter(r => !r.passed).map(r => (
+                    <div key={r.padIndex} style={{ color: '#e6edf3' }}>Pad #{r.padIndex}</div>
+                  ))}
+                </div>
+              )}
+              <div style={{ fontSize: '0.75em', color: '#8b949e', marginBottom: 8, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                Log saved to: Documents/GlueJobLogs/
+              </div>
               <button className="btn full-width" onClick={() => setJobStage('idle')}>Done</button>
             </div>
           )}

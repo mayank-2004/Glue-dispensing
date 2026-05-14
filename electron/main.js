@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const isDev = !app.isPackaged;
 const { SerialPort, ReadlineParser } = require('serialport');
 
@@ -119,4 +120,18 @@ ipcMain.handle('serial:writeMany', async (e, { lines = [], delayMs = 3 }) => {
     if (delayMs > 0) await new Promise(r => setTimeout(r, delayMs));
   }
   return true;
-})
+});
+
+// -------- Job Log IPC --------
+ipcMain.handle('fs:saveJobLog', async (e, { filename, content }) => {
+  try {
+    const logsDir = path.join(app.getPath('documents'), 'GlueJobLogs');
+    if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
+    const filePath = path.join(logsDir, filename);
+    fs.writeFileSync(filePath, content, 'utf8');
+    return { ok: true, path: filePath };
+  } catch (err) {
+    console.error('fs:saveJobLog failed', err);
+    return { ok: false, error: err.message };
+  }
+});

@@ -629,6 +629,92 @@ async def find_pad(query: PadQuery):
     return {"found": False}
 
 
+@app.get("/api/check_glue_dot")
+def api_check_glue_dot():
+    """
+    Detect whether a glue dot is present at the camera crosshair centre.
+    Called by the dispense loop after each pad to verify the dot was deposited.
+    Strategy: glue dots appear as a raised shiny blob — brighter than the board
+    and roughly circular. We compare a tight centre ROI against the board baseline
+    using Otsu thresholding, then check blob size and circularity.
+    Returns: { found, confidence, area_mm2, diameter_mm }
+    """
+    frame = get_frame()
+    if frame is None:
+        return JSONResponse({"found": False, "error": "no_frame"})
+
+    h, w = frame.shape[:2]
+    cx, cy = w // 2, h // 2
+
+    # Crop a 12mm square region centred on crosshair — generous enough to catch
+    # any glue dot within the pad area regardless of minor placement error
+    search_radius_px = int(6.0 * PX_PER_MM)
+    x1 = max(0, cx - search_radius_px)
+    y1 = max(0, cy - search_radius_px)
+    x2 = min(w, cx + search_radius_px)
+    y2 = min(h, cy + search_radius_px)
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    roi = gray[y1:y2, x1:x2]
+    if roi.size == 0:
+        return JSONResponse({"found": False, "error": "empty_roi"})
+
+    # Otsu's threshold: separates glue dot (bright reflective blob) from board background
+    blurred = cv2.GaussianBlur(roi, (5, 5), 0)
+    _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return JSONResponse({"found": False, "confidence": 0.0, "area_mm2": 0.0, "diameter_mm": 0.0})
+
+    # Find the largest blob near the crosshair centre (within 3mm)
+    roi_cx = x2 - x1  # roi centre in roi coords
+    roi_cy = y2 - y1
+    max_search_px = int(3.0 * PX_PER_MM)
+
+    best = None
+    best_area = 0
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < 50:  # discard noise
+            continue
+        M = cv2.moments(cnt)
+        if M["m00"] == 0:
+            continue
+        cx_cnt = int(M["m10"] / M["m00"])
+        cy_cnt = int(M["m01"] / M["m00"])
+        dist = np.hypot(cx_cnt - roi_cx // 2, cy_cnt - roi_cy // 2)
+        if dist > max_search_px:
+            continue
+        if area > best_area:
+            best_area = area
+            best = cnt
+
+    if best is None:
+        return JSONResponse({"found": False, "confidence": 0.0, "area_mm2": 0.0, "diameter_mm": 0.0})
+
+    # Circularity check — glue dots are roughly round
+    perimeter = cv2.arcLength(best, True)
+    circularity = (4 * np.pi * best_area / (perimeter * perimeter)) if perimeter > 0 else 0
+
+    area_mm2 = round(best_area / (PX_PER_MM ** 2), 4)
+    diameter_mm = round(2 * np.sqrt(best_area / np.pi) / PX_PER_MM, 3)
+
+    # Confidence: blend circularity and size reasonableness (0.1–10 mm² is normal for a glue dot)
+    size_score = min(1.0, area_mm2 / 0.5) if area_mm2 < 10 else max(0.0, 1.0 - (area_mm2 - 10) / 10)
+    confidence = round((circularity * 0.5 + size_score * 0.5), 3)
+
+    found = circularity > 0.3 and area_mm2 > 0.05
+
+    return JSONResponse({
+        "found": found,
+        "confidence": confidence,
+        "area_mm2": area_mm2,
+        "diameter_mm": diameter_mm,
+        "circularity": round(circularity, 3),
+    })
+
+
 @app.post("/api/set_px_per_mm/{value}")
 def api_set_px_per_mm(value: float):
     """Allow React to update the px/mm calibration value at runtime."""

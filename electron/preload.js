@@ -1,5 +1,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+contextBridge.exposeInMainWorld('fs', {
+  saveJobLog: (opts) => ipcRenderer.invoke('fs:saveJobLog', opts),
+});
+
 contextBridge.exposeInMainWorld('serial', {
     list: () => ipcRenderer.invoke('serial:list'),
     open: (opts) => ipcRenderer.invoke('serial:open', opts),
