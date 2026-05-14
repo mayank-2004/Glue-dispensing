@@ -144,14 +144,17 @@ export default function FiducialPanel({
         </button>
       </div>
 
-      <div className="flex-row" style={{ gap: 8, alignItems: "center" }}>
-        <button className={`btn ${pickMode ? "" : "secondary"}`} onClick={togglePickMode}>
+      <div className="flex-row" style={{ gap: 8, alignItems: "center", marginBottom: 8 }}>
+        <button className={`btn ${pickMode ? "" : "secondary"}`} onClick={togglePickMode} style={{ whiteSpace: "nowrap" }}>
           {pickMode ? "Pick/Drag fiducials: ON" : "Pick/Drag fiducials"}
         </button>
-        <select value={activeId ?? ""} onChange={(e) => setActiveId(e.target.value || null)}>
+        <select value={activeId ?? ""} onChange={(e) => setActiveId(e.target.value || null)} style={{ minWidth: 150, flex: 1 }}>
           <option value="">(select F to arm)</option>
           {fiducials.map(f => <option key={f.id} value={f.id}>{f.id}</option>)}
         </select>
+      </div>
+
+      <div className="flex-row" style={{ gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
         <button className="btn secondary" onClick={onClearAll}>Clear all</button>
         {onRedetectFiducials && (
           <button className="btn" onClick={onRedetectFiducials} title="Re-analyze Gerber files for fiducials">
@@ -166,7 +169,10 @@ export default function FiducialPanel({
             📷 Camera Detect
           </button>
         )}
-        <label className="flex-row" style={{ gap: 6, marginLeft: "auto" }}>
+      </div>
+
+      <div className="flex-row" style={{ marginBottom: 12 }}>
+        <label className="flex-row" style={{ gap: 6, whiteSpace: "nowrap", cursor: "pointer" }}>
           <input type="checkbox" checked={applyTransform} onChange={(e) => setApplyTransform(e.target.checked)} />
           Apply transform to outputs
         </label>

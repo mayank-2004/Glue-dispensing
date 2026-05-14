@@ -1,203 +1,330 @@
-/* Main App Layout - Dashboard Style */
+/* ═══════════════════════════════════════════════════════════
+   APP LAYOUT — MACHINE HMI  (3-section: Header / Sidebar / Content)
+═══════════════════════════════════════════════════════════ */
 
 #root {
   height: 100vh;
   width: 100vw;
   overflow: hidden;
-  background-color: var(--bg-app);
+  background: var(--bg-app);
+  display: flex;
+  flex-direction: column;
 }
 
-.wrap {
-  display: grid;
-  grid-template-columns: 380px 1fr;
-  /* Fixed Sidebar + Flexible Content */
-  grid-template-rows: 100vh;
-  width: 100%;
-  height: 100%;
+/* ── Top Header Bar ─────────────────────────────────────── */
+.app-header {
+  height: 48px;
+  min-height: 48px;
+  background: var(--bg-header);
+  border-bottom: 1px solid var(--border-primary);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 16px;
+  position: relative;
+  z-index: 100;
+  flex-shrink: 0;
+}
+/* Subtle scan-line decoration */
+.app-header::after {
+  content: '';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0%, var(--accent-primary) 40%, transparent 100%);
+  opacity: 0.3;
 }
 
-/* --- Left Sidebar (Controls) --- */
+.app-logo {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-shrink: 0;
+}
+.app-logo-icon {
+  width: 28px;
+  height: 28px;
+  background: rgba(0,200,215,0.12);
+  border: 1px solid rgba(0,200,215,0.35);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}
+.app-logo-text {
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--text-bright);
+  line-height: 1.1;
+}
+.app-logo-sub {
+  font-size: 0.58rem;
+  color: var(--text-muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 500;
+}
+
+.header-divider {
+  width: 1px;
+  height: 28px;
+  background: var(--border-primary);
+  flex-shrink: 0;
+}
+
+.header-dro {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  flex-shrink: 0;
+}
+
+.header-spacer { flex: 1; }
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+/* ── Main Row (Sidebar + Content) ───────────────────────── */
+.app-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* ── Left Sidebar ───────────────────────────────────────── */
 .sidebar {
-  background: var(--bg-panel);
+  width: 380px;
+  min-width: 380px;
+  background: var(--bg-sidebar);
   border-right: 1px solid var(--border-primary);
   display: flex;
   flex-direction: column;
-  padding: 8px;
-  gap: 8px;
-  overflow-y: auto;
   z-index: 10;
-  box-shadow: 5px 0 15px rgba(0, 0, 0, 0.3);
+  flex-shrink: 0;
+  position: relative;
+}
+/* Cyan edge glow */
+.sidebar::after {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0; right: 0;
+  width: 1px;
+  background: linear-gradient(180deg, transparent 0%, rgba(0,200,215,0.2) 40%, transparent 100%);
 }
 
-/* Sidebar Sections */
-.sidebar-header {
-  margin-bottom: 8px;
+.sidebar-logo-area {
+  padding: 14px 14px 10px;
+  border-bottom: 1px solid var(--border-primary);
+  flex-shrink: 0;
 }
 
-.sidebar-content {
+/* ── Workflow Steps ─────────────────────────────────────── */
+.sidebar-workflow {
+  padding: 10px 8px 6px;
+  flex-shrink: 0;
+}
+.sidebar-section-label {
+  font-size: 0.58rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--text-muted);
+  padding: 0 6px 6px;
+  border-bottom: 1px solid var(--border-primary);
+  margin-bottom: 6px;
+}
+.workflow-step-connector {
+  width: 1px;
+  height: 6px;
+  background: var(--border-primary);
+  margin-left: 23px;
+}
+
+/* ── Sidebar Lower (controls) ───────────────────────────── */
+.sidebar-controls {
   flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-/* --- Right Main Area (Viewer + Panels) --- */
-.main {
   display: flex;
   flex-direction: column;
   padding: 8px;
   gap: 8px;
   overflow-y: auto;
-  background: radial-gradient(circle at 50% 30%, #1a1a1a 0%, #050505 80%);
 }
 
-/* Navigation Bar (Tabs) */
-.navbar {
-  display: flex;
-  gap: 6px;
-  background: #0f1012;
-  padding: 6px;
-  border-radius: 12px;
-  border: 1px solid #2a2b2e;
-  flex-shrink: 0;
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.5);
-}
-
-.navItem {
-  flex: 1;
-  text-align: center;
-  padding: 12px 8px;
-  color: #71717a;
-  background: transparent;
-  border: 1px solid transparent;
-  font-size: 0.8rem;
-  font-weight: 700;
-  cursor: pointer;
-  border-radius: 6px;
-  transition: all 0.2s ease;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  font-family: 'JetBrains Mono', 'Roboto Mono', monospace;
-  line-height: 1.2;
-}
-
-.navItem:hover {
-  color: #e4e4e7;
-  background: rgba(255, 255, 255, 0.03);
-  border-color: #3f3f46;
-}
-
-.navItemActive {
-  background: #18181b !important;
-  color: var(--accent-primary) !important;
-  border: 1px solid var(--accent-primary) !important;
-  box-shadow: 0 0 15px rgba(6, 182, 212, 0.15), inset 0 0 10px rgba(6, 182, 212, 0.05);
-  text-shadow: 0 0 8px rgba(6, 182, 212, 0.4);
-}
-
-/* Viewer Container */
-/* The viewer component itself is styled in index.css, just layout here */
-.viewer-container {
-  flex: 1;
-  /* Take remaining height */
-  /* min-height: 400px; */
-  display: flex;
-  flex-direction: column;
-}
-
-/* Bottom/floating panels inside Main */
-.layout-panels {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 8px;
-}
-
-@media (min-width: 1400px) {
-  .layout-panels {
-    grid-template-columns: 1fr 1fr;
-  }
-}
-
-/* --- Specific Section Overrides --- */
-
-/* File Upload Area */
-.sidebar .header {
+/* File Upload Drop Zone */
+.sidebar-upload {
   border: 1px dashed var(--border-highlight);
   border-radius: var(--radius-md);
-  padding: 12px;
+  padding: 14px 10px;
   text-align: center;
-  background: rgba(255, 255, 255, 0.02);
-  margin-bottom: 20px;
+  background: rgba(0,200,215,0.02);
+  cursor: pointer;
+  transition: all var(--transition);
 }
+.sidebar-upload:hover {
+  border-color: var(--accent-primary);
+  background: rgba(0,200,215,0.05);
+}
+.sidebar-upload-icon { font-size: 20px; margin-bottom: 6px; opacity: 0.7; }
+.sidebar-upload-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+  margin: 0 0 3px;
+}
+.sidebar-upload-hint {
+  font-size: 0.6rem;
+  color: var(--text-muted);
+}
+
+/* Sidebar sub-section */
+.sidebar-sub {
+  background: rgba(0,0,0,0.2);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.sidebar-sub-header {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border-primary);
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-secondary);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: rgba(0,0,0,0.15);
+}
+.sidebar-sub-content { padding: 8px; }
 
 /* Layer List */
 .layer-list {
   background: var(--bg-input);
   border: 1px solid var(--border-primary);
   border-radius: var(--radius-sm);
-  max-height: 250px;
+  max-height: 180px;
   overflow-y: auto;
-  padding: 4px;
 }
-
 .layer-list li {
-  padding: 4px 8px;
-  border-bottom: 1px solid #222;
+  padding: 5px 8px;
+  border-bottom: 1px solid #0e1018;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 0.8rem;
+  font-size: 0.73rem;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+.layer-list li:hover { background: var(--bg-hover); }
+.layer-list li:last-child { border-bottom: none; }
+
+/* ── Main Content Area ──────────────────────────────────── */
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 60% 0%, rgba(0,200,215,0.03) 0%, var(--bg-app) 60%);
 }
 
-.layer-list li:hover {
-  background: var(--bg-hover);
+/* Viewer Container */
+.viewer-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  max-height: calc(100vh - 106px); /* Header(48) + Breadcrumb(34) + Padding(24) */
+}
+
+/* Content Panel Area */
+.content-area {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ── Breadcrumb Strip ───────────────────────────────────── */
+.breadcrumb-bar {
+  height: 34px;
+  min-height: 34px;
+  background: rgba(0,0,0,0.3);
+  border-bottom: 1px solid var(--border-primary);
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.breadcrumb-step {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+}
+.breadcrumb-step.active { color: var(--accent-primary); }
+.breadcrumb-sep { color: var(--text-muted); font-size: 0.65rem; }
+.breadcrumb-desc {
+  flex: 1;
+  font-size: 0.62rem;
+  color: var(--text-muted);
+  text-align: right;
+  font-family: var(--font-mono);
+}
+
+/* Full-height panel helper */
+.full-height {
+  height: 100%;
+  flex: 1;
+}
+
+/* ── Grid Layouts ───────────────────────────────────────── */
+.layout-panels {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+@media (min-width: 1400px) {
+  .layout-panels { grid-template-columns: 1fr 1fr; }
+}
+
+/* ── Reference / Origin Controls in sidebar ─────────────── */
+.sidebar .header {
+  border: 1px dashed var(--border-highlight);
+  border-radius: var(--radius-md);
+  padding: 10px;
+  text-align: center;
+  background: rgba(255,255,255,0.015);
 }
 
 /* Batch/Job Queue */
-.batch-list {
-  background: var(--bg-input);
-  border: 1px solid var(--border-primary);
-  border-radius: var(--radius-sm);
-}
+.batch-list { background: var(--bg-input); border: 1px solid var(--border-primary); border-radius: var(--radius-sm); }
+.batch-item { border-bottom: 1px solid var(--border-highlight); padding: 8px; font-size: 0.82rem; display: flex; justify-content: space-between; }
+.batch-item strong { color: var(--accent-primary); }
 
-.batch-item {
-  border-bottom: 1px solid var(--border-highlight);
-  padding: 8px;
-  font-size: 0.85rem;
-  display: flex;
-  justify-content: space-between;
-}
+/* Misc Origin/Ref controls */
+.flex-row { display: flex; gap: 8px; align-items: center; }
 
-.batch-item strong {
-  color: var(--accent-primary);
-}
-
-/* Distance Info Box */
-.distance-info {
-  background: rgba(0, 0, 0, 0.6);
-  border: 1px solid var(--accent-primary);
-  color: var(--accent-primary);
-  font-family: var(--font-mono);
-  padding: 10px;
-  border-radius: var(--radius-sm);
-  font-size: 0.9rem;
-  margin-top: 8px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-/* Responsive */
-@media (max-width: 1000px) {
-  .wrap {
-    grid-template-columns: 1fr;
-    /* Stack on smaller screens */
-    grid-template-rows: auto 1fr;
-  }
-
-  .sidebar {
-    border-right: none;
-    border-bottom: 1px solid var(--border-primary);
-    max-height: 40vh;
-  }
+/* ── Responsive ─────────────────────────────────────────── */
+@media (max-width: 900px) {
+  .sidebar { width: 180px; min-width: 180px; }
+  .app-header .header-dro { display: none; }
 }

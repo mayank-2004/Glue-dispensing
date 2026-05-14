@@ -1,47 +1,37 @@
 .viewer {
-  flex: 0 0 auto;
+  position: relative;
+  flex: 1;
   display: flex;
   flex-direction: column;
-  background: var(--bg-tertiary);
+  background: #000;
   border: 1px solid var(--border-primary);
-  margin: 16px;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   overflow: hidden;
-  height: 60vh;
-  box-shadow: var(--shadow-md);
-  backdrop-filter: blur(10px);
+  min-height: 0;
 }
 
 .viewer .canvas {
   flex: 1;
-  background-color: #000000;
+  background-color: #000;
   background-image:
-    linear-gradient(rgba(59, 130, 246, 0.2) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(59, 130, 246, 0.2) 1px, transparent 1px),
-    linear-gradient(rgba(59, 130, 246, 0.1) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(59, 130, 246, 0.1) 1px, transparent 1px);
-  background-size: 100px 100px, 100px 100px, 20px 20px, 20px 20px;
-  background-position: center center;
-  position: relative;
-  overflow: auto;
-  /* Allow scrolling when zoomed */
-  min-height: 400px;
-  padding: 12px;
+    linear-gradient(rgba(0,200,215,0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,200,215,0.07) 1px, transparent 1px),
+    linear-gradient(rgba(0,200,215,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,200,215,0.03) 1px, transparent 1px);
+  overflow-x: hidden;
+  overflow-y: auto;
   display: flex;
-  /* Remove center alignment to fix overflow clipping */
-  /* align-items: center; */
-  /* justify-content: center; */
-  box-shadow: inset 0 0 20px rgba(0, 0, 0, 0.5);
+  flex-direction: column;
+  align-items: center;
+  min-height: 0;
+  padding: 12px;
 }
 
 .viewer .canvas svg {
-  /* Dimensions will be set dynamically via inline style for zoom */
-  object-fit: contain;
-  transition: width 0.3s ease, height 0.3s ease;
-  /* Smooth zoom transition */
-  filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.3));
-  margin: auto;
-  /* Center when smaller, allow scrolling when larger */
+  /* Dimensions are controlled by Viewer.jsx inline styles (100% for 1x, 200% for 2x, etc.) */
+  flex-shrink: 0; /* Crucial so flex column doesn't squish height back to 100% */
+  transition: width 0.2s ease, height 0.2s ease;
+  filter: drop-shadow(0 2px 8px rgba(0,0,0,0.6));
   display: block;
 }
 

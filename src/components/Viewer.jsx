@@ -16,39 +16,58 @@ export default function Viewer({
   const canvasRef = useRef(null);
   const [zoomLevel, setZoomLevel] = useState(1);
 
+  // Fit SVG to canvas and apply zoom
+  const applySvgSize = (svgEl, zoom) => {
+    if (!svgEl) return;
+    // At zoom 1× the SVG fills 100% of the canvas (CSS handles contain).
+    // At higher zoom levels we scale it up so the user can scroll/inspect details.
+    svgEl.style.width  = zoom === 1 ? '100%' : `${zoom * 100}%`;
+    svgEl.style.height = zoom === 1 ? '100%' : `${zoom * 100}%`;
+    svgEl.style.minWidth  = '';
+    svgEl.style.minHeight = '';
+  };
+
   // Initialize SVG content
   useEffect(() => {
     if (canvasRef.current && svg) {
       const canvas = canvasRef.current;
       canvas.innerHTML = svg;
 
-      const svgElement = canvas.querySelector("svg");
-      if (svgElement) {
-        svgElement.setAttribute("preserveAspectRatio", "xMidYMid meet");
-        svgElement.style.objectFit = "contain";
-        // Apply mirror transformation for bottom view
-        // if (side === "bottom") {
-        //   svgElement.style.transform = "scaleX(-1)";
-        // } else {
-        //   svgElement.style.transform = "";
-        // }
+      const svgEl = canvas.querySelector('svg');
+      if (svgEl) {
+        svgEl.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+        applySvgSize(svgEl, zoomLevel);
       }
     }
   }, [svg, side]);
 
-  // Update SVG size when zoom changes
+  const prevZoomRef = useRef(1);
+
+  // Update size when zoom changes
   useEffect(() => {
     if (canvasRef.current) {
-      const svgElement = canvasRef.current.querySelector("svg");
-      if (svgElement) {
-        svgElement.style.width = `${zoomLevel * 100}%`;
-        svgElement.style.height = `${zoomLevel * 100}%`;
-      }
-    }
-  }, [zoomLevel, svg]); // Re-apply if SVG or zoom changes
+      const canvas = canvasRef.current;
+      const svgEl = canvas.querySelector('svg');
+      if (svgEl) {
+        const prevZoom = prevZoomRef.current;
+        // Calculate the current vertical center point of the scroll view
+        const centerScrollY = canvas.scrollTop + canvas.clientHeight / 2;
+        const zoomRatio = zoomLevel / prevZoom;
 
-  const handleZoomIn = () => setZoomLevel(prev => Math.min(prev + 1, 6));
-  const handleZoomOut = () => setZoomLevel(prev => Math.max(prev - 1, 1));
+        applySvgSize(svgEl, zoomLevel);
+
+        // Adjust scroll position after layout updates to keep the zoom vertically centered
+        requestAnimationFrame(() => {
+          canvas.scrollTop = centerScrollY * zoomRatio - canvas.clientHeight / 2;
+        });
+      }
+      prevZoomRef.current = zoomLevel;
+    }
+  }, [zoomLevel]);
+
+  const handleZoomIn  = () => setZoomLevel(prev => Math.min(prev + 0.5, 8));
+  const handleZoomOut = () => setZoomLevel(prev => Math.max(prev - 0.5, 0.5));
+  const handleZoomReset = () => setZoomLevel(1);
 
   const handleCanvasClick = (evt) => {
     if (onClickSvg) {
@@ -57,7 +76,7 @@ export default function Viewer({
   };
 
   return (
-    <>
+    <div className="viewer">
       <div className="viewer-toolbar">
         <div className="viewer-zoom">
           <div className="viewer-btn-group">
@@ -96,21 +115,29 @@ export default function Viewer({
             <button
               className="viewer-btn"
               onClick={handleZoomOut}
-              disabled={zoomLevel <= 1}
+              disabled={zoomLevel <= 0.5}
               title="Zoom Out"
             >
               -
             </button>
             <div className="viewer-readout" style={{ color: '#fff' }}>
-              {zoomLevel}x
+              {zoomLevel === 1 ? 'Fit' : `${zoomLevel}x`}
             </div>
             <button
               className="viewer-btn"
               onClick={handleZoomIn}
-              disabled={zoomLevel >= 6}
+              disabled={zoomLevel >= 8}
               title="Zoom In"
             >
               +
+            </button>
+            <button
+              className="viewer-btn"
+              onClick={handleZoomReset}
+              title="Reset to fit"
+              style={{ color: zoomLevel !== 1 ? '#00c8d7' : undefined }}
+            >
+              Fit
             </button>
           </div>
         </div>
@@ -144,6 +171,6 @@ export default function Viewer({
         onClick={handleCanvasClick}
         onMouseDown={onMouseDown}
       />
-    </>
+    </div>
   );
 }

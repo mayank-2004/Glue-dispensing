@@ -195,17 +195,17 @@ export default function SerialPanel({
         </div>
       </div>
 
-      <div className="flex-row" style={{ marginTop: 8, paddingBottom: 16, borderBottom: '1px solid #444' }}>
+      <div className="flex-row" style={{ marginTop: 8, paddingBottom: 16, borderBottom: '1px solid #444', flexWrap: 'wrap', gap: '8px' }}>
         <button className="btn secondary" onClick={refresh}>Refresh</button>
 
-        <select value={baud} onChange={e => setBaud(Number(e.target.value))} style={{ width: 100, marginLeft: 8 }}>
+        <select value={baud} onChange={e => setBaud(Number(e.target.value))} style={{ width: 100 }}>
           <option value={115200}>115200</option>
           <option value={250000}>250000</option>
           <option value={57600}>57600</option>
           <option value={9600}>9600</option>
         </select>
 
-        <select value={path} onChange={e => setPath(e.target.value)} style={{ minWidth: 220 }}>
+        <select value={path} onChange={e => setPath(e.target.value)} style={{ minWidth: 220, flex: 1 }}>
           {ports.length === 0
             ? <option value="">(no serial ports found)</option>
             : ports.map(p => (
@@ -219,7 +219,7 @@ export default function SerialPanel({
         <button className="btn" onClick={connect} disabled={!path || isConnected}>Connect</button>
         <button className="btn secondary" onClick={disconnect} disabled={!isConnected}>Disconnect</button>
 
-        <label className="btn" style={{ marginLeft: 8 }}>
+        <label className="btn">
           Send file
           <input type="file" accept=".gcode,.nc,.txt" style={{ display: 'none' }} onChange={sendFile} disabled={!isConnected} />
         </label>

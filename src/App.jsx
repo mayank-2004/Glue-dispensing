@@ -525,15 +525,6 @@ export default function App() {
     if (pi >= 0) {
       const padData = extractPadsMm(ls[pi].text).map(padCenter);
       console.log("pad data: ", padData);
-      
-      // Calculate and log the distance of each pad from the Gerber design origin (0,0)
-      // console.log('--- Pad Distances from Origin (0,0) ---');
-      // padData.forEach((pad, index) => {
-      //   const distance = Math.sqrt(pad.x * pad.x + pad.y * pad.y);
-      //   console.log(`Pad ${index + 1}: X=${pad.x.toFixed(3)} Y=${pad.y.toFixed(3)} | Distance=${distance.toFixed(3)}mm`);
-      // });
-      // console.log(`Total Pads Extracted: ${padData.length}`);
-      
       setPads(processPads(padData));
       if (ls[pi].side === 'bottom') {
         setSide('bottom');
@@ -555,9 +546,9 @@ export default function App() {
     console.table(
       ls.map(l => ({
         filename: l.filename,
-        type:     l.type    || '—',
-        side:     l.side    || '—',
-        chars:    l.text?.length ?? 0,
+        type: l.type || '—',
+        side: l.side || '—',
+        chars: l.text?.length ?? 0,
       }))
     );
     if (unrecognized.length > 0) {
@@ -584,12 +575,12 @@ export default function App() {
     if (detectedFiducials.length > 0) {
       console.log(`%c✅ FIDUCIALS FOUND: ${detectedFiducials.length}`, 'color:#4ade80;font-weight:bold;font-size:12px');
       console.table(detectedFiducials.map(f => ({
-        id:             f.id,
-        x_mm:           parseFloat(f.x.toFixed(4)),
-        y_mm:           parseFloat(f.y.toFixed(4)),
-        diameter_mm:    parseFloat((f.diameter || 0).toFixed(3)),
+        id: f.id,
+        x_mm: parseFloat(f.x.toFixed(4)),
+        y_mm: parseFloat(f.y.toFixed(4)),
+        diameter_mm: parseFloat((f.diameter || 0).toFixed(3)),
         confidence_pct: Math.round((f.confidence || 0) * 100),
-        sourceLayer:    f.sourceLayer,
+        sourceLayer: f.sourceLayer,
       })));
     } else {
       console.warn(
@@ -687,19 +678,6 @@ export default function App() {
 
     await rebuild(layers, s);
   };
-
-  async function exportAllSvgsZip() {
-    const outputs = [];
-    for (const l of layers) {
-      const only = [{ filename: l.filename, text: l.text, enabled: true }];
-      const ssvg = await stackupToSvg(only, l.side || "top");
-      const base = l.filename.replace(/\.[^.]+$/, "");
-      outputs.push({ name: `${base}.svg`, text: ssvg });
-    }
-    const blob = await zipTextFiles(outputs);
-    downloadBlob("layers_svg.zip", blob);
-  }
-
 
   const NS = "http://www.w3.org/2000/svg";
   const getSvgEl = useCallback(() => document.querySelector(".viewer .canvas svg"), []);
@@ -801,7 +779,8 @@ export default function App() {
       const result = {
         x: xUnits,
         y: yUnits,
-        r: 1 / geom.mmPerUnit
+        r: 1 / geom.mmPerUnit,
+        _vb: geom
       };
 
       return result;
@@ -975,16 +954,27 @@ export default function App() {
         const centerColor = selectedPad.centerValid ? "#00ff00" : "#ff6600";
         const centerCoords = mmToCurrentUnits(selectedMm);
 
-        // Fix: Use an absolute, tiny fixed radius (0.15mm width) instead of scaling to the component size
-        const absoluteDotRadius = 0.075 / geom.mmPerUnit;
+        // Fix: Increase radius so it is actually visible to the user
+        const absoluteDotRadius = 0.5 / geom.mmPerUnit;
+
+        // Draw the highlight ring that the user is missing!
+        const r = u.r * (Math.max(padWidth || 1, padHeight || 1) * 0.8);
+        const sel = document.createElementNS(NS, "circle");
+        sel.setAttribute("cx", u.x); sel.setAttribute("cy", u.y);
+        sel.setAttribute("r", r * 1.5 + absoluteDotRadius * 2);
+        sel.setAttribute("fill", "none");
+        sel.setAttribute("stroke", "#ff00ff");
+        sel.setAttribute("stroke-width", u.r * 0.3);
+        sel.setAttribute("stroke-dasharray", "4,2");
+        gm.appendChild(sel);
 
         const centerDot = document.createElementNS(NS, "circle");
         centerDot.setAttribute("cx", centerCoords.x);
         centerDot.setAttribute("cy", centerCoords.y);
-        centerDot.setAttribute("r", absoluteDotRadius); // Extremely small fixed dot
+        centerDot.setAttribute("r", absoluteDotRadius); // Visible dot
         centerDot.setAttribute("fill", centerColor);
         centerDot.setAttribute("stroke", "#ffffff");
-        centerDot.setAttribute("stroke-width", absoluteDotRadius * 0.2); // Tiny crisp border
+        centerDot.setAttribute("stroke-width", absoluteDotRadius * 0.2); // Crisp border
         gm.appendChild(centerDot);
 
         if (showPasteDots) {
@@ -1076,7 +1066,7 @@ export default function App() {
       ensureGroup("overlay-sequence");
     }
 
-    if (!multiSelectMode && generatedPath && activeRef && selectedMm) {
+    if (generatedPath && activeRef && (selectedMm || multiSelectMode)) {
       const gp = ensureGroup("overlay-path");
 
       generatedPath.segments.forEach((segment, idx) => {
@@ -1100,22 +1090,26 @@ export default function App() {
         gp.appendChild(line);
       });
 
-      generatedPath.points.forEach((point, idx) => {
-        if (point.type === 'waypoint') {
-          const up = mmToCurrentUnits(point);
-          drawCircle(gp, up.x, up.y, up.r * 0.5, "rgba(255,255,0,0.5)", "#ffff00");
-        }
-      });
+      if (generatedPath.points) {
+        generatedPath.points.forEach((point, idx) => {
+          if (point.type === 'waypoint') {
+            const up = mmToCurrentUnits(point);
+            drawCircle(gp, up.x, up.y, up.r * 0.5, "rgba(255,255,0,0.5)", "#ffff00");
+          }
+        });
+      }
 
-      const start = mmToCurrentUnits({ x: activeRef.x, y: activeRef.y });
-      const end = mmToCurrentUnits(selectedMm);
-      const midX = (start.x + end.x) / 2, midY = (start.y + end.y) / 2 - start.r * 0.6;
-      drawText(gp, midX, midY, `${generatedPath.totalDistance.toFixed(3)} mm`, start.r * 1.2, "#222", "#fffb");
+      if (selectedMm && generatedPath.totalDistance !== undefined) {
+        const start = mmToCurrentUnits({ x: activeRef.x, y: activeRef.y });
+        const end = mmToCurrentUnits(selectedMm);
+        const midX = (start.x + end.x) / 2, midY = (start.y + end.y) / 2 - start.r * 0.6;
+        drawText(gp, midX, midY, `${generatedPath.totalDistance.toFixed(3)} mm`, start.r * 1.2, "#222", "#fffb");
+      }
     } else {
       ensureGroup("overlay-path");
     }
 
-    if (!multiSelectMode && activeRef && selectedMm && !generatedPath) {
+    if (!multiSelectMode && activeRef && selectedMm) {
       const uh = mmToCurrentUnits({ x: activeRef.x, y: activeRef.y });
       const origin = selectedOrigin;
       let searchCoords = selectedMm;
@@ -1237,18 +1231,18 @@ export default function App() {
       if (boardOutline) {
         const { minX, minY, width, height } = boardOutline;
         boardCorners = [
-          { x: minX,         y: minY          },
-          { x: minX + width, y: minY          },
+          { x: minX, y: minY },
+          { x: minX + width, y: minY },
           { x: minX + width, y: minY + height },
-          { x: minX,         y: minY + height },
+          { x: minX, y: minY + height },
         ];
       } else {
         // Fallback: use viewBox corners in design mm (no transform applied)
         boardCorners = [
-          { x: geom.minX * geom.mmPerUnit,               y: geom.minY * geom.mmPerUnit },
-          { x: (geom.minX + geom.vbW) * geom.mmPerUnit,  y: geom.minY * geom.mmPerUnit },
-          { x: (geom.minX + geom.vbW) * geom.mmPerUnit,  y: (geom.minY + geom.vbH) * geom.mmPerUnit },
-          { x: geom.minX * geom.mmPerUnit,                y: (geom.minY + geom.vbH) * geom.mmPerUnit },
+          { x: geom.minX * geom.mmPerUnit, y: geom.minY * geom.mmPerUnit },
+          { x: (geom.minX + geom.vbW) * geom.mmPerUnit, y: geom.minY * geom.mmPerUnit },
+          { x: (geom.minX + geom.vbW) * geom.mmPerUnit, y: (geom.minY + geom.vbH) * geom.mmPerUnit },
+          { x: geom.minX * geom.mmPerUnit, y: (geom.minY + geom.vbH) * geom.mmPerUnit },
         ];
       }
 
@@ -1334,6 +1328,14 @@ export default function App() {
         setSafeSequence(safeSeq);
         setDispensingSequence(safeSeq);
 
+        let segments = [];
+        safeSeq.forEach(pad => {
+          if (pad.safePath && pad.safePath.segments) {
+            segments.push(...pad.safePath.segments);
+          }
+        });
+        setGeneratedPath({ segments });
+
         const stats = {
           totalPads: safeSeq.length,
           totalDistance: safeSeq.reduce((sum, pad) => sum + (pad.pathDistance || 0), 0).toFixed(3),
@@ -1351,6 +1353,18 @@ export default function App() {
         setDispensingSequence(sequence);
         setSafeSequence([]);
 
+        let segments = [];
+        let curr = refPoint;
+        sequence.forEach(pad => {
+          segments.push({
+            start: { x: curr.x, y: curr.y, z: 0 },
+            end: { x: pad.x, y: pad.y, z: 0 },
+            type: 'travel'
+          });
+          curr = pad;
+        });
+        setGeneratedPath({ segments });
+
         const stats = dispensingSequencer.calculateJobStatistics(refPoint, sequence);
         setJobStatistics(stats);
       }
@@ -1365,7 +1379,8 @@ export default function App() {
     const svgEl = getSvgEl(); if (!svgEl) return null;
     const geom = getSvgGeom(); if (!geom) return null;
     const pt = svgEl.createSVGPoint(); pt.x = evt.clientX; pt.y = evt.clientY;
-    const ctm = svgEl.getScreenCTM(); if (!ctm) return null;
+    const innerNode = svgEl.querySelector('g') || svgEl;
+    const ctm = innerNode.getScreenCTM(); if (!ctm) return null;
     const local = pt.matrixTransform(ctm.inverse());
 
     let mmX = local.x * geom.mmPerUnit;
@@ -1765,689 +1780,603 @@ export default function App() {
     };
   }, [fiducials]);
 
-  // Component navigation items
-  const componentNavItems = [
-    { id: 'SerialPanel', label: 'Serial Panel' },
-    { id: 'Viewer', label: 'Viewer' },
-    { id: 'JogPanel', label: 'Jog Control' },
-    { id: 'FiducialPanel', label: 'Fiducial Panel' },
-    { id: 'CameraPanel', label: 'Camera Panel' },
-    { id: 'AutomatedDispensingPanel', label: 'Automated Dispensing Panel' },
-    { id: 'BedCalibration', label: 'PCB Leveling' },
-  ]
+  // Workflow steps (replaces old componentNavItems)
+  const workflowSteps = [
+    { id: 'SerialPanel', num: '1', label: 'Connect', sub: 'Serial / Machine' },
+    { id: 'Viewer', num: '2', label: 'Load PCB', sub: 'Gerber / Layers' },
+    { id: 'JogPanel', num: '3', label: 'Jog', sub: 'Manual Positioning' },
+    { id: 'FiducialPanel', num: '4', label: 'Fiducials', sub: 'Alignment & Solve' },
+    { id: 'CameraPanel', num: '5', label: 'Camera', sub: 'Vision Servo' },
+    { id: 'BedCalibration', num: '6', label: 'Calibrate', sub: 'Bed Leveling' },
+    { id: 'AutomatedDispensingPanel', num: '7', label: 'Dispense', sub: 'Run Job' },
+  ];
+
+  // Step done heuristics
+  const stepDone = (id) => {
+    if (id === 'SerialPanel') return isSerialConnected;
+    if (id === 'Viewer') return layers.length > 0;
+    if (id === 'FiducialPanel') return fiducials.some(f => f.machine);
+    return false;
+  };
+
+  const mPos = livePreview.machinePosition || machinePos || { x: 0, y: 0, z: 0 };
 
   return (
-    <div className="wrap" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
-      <div className="sidebar">
-        <div className="sidebar-header">
-          <div className="panel-title">FILE CONTROL</div>
+    <div id="root" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
+
+      {/* ── TOP HEADER BAR ─────────────────────────────────── */}
+      <header className="app-header">
+        <div className="app-logo">
+          <div className="app-logo-icon">🔧</div>
+          <div>
+            <div className="app-logo-text">GlueDispenser</div>
+            <div className="app-logo-sub">Motion Control System</div>
+          </div>
         </div>
 
-        {/* ===== EMERGENCY STOP BANNER — Always visible ===== */}
-        <div style={{
-          padding: '8px 10px',
-          background: isEmergencyStopped ? '#7a0000' : '#1a1a1a',
-          borderBottom: `2px solid ${isEmergencyStopped ? '#ff2200' : '#333'}`,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          flexShrink: 0
-        }}>
+        <div className="header-divider" />
+
+        {/* DRO — Digital Read-Out */}
+        <div className="header-dro">
+          <div className="dro-axis">
+            <span className="dro-label">X</span>
+            <span className="dro-value">{mPos.x.toFixed(3)}</span>
+            <span className="dro-unit">mm</span>
+          </div>
+          <div className="dro-sep" />
+          <div className="dro-axis">
+            <span className="dro-label">Y</span>
+            <span className="dro-value">{mPos.y.toFixed(3)}</span>
+            <span className="dro-unit">mm</span>
+          </div>
+          <div className="dro-sep" />
+          <div className="dro-axis">
+            <span className="dro-label">Z</span>
+            <span className="dro-value">{(mPos.z ?? 0).toFixed(3)}</span>
+            <span className="dro-unit">mm</span>
+          </div>
+        </div>
+
+        <div className="header-spacer" />
+
+        <div className="header-right">
+          {/* Connection status */}
+          <div className={`status-pill ${isSerialConnected ? 'connected' : 'disconnected'}`}>
+            <span className="pill-dot" />
+            {isSerialConnected ? 'CONNECTED' : 'OFFLINE'}
+          </div>
+
+          {/* E-STOP */}
           <button
-            onClick={triggerEmergencyStop}
-            disabled={!isSerialConnected && !isEmergencyStopped}
-            title="Emergency Stop — Immediately halts all machine motion"
-            style={{
-              flex: 1,
-              padding: '10px 4px',
-              background: isEmergencyStopped ? '#ff4400' : '#cc0000',
-              color: '#fff',
-              border: '3px solid #ff0000',
-              borderRadius: 6,
-              fontSize: 13,
-              fontWeight: 900,
-              letterSpacing: 1.5,
-              cursor: 'pointer',
-              boxShadow: isEmergencyStopped ? '0 0 16px #ff220080' : '0 0 8px #cc000060',
-              animation: isEmergencyStopped ? 'none' : undefined
-            }}
+            className={`estop-btn ${isEmergencyStopped ? 'triggered' : ''}`}
+            onClick={isEmergencyStopped ? resetEmergencyStop : triggerEmergencyStop}
+            title={isEmergencyStopped ? 'Click to RESET machine' : 'Emergency Stop'}
           >
-            ⬛ E-STOP
+            <span className="estop-dot" />
+            {isEmergencyStopped ? 'RESET' : 'E-STOP'}
           </button>
-          {isEmergencyStopped && (
-            <button
-              onClick={resetEmergencyStop}
-              title="Re-arm machine after emergency stop"
-              style={{
-                flex: 1,
-                padding: '10px 4px',
-                background: '#1e5e1e',
-                color: '#7dff7d',
-                border: '2px solid #4caf50',
-                borderRadius: 6,
-                fontSize: 12,
-                fontWeight: 700,
-                cursor: 'pointer'
-              }}
-            >
-              ✅ RESET
-            </button>
-          )}
         </div>
-        {isEmergencyStopped && (
-          <div style={{ background: '#7a0000', color: '#ffcccc', fontSize: 11, padding: '4px 10px', textAlign: 'center' }}>
-            ⚠️ MACHINE STOPPED — Click RESET to re-arm
-          </div>
-        )}        <div className="section">
-          <input
-            type="file"
-            id="fileInput"
-            multiple
-            accept=".zip,.grb,.gbr,.cmp,.sol,.drd,.exc,.txt"
-            onChange={pickFiles}
-            className="d-none"
-          />
-        </div>
+      </header>
 
-        <div className="section">
-          <h3>View Controls</h3>
-          <div className="row">
-            <button className={`btn ${side === 'top' ? 'active' : ''}`} onClick={() => changeSide("top")}>Top View</button>
-            <button className={`btn ${side === 'bottom' ? 'active' : ''}`} onClick={() => changeSide("bottom")}>Bottom View</button>
-          </div>
+      {/* ── BODY: Sidebar + Content ─────────────────────────── */}
+      <div className="app-body">
+        <aside className="sidebar">
 
-          <div style={{ marginTop: 8 }}>
-            <select value={pasteIdx ?? ""} onChange={(e) => {
-              const idx = e.target.value === "" ? null : +e.target.value;
-              setPasteIdx(idx);
-              if (idx != null) {
-                const selectedLayer = layers[idx];
-                if (selectedLayer.type === "solderpaste") {
-                  const padData = extractPadsMm(selectedLayer.text).map(padCenter);
-                  setPads(processPads(padData));
-                  console.log('Solderpaste layer loaded:', padData.length, 'pads');
-                  if (selectedLayer.side === 'top') {
-                    changeSide('top', true);
-                  } else if (selectedLayer.side === 'bottom') {
-                    changeSide('bottom', true);
-                  }
-                } else {
-                  setPads([]);
-                }
-              } else setPads([]);
-              setSelectedMm(null);
-            }}>
-              <option value="">(Select Paste Layer)</option>
-              {layers.map((l, i) => {
-                if (l.type === "solderpaste") {
-                  return <option key={l.filename} value={i}>{l.filename} ({l.side})</option>;
-                }
-                return null;
-              })}
-            </select>
-          </div>
-        </div>
-
-        <div className="section" style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-          <h3>Layers</h3>
-          <LayerList layers={layers} layerData={layerData} onToggle={toggleLayer} />
-        </div>
-
-        <MaintenanceManager manager={maintenanceManager} />
-
-        <ToolOffsetCalibration
-          toolOffset={maintenanceManager.getToolOffset()}
-          setToolOffset={(o) => {
-            maintenanceManager.setToolOffset(o);
-            forceRender({});
-          }}
-          machinePosition={livePreview.machinePosition}
-          isConnected={isSerialConnected}
-          onAutoDetect={async () => {
-            if (cameraPanelRef.current) {
-              return await cameraPanelRef.current.autoDetectTarget();
-            }
-            return false;
-          }}
-        />
-
-        <div style={{ color: '#9aa0a6', margin: '0 0 12px 0', border: '1px solid #9aa0a6', padding: '4px 12px 6px 12px', borderRadius: '4px' }}>
-          Components
-          <ComponentList
-            components={padDistances}
-            onFocus={(pad) => {
-              const displayCoords = {
-                x: pad.x,
-                y: pad.y,
-                centerValid: pad.centerValid,
-                centerMethod: pad.centerMethod,
-                originalPad: pad
-              };
-
-              console.log('ComponentList Focus to CENTER:', {
-                pad: { x: pad.x, y: pad.y },
-                displayCoords
-              });
-
-              setSelectedMm(displayCoords);
-            }}
-            onItemClick={(pad, index) => {
-              if (multiSelectMode) {
-                setSelectedPadIndices(prev => {
-                  const newSelection = [...prev];
-                  const existingIdx = newSelection.indexOf(index);
-                  if (existingIdx >= 0) {
-                    newSelection.splice(existingIdx, 1);
-                  } else {
-                    newSelection.push(index);
-                  }
-                  return newSelection;
-                });
-              } else {
-                const displayCoords = {
-                  x: pad.x,
-                  y: pad.y,
-                  centerValid: pad.centerValid,
-                  centerMethod: pad.centerMethod,
-                  originalPad: pad
-                };
-                setSelectedMm(displayCoords);
-              }
-            }}
-            multiSelectMode={multiSelectMode}
-            selectedIndices={selectedPadIndices}
-          />
-        </div>
-
-        <div className="section Origin-section">
-          <h3 style={{ color: '#007bff', padding: '8px 12px', borderBottom: '2px solid #007bff' }}>PCB Origin</h3>
-          {selectedOrigin && (
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ padding: 8, background: '#1d1f24ff', borderRadius: 4 }}>
-                <strong>{selectedOrigin.description}</strong><br />
-                <small>Position: (0.00, 0.00) mm <span style={{ opacity: 0.6, fontSize: '0.8em' }}>[Gerber: {selectedOrigin.x.toFixed(1)}, {selectedOrigin.y.toFixed(1)}]</span></small>
-                <br />
-                <small>Confidence: {(selectedOrigin.confidence * 100).toFixed(0)}%</small>
+          {/* Workflow Steps */}
+          <div className="sidebar-workflow">
+            <div className="sidebar-section-label">Workflow</div>
+            {workflowSteps.map((step, i) => (
+              <div key={step.id}>
+                <button
+                  className={`step-btn ${activeComponent === step.id ? 'active' : ''} ${stepDone(step.id) ? 'done' : ''}`}
+                  onClick={() => setActiveComponent(step.id)}
+                >
+                  {activeComponent === step.id && <span className="step-active-bar" />}
+                  <span className="step-num">
+                    {stepDone(step.id) ? '✓' : step.num}
+                  </span>
+                  <div>
+                    <div className="step-label">{step.label}</div>
+                    <div className="step-sublabel">{step.sub}</div>
+                  </div>
+                </button>
+                {i < workflowSteps.length - 1 && <div className="workflow-step-connector" />}
               </div>
-            </div>
-          )}
-          <button className="btn secondary"
-            onClick={() => {
-              if (!selectedOrigin) {
-                alert("Please load a Gerber file and 'Detect Origins' first.");
-                return;
-              }
-              if (!livePreview.machinePosition) {
-                alert("Machine position unknown. Please ensure the machine is connected.");
-                return;
-              }
-              const mPos = livePreview.machinePosition;
-              const tOff = maintenanceManager.getToolOffset();
-
-              // Formula: Crosshair = Machine + ToolOffset + selectedOrigin(Gerber0,0) + pcbOriginOffset
-              // Therefore: selectedOrigin = Machine + ToolOffset + selectedOrigin + pcbOriginOffset
-              // Result: pcbOriginOffset = - (Machine + ToolOffset)
-
-              const newOffsetX = -(mPos.x + (tOff?.dx || 0));
-              const newOffsetY = -(mPos.y + (tOff?.dy || 0));
-
-              setPcbOriginOffset({ x: newOffsetX, y: newOffsetY });
-            }}
-            style={{ width: '100%', marginBottom: '8px' }}>
-            🎯 Set Camera Origin Here
-          </button>
-          <div className="flex-row" style={{ gap: 8, marginTop: 8 }}>
-            <button className="btn sm secondary" style={{ width: '100%', marginBottom: '8px' }} onClick={onDetectOrigins} disabled={layers.length === 0}>
-              🎯 Detect Origins
-            </button>
-            <button className="btn sm secondary" style={{ width: '100%' }} onClick={() => {
-              setSelectedOrigin(null);
-              setPcbOriginOffset({ x: 0, y: 0 });
-            }}>
-              Clear
-            </button>
+            ))}
           </div>
-          <small>Machine coordinates where True Gerber Origin (0,0) is located</small>
-        </div>
 
-        <div className="section Reference-section" style={{ marginTop: 16 }}>
-          <h4 style={{ color: '#007bff', margin: '8px 0' }}>Reference Point</h4>
-          <div className="flex-row" style={{ marginLeft: 8, gap: 8, alignItems: 'center' }}>
-            <div className="flex-col">
-              <label>
-                <input type="radio" name="refType" checked={referenceType === 'origin'}
-                  onChange={() => {
-                    setReferenceType('origin');
-                    setReferencePoint(null);
-                  }} />
-                True Gerber Origin (0,0)
-              </label>
-              <label>
-                <input type="radio" name="refType" checked={referenceType === 'fiducial'}
-                  onChange={() => setReferenceType('fiducial')} />
-                Fiducial
-              </label>
-            </div>
-            <button
-              className="btn"
-              disabled={!isSerialConnected || (referenceType === 'fiducial' && !referencePoint)}
-              onClick={async () => {
-                let targetMachine = null;
+          {/* Scrollable controls area */}
+          <div className="sidebar-controls">
 
-                if (referenceType === 'origin') {
-                  // Move to Gerber Origin
-                  if (applyXf && xf && selectedOrigin) {
-                    // Best: use fiducial-solved transform
-                    targetMachine = applyTransform(xf, { x: selectedOrigin.x, y: selectedOrigin.y });
-                  } else if (pcbOriginOffset && (pcbOriginOffset.x !== 0 || pcbOriginOffset.y !== 0)) {
-                    // Fallback: user-entered manual offset
-                    targetMachine = { x: pcbOriginOffset.x, y: pcbOriginOffset.y };
-                  } else {
-                    alert("No PCB origin mapped to machine space.\nPlease solve fiducials first, or enter a manual PCB Origin Offset.");
-                    return;
-                  }
-                } else if (referenceType === 'fiducial' && referencePoint) {
-                  // Move to selected fiducial
-                  const fid = fiducials.find(f => f.id === referencePoint.id);
-                  if (fid?.machine) {
-                    // Use the real machine coordinate stored on the fiducial
-                    targetMachine = { x: fid.machine.x, y: fid.machine.y };
-                  } else if (applyXf && xf && fid?.design) {
-                    // Transform design → machine via solved xf
-                    targetMachine = applyTransform(xf, { x: fid.design.x, y: fid.design.y });
-                  } else {
-                    alert(`Fiducial ${referencePoint.id} has no machine coordinate.\nPlease jog to it and capture its machine position first.`);
-                    return;
-                  }
-                }
+            {/* File input (hidden) */}
+            <input
+              type="file"
+              id="fileInput"
+              multiple
+              accept=".zip,.grb,.gbr,.cmp,.sol,.drd,.exc,.txt"
+              onChange={pickFiles}
+              className="d-none"
+            />
 
-                if (targetMachine) {
-                  const travelF = speedSettings?.travelSpeed || 6000;
-                  const cmd = `G1 X${targetMachine.x.toFixed(3)} Y${targetMachine.y.toFixed(3)} F${travelF}`;
-                  if (confirm(`Move machine to X${targetMachine.x.toFixed(3)} Y${targetMachine.y.toFixed(3)} at F${travelF}?\n(Ref: ${referenceType === 'origin' ? 'Gerber (0,0)' : referencePoint?.id})`)) {
-                    console.log('Moving to reference:', cmd);
-                    if (window.serial && window.serial.writeLine) {
-                      await window.serial.writeLine(cmd);
+            <div className="section">
+              <h3>View Controls</h3>
+              <div className="row">
+                <button className={`btn ${side === 'top' ? 'active' : ''}`} onClick={() => changeSide("top")}>Top</button>
+                <button className={`btn ${side === 'bottom' ? 'active' : ''}`} onClick={() => changeSide("bottom")}>Bottom</button>
+              </div>
+
+              <div style={{ marginTop: 8 }}>
+                <select value={pasteIdx ?? ""} onChange={(e) => {
+                  const idx = e.target.value === "" ? null : +e.target.value;
+                  setPasteIdx(idx);
+                  if (idx != null) {
+                    const selectedLayer = layers[idx];
+                    if (selectedLayer.type === "solderpaste") {
+                      const padData = extractPadsMm(selectedLayer.text).map(padCenter);
+                      setPads(processPads(padData));
+                      console.log('Solderpaste layer loaded:', padData.length, 'pads');
+                      if (selectedLayer.side === 'top') { changeSide('top', true); }
+                      else if (selectedLayer.side === 'bottom') { changeSide('bottom', true); }
+                    } else { setPads([]); }
+                  } else setPads([]);
+                  setSelectedMm(null);
+                }}>
+                  <option value="">(Select Paste Layer)</option>
+                  {layers.map((l, i) => {
+                    if (l.type === "solderpaste") {
+                      return <option key={l.filename} value={i}>{l.filename} ({l.side})</option>;
                     }
-                  }
-                }
+                    return null;
+                  })}
+                </select>
+              </div>
+            </div>{/* end View Controls section */}
+
+            <div className="section" style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+              <h3>Layers</h3>
+              <LayerList layers={layers} layerData={layerData} onToggle={toggleLayer} />
+            </div>
+
+
+            <MaintenanceManager manager={maintenanceManager} />
+
+            <ToolOffsetCalibration
+              toolOffset={maintenanceManager.getToolOffset()}
+              setToolOffset={(o) => {
+                maintenanceManager.setToolOffset(o);
+                forceRender({});
               }}
-            >
-              Move To
-            </button>
-            <button
-              className="btn secondary"
-              title="Set current machine position as Work Zero (0,0)"
-              disabled={!isSerialConnected}
-              onClick={async () => {
-                if (confirm("Set current machine position as Work Zero (G92 X0 Y0)?\nOnly do this if you are physically at the True Gerber Origin.")) {
-                  const mPos = livePreview.machinePosition;
-                  if (!mPos) {
-                    alert("Machine position unknown. Please ensure the machine is connected.");
-                    return;
-                  }
-
-                  // Calculate shift dynamically based on absolute machine position prior to G92
-                  const shiftX = -mPos.x;
-                  const shiftY = -mPos.y;
-
-                  await window.serial.writeLine("G92 X0 Y0");
-                  setPcbOriginOffset({ x: 0, y: 0 });
-
-                  // Shift all saved fiducials to visually remain in their correct physical locations
-                  setFiducials(prev => prev.map(f => {
-                    if (f.machine) {
-                      return {
-                        ...f,
-                        machine: { x: f.machine.x + shiftX, y: f.machine.y + shiftY }
-                      };
-                    }
-                    return f;
-                  }));
-                  setXf(null);
-                  setApplyXf(false);
-
-                  alert("Machine Zero Set! Fiducial coordinates have been shifted to match the new coordinate space.");
+              machinePosition={livePreview.machinePosition}
+              isConnected={isSerialConnected}
+              onAutoDetect={async () => {
+                if (cameraPanelRef.current) {
+                  return await cameraPanelRef.current.autoDetectTarget();
                 }
+                return false;
               }}
-            >
-              Set Zero
-            </button>
-          </div>
-          {referenceType === 'fiducial' && (
-            <div className="flex-row" style={{ marginLeft: 8, marginTop: 8 }}>
-              <select value={referencePoint?.id || ''} onChange={(e) => {
-                const fidId = e.target.value;
-                const fid = fiducials.find(f => f.id === fidId && f.design);
-                setReferencePoint(fid ? { x: fid.design.x, y: fid.design.y, id: fid.id } : null);
-              }}>
-                <option value="">(select fiducial)</option>
-                {fiducials.filter(f => f.design).map(f => (
-                  <option key={f.id} value={f.id}>{f.id} ({f.design.x.toFixed(2)}, {f.design.y.toFixed(2)})</option>
-                ))}
-              </select>
-            </div>
-          )}
-          <small>Reference point for measuring distances to pads. "Move To" sends machine to this location.</small>
-        </div>
-      </div>
+            />
 
-      <div className="main" onDrop={onDrop} onDragOver={(e) => e.preventDefault()}>
-        <nav className="navbar" role="navigation">
-          {componentNavItems.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={`navItem ${activeComponent === item.id ? 'navItemActive' : ''}`}
-              onClick={() => setActiveComponent(item.id)}
-            >
-              {item.label}
-            </button>
-          ))}
-        </nav>
-
-        <div className="panel-content" style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 0 }}>
-          <div style={{ display: activeComponent === 'SerialPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
-            <div className="panel full-height">
-              <div className="panel-header">
-                <h3 className="panel-title">MACHINE CONTROL</h3>
-              </div>
-              <div style={{ padding: 12 }}>
-                <SerialPanel
-                  isConnected={isSerialConnected}
-                  onConnect={() => handleSerialConnect(true)}
-                  onDisconnect={() => handleSerialDisconnect()}
-                  onHomingComplete={handleHomingComplete}
-                  dispensingSequence={dispensingSequence}
-                  jobStatistics={jobStatistics}
-                  pressureSettings={pressureSettings}
-                  speedSettings={speedSettings}
-                  referencePoint={referencePoint}
-                  selectedOrigin={effectiveOrigin}
-                  fiducials={fiducials}
-                  onInputMachine={onInputMachine}
-                  onAutoAlign={onAutoAlign}
-                  onSolve2={onSolve2}
-                  onSolve3={onSolve3}
-                  xf={xf}
-                  applyXf={applyXf}
-                  onJobStart={(gcode) => {
-                    console.log('Dispensing job started via SerialPanel');
-                    maintenanceManager.recordDispense();
-                  }}
-                  onJobComplete={() => {
-                    console.log('Dispensing job completed');
-                    alert('Dispensing job completed successfully!');
-                  }}
-                  onMachinePositionUpdate={handleMachinePositionUpdate}
-                  machinePosition={machinePos}
-                />
-              </div>
-            </div>
-          </div>
-
-          <div style={{ display: activeComponent === 'JogPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
-            <div className="panel">
-              <div className="panel-header">
-                <h3 className="panel-title">MANUAL JOG</h3>
-              </div>
-              <div style={{ padding: 12 }}>
-                <JogPanel
-                  isConnected={isSerialConnected}
-                  machinePosition={livePreview.machinePosition}
-                  onSendGcode={async (lines) => {
-                    if (window.serial && window.serial.writeLine) {
-                      for (const line of lines) await window.serial.writeLine(line);
-                    } else {
-                      alert("Serial not connected.");
-                    }
-                  }}
-                />
-              </div>
-            </div>
-          </div>
-
-          <div style={{ display: activeComponent === 'Viewer' ? 'block' : 'none', width: '100%', height: '100%' }}>
-            <div className="viewer-container">
-              <Viewer
-                svg={svg}
-                side={side}
-                onClickSvg={handleCanvasClick}
-                onMouseDown={handleFiducialMouseDown}
+            <div className="section">
+              <h3>Components</h3>
+              <ComponentList
+                components={padDistances}
+                onFocus={(pad) => {
+                  setSelectedMm({ x: pad.x, y: pad.y, centerValid: pad.centerValid, centerMethod: pad.centerMethod, originalPad: pad });
+                }}
+                onItemClick={(pad, index) => {
+                  if (multiSelectMode) {
+                    setSelectedPadIndices(prev => {
+                      const s = [...prev];
+                      const ei = s.indexOf(index);
+                      if (ei >= 0) s.splice(ei, 1); else s.push(index);
+                      return s;
+                    });
+                  } else {
+                    setSelectedPadIndices([index]);
+                    setSelectedMm({ x: pad.x, y: pad.y, centerValid: pad.centerValid, centerMethod: pad.centerMethod, originalPad: pad });
+                  }
+                }}
                 multiSelectMode={multiSelectMode}
-                onToggleMultiSelect={() => {
-                  if (!multiSelectMode) setSelectedMm(null);
-                  setMultiSelectMode(prev => !prev);
-                }}
-                selectedCount={selectedPadIndices.length}
-                onOptimize={() => {
-                  if (selectedPadIndices.length < 2) return;
-                  const refPoint = referencePoint || effectiveOrigin || { x: 0, y: 0 };
-                  const currentPads = selectedPadIndices.map(i => pads[i]);
-                  const sortedPads = dispensingSequencer.calculateOptimalSequence(refPoint, currentPads, {
-                    nozzleDia: parseFloat(nozzleDia) || 0.8,
-                    enableMultiDot: true
-                  });
-                  const sortedIndices = sortedPads.map(p => pads.findIndex(orig => orig === p || (orig.x === p.x && orig.y === p.y)));
-                  setSelectedPadIndices(sortedIndices);
-                }}
-                onClearPath={() => {
-                  setSelectedPadIndices([]);
-                  setMultiSelectMode(false);
-                  setGeneratedPath(null);
-                }}
-                hasPath={selectedPadIndices.length > 0}
-                pickMode={fidPickMode}
-                onTogglePickMode={() => setFidPickMode(v => !v)}
+                selectedIndices={selectedPadIndices}
               />
+            </div>
 
-              {(referencePoint || effectiveOrigin) && selectedMm && (
-                <div className="distance-info">
-                  <div className="row">
-                    <span className="badge active">FROM: {referencePoint ? `FID ${referencePoint.id}` : 'ORIGIN'}</span>
-                  </div>
-                  <div className="kvs">
-                    <span>DX: <span className="lcd-text">{(selectedMm.x - (referencePoint || effectiveOrigin).x).toFixed(3)}mm </span></span>
-                    <span>DY: <span className="lcd-text">{(selectedMm.y - (referencePoint || effectiveOrigin).y).toFixed(3)}mm </span></span>
-                    <span>DIST: <span className="lcd-text">{Math.hypot(selectedMm.x - (referencePoint || effectiveOrigin).x, selectedMm.y - (referencePoint || effectiveOrigin).y).toFixed(3)}mm</span></span>
-                  </div>
+            <div className="section">
+              <h3>PCB Origin</h3>
+              {selectedOrigin && (
+                <div style={{ marginBottom: 8, padding: 8, background: 'rgba(0,0,0,0.3)', borderRadius: 4, fontSize: '0.75rem' }}>
+                  <strong style={{ color: 'var(--accent-primary)' }}>{selectedOrigin.description}</strong><br />
+                  <span style={{ color: 'var(--text-secondary)' }}>Gerber: ({selectedOrigin.x.toFixed(1)}, {selectedOrigin.y.toFixed(1)}) mm</span>
                 </div>
               )}
-              <label style={{ marginLeft: 8, fontSize: 12 }}>
-                <input type="checkbox" checked={showPasteDots} onChange={(e) => setShowPasteDots(e.target.checked)} />
-                Show Paste Dots
-              </label>
+              <button className="btn primary" onClick={() => {
+                if (!selectedOrigin) { alert("Please load a Gerber file first."); return; }
+                if (!livePreview.machinePosition) { alert("Machine position unknown."); return; }
+                const lmp = livePreview.machinePosition;
+                const tOff = maintenanceManager.getToolOffset();
+                setPcbOriginOffset({ x: -(lmp.x + (tOff?.dx || 0)), y: -(lmp.y + (tOff?.dy || 0)) });
+              }} style={{ width: '100%', marginBottom: 6 }}>
+                🎯 Set Camera Origin Here
+              </button>
+              <div className="flex-row">
+                <button className="btn sm" style={{ flex: 1 }} onClick={onDetectOrigins} disabled={layers.length === 0}>Detect Origins</button>
+                <button className="btn sm" style={{ flex: 1 }} onClick={() => { setSelectedOrigin(null); setPcbOriginOffset({ x: 0, y: 0 }); }}>Clear</button>
+              </div>
             </div>
-          </div>
 
-          {
-            maintenanceAlert && (
-              <div className="maintenance-alert" style={{
-                position: 'fixed', top: 20, right: 20, background: '#ff6b35', color: 'white',
-                padding: 16, borderRadius: 8, zIndex: 1000, maxWidth: 300
-              }}>
-                <h4>🔧 Nozzle Maintenance Required</h4>
-                <p>{maintenanceAlert.type === 'cleaning_reminder' ?
-                  `Dispenses: ${maintenanceAlert.dispenseCount}, Hours: ${Math.round(maintenanceAlert.hoursSinceLastCleaning)}` :
-                  'Cleaning completed'}
-                </p>
-                <div className="flex-row" style={{ gap: 8, marginTop: 8 }}>
-                  <button className="btn sm" onClick={() => {
-                    maintenanceManager.markCleaned();
-                    setMaintenanceAlert(null);
-                  }}>Mark Cleaned</button>
-                  <button className="btn sm secondary" onClick={() => setMaintenanceAlert(null)}>Dismiss</button>
+            <div className="section">
+              <h3>Reference Point</h3>
+              <div className="flex-row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
+                  <label><input type="radio" name="refType" checked={referenceType === 'origin'} onChange={() => { setReferenceType('origin'); setReferencePoint(null); }} /> Gerber Origin</label>
+                  <label><input type="radio" name="refType" checked={referenceType === 'fiducial'} onChange={() => setReferenceType('fiducial')} /> Fiducial</label>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <button className="btn sm" disabled={!isSerialConnected || (referenceType === 'fiducial' && !referencePoint)}
+                    onClick={async () => {
+                      let t = null;
+                      if (referenceType === 'origin') {
+                        if (applyXf && xf && selectedOrigin) t = applyTransform(xf, { x: selectedOrigin.x, y: selectedOrigin.y });
+                        else if (pcbOriginOffset?.x || pcbOriginOffset?.y) t = { x: pcbOriginOffset.x, y: pcbOriginOffset.y };
+                        else { alert("No PCB origin mapped."); return; }
+                      } else if (referenceType === 'fiducial' && referencePoint) {
+                        const fid = fiducials.find(f => f.id === referencePoint.id);
+                        if (fid?.machine) t = { x: fid.machine.x, y: fid.machine.y };
+                        else if (applyXf && xf && fid?.design) t = applyTransform(xf, { x: fid.design.x, y: fid.design.y });
+                        else { alert(`Fiducial ${referencePoint.id} has no machine coordinate.`); return; }
+                      }
+                      if (t && confirm(`Move to X${t.x.toFixed(3)} Y${t.y.toFixed(3)}?`)) {
+                        await window.serial?.writeLine(`G1 X${t.x.toFixed(3)} Y${t.y.toFixed(3)} F${speedSettings?.travelSpeed || 6000}`);
+                      }
+                    }}>Move To</button>
+                  <button className="btn sm" disabled={!isSerialConnected}
+                    onClick={async () => {
+                      if (confirm("Set Work Zero (G92 X0 Y0)?")) {
+                        const lmp = livePreview.machinePosition;
+                        if (!lmp) { alert("Machine position unknown."); return; }
+                        const shiftX = -lmp.x, shiftY = -lmp.y;
+                        await window.serial.writeLine("G92 X0 Y0");
+                        setPcbOriginOffset({ x: 0, y: 0 });
+                        setFiducials(prev => prev.map(f => f.machine ? { ...f, machine: { x: f.machine.x + shiftX, y: f.machine.y + shiftY } } : f));
+                        setXf(null); setApplyXf(false);
+                        alert("Machine Zero Set!");
+                      }
+                    }}>Set Zero</button>
                 </div>
               </div>
-            )
-          }
+              {referenceType === 'fiducial' && (
+                <select style={{ marginTop: 6 }} value={referencePoint?.id || ''} onChange={(e) => {
+                  const fid = fiducials.find(f => f.id === e.target.value && f.design);
+                  setReferencePoint(fid ? { x: fid.design.x, y: fid.design.y, id: fid.id } : null);
+                }}>
+                  <option value="">(select fiducial)</option>
+                  {fiducials.filter(f => f.design).map(f => (
+                    <option key={f.id} value={f.id}>{f.id} ({f.design.x.toFixed(2)}, {f.design.y.toFixed(2)})</option>
+                  ))}
+                </select>
+              )}
+            </div>
+          </div>
+        </aside>
 
-          <div style={{ display: activeComponent === 'FiducialPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
-            <div className="fiducial-panel">
-              <FiducialPanel
+        {/* ── MAIN CONTENT ───────────────────────────────────── */}
+        <div className="main">
+
+          {/* Breadcrumb strip */}
+          <div className="breadcrumb-bar">
+            <span className="breadcrumb-step">Workflow</span>
+            <span className="breadcrumb-sep">›</span>
+            <span className="breadcrumb-step active">
+              {workflowSteps.find(s => s.id === activeComponent)?.label ?? activeComponent}
+            </span>
+            <span className="breadcrumb-desc">
+              {workflowSteps.find(s => s.id === activeComponent)?.sub}
+            </span>
+          </div>
+
+          <div className="content-area">
+            <div style={{ display: activeComponent === 'SerialPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
+              <div className="panel full-height">
+                <div className="panel-header">
+                  <h3 className="panel-title">MACHINE CONTROL</h3>
+                </div>
+                <div style={{ padding: 12 }}>
+                  <SerialPanel
+                    isConnected={isSerialConnected}
+                    onConnect={() => handleSerialConnect(true)}
+                    onDisconnect={() => handleSerialDisconnect()}
+                    onHomingComplete={handleHomingComplete}
+                    dispensingSequence={dispensingSequence}
+                    jobStatistics={jobStatistics}
+                    pressureSettings={pressureSettings}
+                    speedSettings={speedSettings}
+                    referencePoint={referencePoint}
+                    selectedOrigin={effectiveOrigin}
+                    fiducials={fiducials}
+                    onInputMachine={onInputMachine}
+                    onAutoAlign={onAutoAlign}
+                    onSolve2={onSolve2}
+                    onSolve3={onSolve3}
+                    xf={xf}
+                    applyXf={applyXf}
+                    onJobStart={(gcode) => {
+                      console.log('Dispensing job started via SerialPanel');
+                      maintenanceManager.recordDispense();
+                    }}
+                    onJobComplete={() => {
+                      console.log('Dispensing job completed');
+                      alert('Dispensing job completed successfully!');
+                    }}
+                    onMachinePositionUpdate={handleMachinePositionUpdate}
+                    machinePosition={machinePos}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: activeComponent === 'JogPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
+              <div className="panel">
+                <div className="panel-header">
+                  <h3 className="panel-title">MANUAL JOG</h3>
+                </div>
+                <div style={{ padding: 12 }}>
+                  <JogPanel
+                    isConnected={isSerialConnected}
+                    machinePosition={livePreview.machinePosition}
+                    onSendGcode={async (lines) => {
+                      if (window.serial && window.serial.writeLine) {
+                        for (const line of lines) await window.serial.writeLine(line);
+                      } else {
+                        alert("Serial not connected.");
+                      }
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: activeComponent === 'Viewer' ? 'block' : 'none', width: '100%', height: '100%' }}>
+              <div className="viewer-container">
+                <Viewer
+                  svg={svg}
+                  side={side}
+                  onClickSvg={handleCanvasClick}
+                  onMouseDown={handleFiducialMouseDown}
+                  multiSelectMode={multiSelectMode}
+                  onToggleMultiSelect={() => {
+                    if (!multiSelectMode) setSelectedMm(null);
+                    setMultiSelectMode(prev => !prev);
+                  }}
+                  selectedCount={selectedPadIndices.length}
+                  onOptimize={() => {
+                    if (selectedPadIndices.length < 2) return;
+                    const refPoint = referencePoint || effectiveOrigin || { x: 0, y: 0 };
+                    const currentPads = selectedPadIndices.map(i => pads[i]);
+                    const sortedPads = dispensingSequencer.calculateOptimalSequence(refPoint, currentPads, {
+                      nozzleDia: parseFloat(nozzleDia) || 0.8,
+                      enableMultiDot: true
+                    });
+                    const sortedIndices = sortedPads.map(p => pads.findIndex(orig => orig === p || (orig.x === p.x && orig.y === p.y)));
+                    setSelectedPadIndices(sortedIndices);
+                  }}
+                  onClearPath={() => {
+                    setSelectedPadIndices([]);
+                    setMultiSelectMode(false);
+                    setGeneratedPath(null);
+                  }}
+                  hasPath={selectedPadIndices.length > 0}
+                  pickMode={fidPickMode}
+                  onTogglePickMode={() => setFidPickMode(v => !v)}
+                />
+
+                {(referencePoint || effectiveOrigin) && selectedMm && (
+                  <div className="distance-info">
+                    <div className="row">
+                      <span className="badge active">FROM: {referencePoint ? `FID ${referencePoint.id}` : 'ORIGIN'}</span>
+                    </div>
+                    <div className="kvs">
+                      <span>DX: <span className="lcd-text">{(selectedMm.x - (referencePoint || effectiveOrigin).x).toFixed(3)}mm </span></span>
+                      <span>DY: <span className="lcd-text">{(selectedMm.y - (referencePoint || effectiveOrigin).y).toFixed(3)}mm </span></span>
+                      <span>DIST: <span className="lcd-text">{Math.hypot(selectedMm.x - (referencePoint || effectiveOrigin).x, selectedMm.y - (referencePoint || effectiveOrigin).y).toFixed(3)}mm</span></span>
+                    </div>
+                  </div>
+                )}
+                <label style={{ marginLeft: 8, fontSize: 12 }}>
+                  <input type="checkbox" checked={showPasteDots} onChange={(e) => setShowPasteDots(e.target.checked)} />
+                  Show Paste Dots
+                </label>
+              </div>
+            </div>
+
+            {
+              maintenanceAlert && (
+                <div className="maintenance-alert" style={{
+                  position: 'fixed', top: 20, right: 20, background: '#ff6b35', color: 'white',
+                  padding: 16, borderRadius: 8, zIndex: 1000, maxWidth: 300
+                }}>
+                  <h4>🔧 Nozzle Maintenance Required</h4>
+                  <p>{maintenanceAlert.type === 'cleaning_reminder' ?
+                    `Dispenses: ${maintenanceAlert.dispenseCount}, Hours: ${Math.round(maintenanceAlert.hoursSinceLastCleaning)}` :
+                    'Cleaning completed'}
+                  </p>
+                  <div className="flex-row" style={{ gap: 8, marginTop: 8 }}>
+                    <button className="btn sm" onClick={() => {
+                      maintenanceManager.markCleaned();
+                      setMaintenanceAlert(null);
+                    }}>Mark Cleaned</button>
+                    <button className="btn sm secondary" onClick={() => setMaintenanceAlert(null)}>Dismiss</button>
+                  </div>
+                </div>
+              )
+            }
+
+            <div style={{ display: activeComponent === 'FiducialPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
+              <div className="fiducial-panel">
+                <FiducialPanel
+                  fiducials={fiducials}
+                  activeId={fidActiveId}
+                  setActiveId={setFidActiveId}
+                  pickMode={fidPickMode}
+                  togglePickMode={() => setFidPickMode(v => !v)}
+                  onInputMachine={onInputMachine}
+                  onClearMachine={onClearMachine}
+                  onClearOne={onClearOne}
+                  onClearAll={onClearAll}
+                  onSolve2={onSolve2}
+                  onSolve3={onSolve3}
+                  transformSummary={transformSummary}
+                  applyTransform={applyXf}
+                  setApplyTransform={setApplyXf}
+                  detectionResult={fiducialDetectionResult}
+                  onRedetectFiducials={onRedetectFiducials}
+                  onAutoAlign={onAutoAlign}
+                  onAutoDetectCamera={onAutoDetectCamera}
+                  alignmentInfo={alignment}
+                  onCaptureAlignment={handleAlignmentCapture}
+                  boardOutline={boardOutline}
+
+                  panelBoards={panelBoards}
+                  setPanelBoards={setPanelBoards}
+                  activeBoardIndex={activeBoardIndexState}
+                  setActiveBoardIndex={setActiveBoardIndex}
+                />
+                {effectiveOrigin && selectedMm && xf && applyXf && (
+                  <div style={{ padding: 8, background: '#f8f9fa', border: '1px solid #dee2e6', borderRadius: 4, marginTop: 8 }}>
+                    <small><strong>Transform Verification:</strong></small>
+                    <div style={{ fontSize: '0.8em', fontFamily: 'monospace' }}>
+                      Origin: {effectiveOrigin.x.toFixed(3)}, {effectiveOrigin.y.toFixed(3)} → {verifyTransform(effectiveOrigin).x.toFixed(3)}, {verifyTransform(effectiveOrigin).y.toFixed(3)}
+                    </div>
+                    <div style={{ fontSize: '0.8em', fontFamily: 'monospace' }}>
+                      Target: {selectedMm.x.toFixed(3)}, {selectedMm.y.toFixed(3)} → {verifyTransform(selectedMm).x.toFixed(3)}, {verifyTransform(selectedMm).y.toFixed(3)}
+                    </div>
+                  </div>
+                )}
+              </div>
+              <button
+                className="btn"
+                onClick={goToPcbOrigin}
+                disabled={!isSerialConnected || (!xf && !pcbOriginOffset)}
+                title="Move nozzle to PCB Gerber Origin"
+              >
+                🎯 Go to PCB Origin
+              </button>
+            </div>
+
+            <div style={{ display: activeComponent === 'CameraPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
+              <CameraPanel
+                ref={cameraPanelRef}
                 fiducials={fiducials}
-                activeId={fidActiveId}
-                setActiveId={setFidActiveId}
-                pickMode={fidPickMode}
-                togglePickMode={() => setFidPickMode(v => !v)}
+                xf={xf}
+                applyXf={applyXf}
+                selectedDesign={selectedOrigin ? selectedOrigin : (selectedMm ? { x: selectedMm.x, y: selectedMm.y } : null)}
+                effectiveOrigin={effectiveOrigin}
+                toolOffset={maintenanceManager.getToolOffset()}
+                setToolOffset={(o) => maintenanceManager.setToolOffset(o)}
+                pixelsPerMm={maintenanceManager.getPixelsPerMm()}
+                setPixelsPerMm={(val) => {
+                  maintenanceManager.setPixelsPerMm(val);
+                  if (typeof forceRender === 'function') forceRender({});
+                }}
+                nozzleDia={0.6}
+                setNozzleDia={(d) => { }}
+                padDetector={padDetector}
+                qualityController={qualityController}
+                onCaptureAlignment={handleAlignmentCapture}
+                alignmentInfo={alignment}
+                machinePosition={livePreview.machinePosition}
+                fiducialVisionDetector={fiducialVisionDetector}
+                layerData={layerData}
+                onUpdateFiducials={handleFiducialsUpdate}
+                activeBoardName={panelBoards[activeBoardIndexState]?.name || 'Unknown Board'}
+                panelBoards={panelBoards}
+                setPanelBoards={setPanelBoards}
+                pads={pads}
+                gerberFiducials={fiducialDetectionResult || []}
+              />
+            </div>
+
+            <div style={{ display: activeComponent === 'BedCalibration' ? 'block' : 'none', width: '100%', height: '100%' }}>
+              <div className="panel">
+                <div className="panel-header">
+                  <h3 className="panel-title">PCB SURFACE LEVELING</h3>
+                </div>
+                <div style={{ padding: 12 }}>
+                  <BedCalibrationPanel
+                    machinePosition={livePreview.machinePosition || machinePos}
+                    boardOutline={boardOutline}
+                    xf={xf}
+                    applyXf={applyXf}
+                    isConnected={isSerialConnected}
+
+                    // Tells BedCalibrationPanel to sync the PCB origin back into App state
+                    // so pad distances, path planning, and the overlay all stay correct.
+                    onSetPcbOrigin={(machineOrigin) => {
+                      // machineOrigin is where the nozzle physically is at the PCB BL corner.
+                      // We store the NEGATIVE so that adding it to a design coord gives machine coord.
+                      setPcbOriginOffset({ x: -machineOrigin.x, y: -machineOrigin.y });
+                      if (selectedOrigin) {
+                        setSelectedOrigin(prev => prev ? { ...prev } : null);
+                      }
+                    }}
+
+                    // Thin wrapper so the panel never touches window.serial directly
+                    onSendGcode={async (line) => {
+                      if (window.serial?.writeLine) await window.serial.writeLine(line);
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: activeComponent === 'AutomatedDispensingPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
+              <AutomatedDispensingPanel
+                side={side}
+                dispensingSequencer={dispensingSequencer}
+                dispensingSequence={dispensingSequence}
+                safeSequence={safeSequence}
+                jobStatistics={jobStatistics}
+                referencePoint={referencePoint}
+                selectedOrigin={effectiveOrigin}
+                pressureSettings={pressureSettings}
+                speedSettings={speedSettings}
+                boardOutline={boardOutline}
+                useSafePathPlanning={useSafePathPlanning}
+                setUseSafePathPlanning={setUseSafePathPlanning}
+                toolOffset={maintenanceManager.getToolOffset()}
+                componentHeights={componentHeights}
+                setComponentHeights={setComponentHeights}
+                fiducials={fiducials}
                 onInputMachine={onInputMachine}
-                onClearMachine={onClearMachine}
-                onClearOne={onClearOne}
-                onClearAll={onClearAll}
+                onAutoAlign={onAutoAlign}
                 onSolve2={onSolve2}
                 onSolve3={onSolve3}
-                transformSummary={transformSummary}
-                applyTransform={applyXf}
-                setApplyTransform={setApplyXf}
-                detectionResult={fiducialDetectionResult}
-                onRedetectFiducials={onRedetectFiducials}
-                onAutoAlign={onAutoAlign}
-                onAutoDetectCamera={onAutoDetectCamera}
-                alignmentInfo={alignment}
-                onCaptureAlignment={handleAlignmentCapture}
-                boardOutline={boardOutline}
-
                 panelBoards={panelBoards}
                 setPanelBoards={setPanelBoards}
                 activeBoardIndex={activeBoardIndexState}
                 setActiveBoardIndex={setActiveBoardIndex}
+                xf={xf}
+                applyXf={applyXf}
+                isConnected={isSerialConnected}
+                machinePosition={machinePos}
+                onStartJob={(gcode, mode) => {
+                  console.log(`Job started in ${mode} mode`);
+                  maintenanceManager.recordDispense();
+                }}
+                onDownloadGCode={(gcode) => {
+                  const blob = new Blob([gcode.join('\n')], { type: 'text/plain' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `dispensing-${Date.now()}.gcode`;
+                  a.click();
+                }}
+                onJobComplete={() => {
+                  console.log('Automated job finished');
+                  alert('Job Complete!');
+                }}
+                layerData={layerData}
               />
-              {effectiveOrigin && selectedMm && xf && applyXf && (
-                <div style={{ padding: 8, background: '#f8f9fa', border: '1px solid #dee2e6', borderRadius: 4, marginTop: 8 }}>
-                  <small><strong>Transform Verification:</strong></small>
-                  <div style={{ fontSize: '0.8em', fontFamily: 'monospace' }}>
-                    Origin: {effectiveOrigin.x.toFixed(3)}, {effectiveOrigin.y.toFixed(3)} → {verifyTransform(effectiveOrigin).x.toFixed(3)}, {verifyTransform(effectiveOrigin).y.toFixed(3)}
-                  </div>
-                  <div style={{ fontSize: '0.8em', fontFamily: 'monospace' }}>
-                    Target: {selectedMm.x.toFixed(3)}, {selectedMm.y.toFixed(3)} → {verifyTransform(selectedMm).x.toFixed(3)}, {verifyTransform(selectedMm).y.toFixed(3)}
-                  </div>
-                </div>
-              )}
             </div>
-            <button
-              className="btn"
-              onClick={goToPcbOrigin}
-              disabled={!isSerialConnected || (!xf && !pcbOriginOffset)}
-              title="Move nozzle to PCB Gerber Origin"
-            >
-              🎯 Go to PCB Origin
-            </button>
-          </div>
-
-          <div style={{ display: activeComponent === 'CameraPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
-            <CameraPanel
-              ref={cameraPanelRef}
-              fiducials={fiducials}
-              xf={xf}
-              applyXf={applyXf}
-              selectedDesign={selectedOrigin ? selectedOrigin : (selectedMm ? { x: selectedMm.x, y: selectedMm.y } : null)}
-              effectiveOrigin={effectiveOrigin}
-              toolOffset={maintenanceManager.getToolOffset()}
-              setToolOffset={(o) => maintenanceManager.setToolOffset(o)}
-              pixelsPerMm={maintenanceManager.getPixelsPerMm()}
-              setPixelsPerMm={(val) => {
-                maintenanceManager.setPixelsPerMm(val);
-                if (typeof forceRender === 'function') forceRender({});
-              }}
-              nozzleDia={0.6}
-              setNozzleDia={(d) => { }}
-              padDetector={padDetector}
-              qualityController={qualityController}
-              onCaptureAlignment={handleAlignmentCapture}
-              alignmentInfo={alignment}
-              machinePosition={livePreview.machinePosition}
-              fiducialVisionDetector={fiducialVisionDetector}
-              layerData={layerData}
-              onUpdateFiducials={handleFiducialsUpdate}
-              activeBoardName={panelBoards[activeBoardIndexState]?.name || 'Unknown Board'}
-              panelBoards={panelBoards}
-              setPanelBoards={setPanelBoards}
-              pads={pads}
-              gerberFiducials={fiducialDetectionResult || []}
-            />
-          </div>
-
-          <div style={{ display: activeComponent === 'BedCalibration' ? 'block' : 'none', width: '100%', height: '100%' }}>
-            <div className="panel">
-              <div className="panel-header">
-                <h3 className="panel-title">PCB SURFACE LEVELING</h3>
-              </div>
-              <div style={{ padding: 12 }}>
-                <BedCalibrationPanel
-                  machinePosition={livePreview.machinePosition || machinePos}
-                  boardOutline={boardOutline}
-                  xf={xf}
-                  applyXf={applyXf}
-                  isConnected={isSerialConnected}
-
-                  // Tells BedCalibrationPanel to sync the PCB origin back into App state
-                  // so pad distances, path planning, and the overlay all stay correct.
-                  onSetPcbOrigin={(machineOrigin) => {
-                    // machineOrigin is where the nozzle physically is at the PCB BL corner.
-                    // We store the NEGATIVE so that adding it to a design coord gives machine coord.
-                    setPcbOriginOffset({ x: -machineOrigin.x, y: -machineOrigin.y });
-                    if (selectedOrigin) {
-                      setSelectedOrigin(prev => prev ? { ...prev } : null);
-                    }
-                  }}
-
-                  // Thin wrapper so the panel never touches window.serial directly
-                  onSendGcode={async (line) => {
-                    if (window.serial?.writeLine) await window.serial.writeLine(line);
-                  }}
-                />
-              </div>
-            </div>
-          </div>
-
-          <div style={{ display: activeComponent === 'AutomatedDispensingPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
-            <AutomatedDispensingPanel
-              side={side}
-              dispensingSequencer={dispensingSequencer}
-              dispensingSequence={dispensingSequence}
-              safeSequence={safeSequence}
-              jobStatistics={jobStatistics}
-              referencePoint={referencePoint}
-              selectedOrigin={effectiveOrigin}
-              pressureSettings={pressureSettings}
-              speedSettings={speedSettings}
-              boardOutline={boardOutline}
-              useSafePathPlanning={useSafePathPlanning}
-              setUseSafePathPlanning={setUseSafePathPlanning}
-              toolOffset={maintenanceManager.getToolOffset()}
-              componentHeights={componentHeights}
-              setComponentHeights={setComponentHeights}
-              fiducials={fiducials}
-              onInputMachine={onInputMachine}
-              onAutoAlign={onAutoAlign}
-              onSolve2={onSolve2}
-              onSolve3={onSolve3}
-              panelBoards={panelBoards}
-              setPanelBoards={setPanelBoards}
-              activeBoardIndex={activeBoardIndexState}
-              setActiveBoardIndex={setActiveBoardIndex}
-              xf={xf}
-              applyXf={applyXf}
-              isConnected={isSerialConnected}
-              machinePosition={machinePos}
-              onStartJob={(gcode, mode) => {
-                console.log(`Job started in ${mode} mode`);
-                maintenanceManager.recordDispense();
-              }}
-              onDownloadGCode={(gcode) => {
-                const blob = new Blob([gcode.join('\n')], { type: 'text/plain' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `dispensing-${Date.now()}.gcode`;
-                a.click();
-              }}
-              onJobComplete={() => {
-                console.log('Automated job finished');
-                alert('Job Complete!');
-              }}
-              layerData={layerData}
-            />
           </div>
         </div>
       </div>

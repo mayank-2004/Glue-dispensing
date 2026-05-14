@@ -81,6 +81,10 @@ export default function AutomatedDispensingPanel({
   const [safeTravelHeight, setSafeTravelHeight] = useState(5.0);
   const [viscosity, setViscosity] = useState('medium'); // low, medium, high
   const [baseDwellTime, setBaseDwellTime] = useState(120);
+  const [localPressure, setLocalPressure] = useState(() => pressureSettings?.customPressure || 25);
+  const [currentPadInfo, setCurrentPadInfo] = useState(null);
+  const [jobReport, setJobReport] = useState(null);
+  const jobStartTimeRef = useRef(null);
 
   // Apply viscosity presets automatically when changed
   useEffect(() => {
@@ -217,6 +221,9 @@ export default function AutomatedDispensingPanel({
 
   const runDispenseLoop = async () => {
     setMachineStatus('busy');
+    jobStartTimeRef.current = Date.now();
+    setJobReport(null);
+    setCurrentPadInfo(null);
     try {
       if (!panelBoards || panelBoards.length === 0) {
         throw new Error("No boards defined in panel configuration.");
@@ -356,9 +363,18 @@ export default function AutomatedDispensingPanel({
           const finalX = p.x + calibCorrection.x;
           const finalY = p.y + calibCorrection.y;
 
-          const pressure = pressureSettings.customPressure || 25;
+          const pressure = dispensingSequencer.calculatePadPressure(p, { customPressure: localPressure });
           const configDwell = pressureSettings.customDwellTime || baseDwellTime;
           const dwell = dispensingSequencer.calculateDwellTime(p, { customDwellTime: configDwell });
+
+          const padVolUl = glueSummary?.annotated?.[globalPointCount - 1]?.glue?.volUl ?? 0;
+          setCurrentPadInfo({
+            padIndex: globalPointCount,
+            total: totalPoints,
+            pressure,
+            dwellMs: dwell,
+            volumeUl: padVolUl.toFixed ? padVolUl.toFixed(3) : '—',
+          });
 
           const cmds = dispensePoint({
             x: finalX, y: finalY,
@@ -383,7 +399,15 @@ export default function AutomatedDispensingPanel({
       await sendGcodeWait('G1 X0 Y0 F5000'); // Move to home position
       await sendGcodeWait('M400'); // Wait for all moves to complete
 
-      alert("Job Complete!");
+      const jobDurationMs = Date.now() - (jobStartTimeRef.current || Date.now());
+      setJobReport({
+        totalPads: totalPoints,
+        totalVolUl: glueSummary?.totalVolUl != null ? glueSummary.totalVolUl.toFixed(2) : '—',
+        jobDurationSec: (jobDurationMs / 1000).toFixed(1),
+        avgDwellMs: baseDwellTime,
+        basePressure: localPressure,
+      });
+      setCurrentPadInfo(null);
       if (onJobComplete) onJobComplete();
       setJobStage('finished');
       setMachineStatus('idle');
@@ -499,6 +523,10 @@ export default function AutomatedDispensingPanel({
               Base Dwell (ms):
               <input type="number" step="10" value={baseDwellTime} onChange={e => setBaseDwellTime(Number(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
             </label>
+            <label>
+              Dispense Pressure (PSI):
+              <input type="number" step="1" min="5" max="100" value={localPressure} onChange={e => setLocalPressure(Number(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
+            </label>
           </div>
 
           {/* Fine-Tune XY Correction UI disabled — fineTuneX and fineTuneY state removed */}
@@ -537,6 +565,7 @@ export default function AutomatedDispensingPanel({
                         <th style={{ padding: '4px 8px', borderBottom: '1px solid #ccc', color: '#d32f2f' }}>Dwell (ms)</th>
                         <th style={{ padding: '4px 8px', borderBottom: '1px solid #ccc', color: '#00c49a' }}>Dots</th>
                         <th style={{ padding: '4px 8px', borderBottom: '1px solid #ccc', color: '#00c49a' }}>Vol (µL)</th>
+                        <th style={{ padding: '4px 8px', borderBottom: '1px solid #ccc', color: '#ffa726' }}>PSI</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -555,6 +584,9 @@ export default function AutomatedDispensingPanel({
                             </td>
                             <td style={{ padding: '4px 8px', fontWeight: 'bold', color: '#00c49a' }}>
                               {glueSummary?.perPad?.[idx]?.volUl?.toFixed(3) ?? '—'}
+                            </td>
+                            <td style={{ padding: '4px 8px', color: '#ffa726' }}>
+                              {dispensingSequencer.calculatePadPressure(pad, { customPressure: localPressure })}
                             </td>
                           </tr>
                         );
@@ -789,6 +821,13 @@ export default function AutomatedDispensingPanel({
               <h4>Dispensing...</h4>
               <progress value={jobProgress.current} max={jobProgress.total}></progress>
               <p>{jobProgress.current} / {jobProgress.total}</p>
+              {currentPadInfo && (
+                <div style={{ marginTop: 10, padding: '8px 12px', background: '#0d1117', border: '1px solid #30363d', borderRadius: 6, fontFamily: 'monospace', fontSize: '0.82em', display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                  <span style={{ color: '#ffa726' }}>⊕ {currentPadInfo.pressure} PSI</span>
+                  <span style={{ color: '#d32f2f' }}>⏱ {currentPadInfo.dwellMs} ms</span>
+                  <span style={{ color: '#00c49a' }}>💧 {currentPadInfo.volumeUl} µL</span>
+                </div>
+              )}
               <button className="btn danger full-width" onClick={cancelJob}>STOP</button>
             </div>
           )}
@@ -797,6 +836,17 @@ export default function AutomatedDispensingPanel({
           {jobStage === 'finished' && (
             <div className="stage-box">
               <h4>Job Complete!</h4>
+              {jobReport && (
+                <table style={{ width: '100%', fontSize: '0.85em', marginBottom: 10, borderCollapse: 'collapse' }}>
+                  <tbody>
+                    <tr><td style={{ color: '#8b949e', padding: '2px 6px' }}>Pads dispensed</td><td style={{ color: '#e6edf3', textAlign: 'right' }}>{jobReport.totalPads}</td></tr>
+                    <tr><td style={{ color: '#8b949e', padding: '2px 6px' }}>Total glue used</td><td style={{ color: '#00c49a', textAlign: 'right' }}>{jobReport.totalVolUl} µL</td></tr>
+                    <tr><td style={{ color: '#8b949e', padding: '2px 6px' }}>Duration</td><td style={{ color: '#e6edf3', textAlign: 'right' }}>{jobReport.jobDurationSec} s</td></tr>
+                    <tr><td style={{ color: '#8b949e', padding: '2px 6px' }}>Avg dwell</td><td style={{ color: '#d32f2f', textAlign: 'right' }}>{jobReport.avgDwellMs} ms</td></tr>
+                    <tr><td style={{ color: '#8b949e', padding: '2px 6px' }}>Base pressure</td><td style={{ color: '#ffa726', textAlign: 'right' }}>{jobReport.basePressure} PSI</td></tr>
+                  </tbody>
+                </table>
+              )}
               <button className="btn full-width" onClick={() => setJobStage('idle')}>Done</button>
             </div>
           )}
