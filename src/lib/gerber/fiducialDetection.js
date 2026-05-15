@@ -143,13 +143,13 @@ export function detectFiducials(gerberText) {
 
     if (candidates.length > 0) {
       console.log(`[FiducialParser] Flash candidates (SMD, no hole, 0.4–2.5mm): ${candidates.length}`);
-      console.table(candidates.map(c => ({
-        x_mm: parseFloat(c.x.toFixed(3)),
-        y_mm: parseFloat(c.y.toFixed(3)),
-        diameter_mm: parseFloat(c.diameter.toFixed(3)),
-        type: c.aperture?.type || '?',
-        score: c.fiducialScore,
-      })));
+      // console.table(candidates.map(c => ({
+      //   x_mm: parseFloat(c.x.toFixed(3)),
+      //   y_mm: parseFloat(c.y.toFixed(3)),
+      //   diameter_mm: parseFloat(c.diameter.toFixed(3)),
+      //   type: c.aperture?.type || '?',
+      //   score: c.fiducialScore,
+      // })));
     } else {
       console.warn('[FiducialParser] No SMD D03 flash operations (0.4–2.5mm, no hole) found in this layer');
     }

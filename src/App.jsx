@@ -541,16 +541,16 @@ export default function App() {
 
     // 1. All files in the upload (recognized + unrecognized)
     const unrecognized = read.filter(r => !ls.some(l => l.filename === r.name));
-    console.log(`%cFiles uploaded: ${read.length} total | ${ls.length} recognized | ${unrecognized.length} unrecognized`,
-      'font-weight:bold');
-    console.table(
-      ls.map(l => ({
-        filename: l.filename,
-        type: l.type || '—',
-        side: l.side || '—',
-        chars: l.text?.length ?? 0,
-      }))
-    );
+    // console.log(`%cFiles uploaded: ${read.length} total | ${ls.length} recognized | ${unrecognized.length} unrecognized`,
+    //   'font-weight:bold');
+    // console.table(
+    //   ls.map(l => ({
+    //     filename: l.filename,
+    //     type: l.type || '—',
+    //     side: l.side || '—',
+    //     chars: l.text?.length ?? 0,
+    //   }))
+    // );
     if (unrecognized.length > 0) {
       console.warn('Unrecognized files (skipped):', unrecognized.map(r => r.name));
     }
@@ -561,11 +561,11 @@ export default function App() {
       const rawPads = extractPadsMm(ls[pasteLayerIdx].text);
       console.log(`%cPads (solderpaste): ${rawPads.length} pads extracted`, 'font-weight:bold');
       if (rawPads.length > 0) {
-        console.table(rawPads.slice(0, 5).map(p => ({
-          x: p.x, y: p.y, width: p.width, height: p.height, shape: p.shape,
-          component: p.componentIdentifier || '—',
-        })));
-        if (rawPads.length > 5) console.log(`  ... and ${rawPads.length - 5} more pads`);
+        // console.table(rawPads.slice(0, 5).map(p => ({
+        //   x: p.x, y: p.y, width: p.width, height: p.height, shape: p.shape,
+        //   component: p.componentIdentifier || '—',
+        // })));
+        // if (rawPads.length > 5) console.log(`  ... and ${rawPads.length - 5} more pads`);
       }
     } else {
       console.warn('No solderpaste layer found — pad extraction skipped');
@@ -1937,8 +1937,6 @@ export default function App() {
               <LayerList layers={layers} layerData={layerData} onToggle={toggleLayer} />
             </div>
 
-
-            <MaintenanceManager manager={maintenanceManager} />
 
             <ToolOffsetCalibration
               toolOffset={maintenanceManager.getToolOffset()}

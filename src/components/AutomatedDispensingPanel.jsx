@@ -5,6 +5,10 @@ import "./AutomatedDispensingPanel.css";
 import { buildJobGlueSummary, GlueStore } from '../lib/glue/glueTracker.js';
 import { getZOffsetForPoint } from './BedCalibrationPanel.jsx';
 import GlueGauge from './GlueGauge.jsx';
+import MaintenanceManager from './MaintenanceManager.jsx';
+import { NozzleMaintenanceManager } from '../lib/maintenance/nozzleMaintenance.js';
+
+const nozzleMaintenance = new NozzleMaintenanceManager();
 
 export default function AutomatedDispensingPanel({
   side = 'top',
@@ -40,6 +44,8 @@ export default function AutomatedDispensingPanel({
 }) {
   const [isJobRunning, setIsJobRunning] = useState(false);
   const isJobRunningRef = useRef(false);
+  const [resumeFromPad, setResumeFromPad] = useState(() => parseInt(localStorage.getItem('resumeFromPad') || '0'));
+  const globalPointCountRef = useRef(0);
   const [jobMode, setJobMode] = useState('single'); // 'single' or 'batch'
   const [dynamicPanelCorrection, setDynamicPanelCorrection] = useState(true); // Default to ON if panelized
 
@@ -86,6 +92,11 @@ export default function AutomatedDispensingPanel({
   const [currentPadInfo, setCurrentPadInfo] = useState(null);
   const [jobReport, setJobReport] = useState(null);
   const jobStartTimeRef = useRef(null);
+
+  // Nozzle purge
+  const [purgeEnabled, setPurgeEnabled] = useState(true);
+  const [purgeDurationMs, setPurgeDurationMs] = useState(2000);
+  const [isPurging, setIsPurging] = useState(false);
 
   // Dot verification
   const [enableDotVerification, setEnableDotVerification] = useState(false);
@@ -198,11 +209,73 @@ export default function AutomatedDispensingPanel({
     }
   };
 
-  // --- Flow Logic ---
-  const startJobFlow = async () => {
-    if (!activeSequence.length) return alert("No dispensing sequence available.");
-    if (!window.serial || !window.serial.writeLine) return alert("Serial API not available.");
+  // --- Pre-flight ---
+  const computePreflightChecks = () => {
+    const stock = GlueStore.getStock();
+    const needed = glueSummary?.totalVolUl ?? 0;
+    const checks = [
+      {
+        id: 'serial',
+        label: 'Serial port connected',
+        critical: true,
+        passed: isConnected && !!window.serial?.writeLine,
+        detail: isConnected ? 'Connected' : 'Not connected — open Serial panel first',
+      },
+      {
+        id: 'sequence',
+        label: 'Dispensing sequence loaded',
+        critical: true,
+        passed: (activeSequence?.length ?? 0) > 0,
+        detail: (activeSequence?.length ?? 0) > 0
+          ? `${activeSequence.length} pads ready`
+          : 'No pads — select components and generate sequence first',
+      },
+      {
+        id: 'boards',
+        label: 'Panel boards configured',
+        critical: true,
+        passed: (panelBoards?.length ?? 0) > 0,
+        detail: (panelBoards?.length ?? 0) > 0
+          ? `${panelBoards.length} board(s) in panel`
+          : 'No boards defined — configure panel first',
+      },
+      {
+        id: 'transform',
+        label: 'Fiducial alignment solved',
+        critical: applyXf,
+        passed: !applyXf || !!xf,
+        detail: !applyXf
+          ? 'Transform disabled — running in manual origin mode'
+          : xf
+            ? 'Transform computed (fiducials solved)'
+            : 'Transform required but not solved — go to Fiducial panel',
+      },
+      {
+        id: 'nozzle',
+        label: 'Nozzle diameter set',
+        critical: false,
+        passed: nozzleDia > 0,
+        detail: nozzleDia > 0 ? `${nozzleDia} mm` : 'Nozzle diameter is 0 — volume estimates will be wrong',
+      },
+      {
+        id: 'stock',
+        label: 'Glue stock sufficient',
+        critical: false,
+        passed: stock >= needed,
+        detail: needed > 0
+          ? `Need ${needed.toFixed(2)} µL, have ${stock.toFixed(2)} µL${stock < needed ? ' — refill or update stock' : ''}`
+          : 'No volume estimate available',
+      },
+    ];
+    return checks;
+  };
 
+  // --- Flow Logic ---
+  const startJobFlow = () => {
+    setJobStage('preflight');
+  };
+
+  const proceedFromPreflight = async () => {
     setJobStage('homing');
     setMachineStatus('busy');
     setIsJobRunning(true);
@@ -210,13 +283,10 @@ export default function AutomatedDispensingPanel({
 
     try {
       window.pauseSerialPolling = true;
-      // The machine will simply start executing moves from its current registered position/origin.
-      // M400 guarantees previous moves finished.
       await sendGcodeWait('M400');
-
       setJobStage('loading');
     } catch (e) {
-      alert("Homing/Connection failed: " + e.message);
+      alert("Connection failed: " + e.message);
       setJobStage('idle');
       setMachineStatus('idle');
       isJobRunningRef.current = false;
@@ -226,12 +296,13 @@ export default function AutomatedDispensingPanel({
 
   const proceedToRegistration = async () => {
     setJobStage('dispensing');
-    runDispenseLoop();
+    runDispenseLoop(resumeFromPad);
   };
 
-  const runDispenseLoop = async () => {
+  const runDispenseLoop = async (startFromPad = 0) => {
     setMachineStatus('busy');
     jobStartTimeRef.current = Date.now();
+    globalPointCountRef.current = 0;
     setJobReport(null);
     setCurrentPadInfo(null);
     setDotCheckResults([]);
@@ -244,6 +315,13 @@ export default function AutomatedDispensingPanel({
       await sendGcodeWait('G21'); // Set units to millimeters
       await sendGcodeWait('G90'); // Set to absolute positioning
       await sendGcodeWait(`G1 Z${safeTravelHeight} F3000`); // Move to safe height
+
+      // ── Pre-job nozzle purge ────────────────────────────────────────
+      if (purgeEnabled) {
+        setJobStage('purging');
+        await purgeNozzle(purgeDurationMs, localPressure);
+        setJobStage('dispensing');
+      }
 
       const seq = activeSequence;
       const totalPoints = seq.length * panelBoards.length;
@@ -343,10 +421,13 @@ export default function AutomatedDispensingPanel({
         }
 
         for (let i = 0; i < seq.length; i++) {
-          if (!isJobRunning) throw new Error("Job Aborted");
+          if (!isJobRunningRef.current) throw new Error("Job Aborted");
 
           globalPointCount++;
+          globalPointCountRef.current = globalPointCount;
           setJobProgress({ current: globalPointCount, total: totalPoints });
+
+          if (globalPointCount <= startFromPad) continue;
 
           let p = seq[i];
 
@@ -414,6 +495,8 @@ export default function AutomatedDispensingPanel({
           for (const c of cmds) {
             await sendGcodeWait(c);
           }
+
+          nozzleMaintenance.recordDispense();
 
           // ── Post-dispense dot verification ─────────────────────────────
           if (enableDotVerification && tp) {
@@ -485,6 +568,9 @@ export default function AutomatedDispensingPanel({
           .then(r => { if (r.ok) console.log(`[JobLog] Saved: ${r.path}`); });
       }
 
+      localStorage.removeItem('resumeFromPad');
+      setResumeFromPad(0);
+      globalPointCountRef.current = 0;
       setCurrentPadInfo(null);
       if (onJobComplete) onJobComplete();
       setJobStage('finished');
@@ -504,10 +590,27 @@ export default function AutomatedDispensingPanel({
     }
   };
 
+  const purgeNozzle = async (durationMs = purgeDurationMs, pressure = localPressure) => {
+    setIsPurging(true);
+    try {
+      await sendGcodeWait(`M42 P4 S${Math.round(pressure)}`);
+      await sendGcodeWait(`G4 P${Math.round(durationMs)}`);
+      await sendGcodeWait('M42 P4 S0');
+      await sendGcodeWait('M400');
+    } finally {
+      setIsPurging(false);
+    }
+  };
+
   const cancelJob = async () => {
+    const padsDone = globalPointCountRef.current;
     isJobRunningRef.current = false;
     setIsJobRunning(false);
     ackQueue.current = []; // Unblock any pending sendGcodeWait
+    if (padsDone > 0) {
+      localStorage.setItem('resumeFromPad', String(padsDone));
+      setResumeFromPad(padsDone);
+    }
     // Emergency: bypass the queue — send directly so the machine stops immediately
     try {
       await window.serial.writeLine('M42 P4 S0');
@@ -618,6 +721,29 @@ export default function AutomatedDispensingPanel({
               />
               <span>Verify glue dot after each pad</span>
             </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={purgeEnabled}
+                onChange={e => setPurgeEnabled(e.target.checked)}
+                style={{ width: 'auto', marginTop: 0 }}
+              />
+              <span>Purge nozzle before job</span>
+            </label>
+            {purgeEnabled && (
+              <label>
+                Purge Duration (ms):
+                <input
+                  type="number"
+                  step="500"
+                  min="500"
+                  max="10000"
+                  value={purgeDurationMs}
+                  onChange={e => setPurgeDurationMs(Number(e.target.value))}
+                  style={{ width: '100%', marginTop: '4px' }}
+                />
+              </label>
+            )}
           </div>
 
           {/* Fine-Tune XY Correction UI disabled — fineTuneX and fineTuneY state removed */}
@@ -630,6 +756,12 @@ export default function AutomatedDispensingPanel({
               onRefill={(v) => { setGlueStock(v); }}
             />
           </div>
+
+          <MaintenanceManager
+            manager={nozzleMaintenance}
+            onPurge={purgeNozzle}
+            isPurging={isPurging}
+          />
         </div>
 
         {/* Dispense Sequence Preview & Board Info */}
@@ -860,13 +992,38 @@ export default function AutomatedDispensingPanel({
             <div className="section">
               <h3>Processing Control</h3>
 
+              {resumeFromPad > 0 && (
+                <div style={{ marginBottom: 10, padding: '8px 12px', background: 'rgba(56,139,253,0.1)', border: '1px solid #388bfd', borderRadius: 6, fontSize: '0.83em' }}>
+                  <div style={{ color: '#79c0ff', fontWeight: 600, marginBottom: 6 }}>
+                    ↩ Job interrupted at pad {resumeFromPad} of {activeSequence.length * (panelBoards?.length || 1)}
+                  </div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button
+                      className="btn primary"
+                      style={{ flex: 1, fontSize: '0.85em' }}
+                      disabled={!isConnected}
+                      onClick={startJobFlow}
+                    >
+                      Resume from pad {resumeFromPad + 1}
+                    </button>
+                    <button
+                      className="btn secondary"
+                      style={{ fontSize: '0.85em' }}
+                      onClick={() => { localStorage.removeItem('resumeFromPad'); setResumeFromPad(0); }}
+                    >
+                      Start Fresh
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="row">
                 <button
                   className={`btn ${isJobRunning ? 'danger' : 'primary'}`}
-                  onClick={isJobRunning ? cancelJob : startJobFlow}
+                  onClick={isJobRunning ? cancelJob : () => { if (resumeFromPad > 0) { localStorage.removeItem('resumeFromPad'); setResumeFromPad(0); } startJobFlow(); }}
                   disabled={!isConnected && !isJobRunning}
                 >
-                  {isJobRunning ? '⏹ ABORT JOB' : '▶ START JOB'}
+                  {isJobRunning ? '⏹ ABORT JOB' : resumeFromPad > 0 ? '▶ Start From Beginning' : '▶ START JOB'}
                 </button>
 
                 <button
@@ -876,15 +1033,70 @@ export default function AutomatedDispensingPanel({
                 >
                   💾 Download G-Code
                 </button>
-              </div>      {jobMode === 'batch' && <p>Batch mode not supported in new flow yet</p>}
+              </div>
+
+              {jobMode === 'batch' && <p>Batch mode not supported in new flow yet</p>}
             </div>
           )}
+
+          {/* STAGE: PREFLIGHT */}
+          {jobStage === 'preflight' && (() => {
+            const checks = computePreflightChecks();
+            const criticalFailed = checks.some(c => c.critical && !c.passed);
+            return (
+              <div className="stage-box">
+                <h4>Pre-flight Checklist</h4>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
+                  {checks.map(c => {
+                    const icon = c.passed ? '✓' : c.critical ? '✗' : '⚠';
+                    const color = c.passed ? '#3fb950' : c.critical ? '#f85149' : '#e3b341';
+                    return (
+                      <div key={c.id} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', padding: '6px 8px', background: 'rgba(255,255,255,0.03)', borderRadius: 5, border: `1px solid ${color}22` }}>
+                        <span style={{ color, fontWeight: 700, fontSize: '1em', minWidth: 16, marginTop: 1 }}>{icon}</span>
+                        <div>
+                          <div style={{ color: c.passed ? '#e6edf3' : color, fontWeight: 500, fontSize: '0.85em' }}>{c.label}</div>
+                          <div style={{ color: '#8b949e', fontSize: '0.76em', marginTop: 1 }}>{c.detail}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                {criticalFailed && (
+                  <div style={{ marginBottom: 10, padding: '6px 10px', background: 'rgba(220,50,50,0.1)', border: '1px solid #f85149', borderRadius: 5, fontSize: '0.8em', color: '#f85149' }}>
+                    Fix the items marked ✗ before proceeding.
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn secondary full-width" onClick={() => setJobStage('idle')}>Cancel</button>
+                  <button
+                    className="btn primary full-width"
+                    disabled={criticalFailed}
+                    onClick={proceedFromPreflight}
+                  >
+                    {criticalFailed ? 'Fix Issues First' : 'Proceed ▶'}
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* STAGE: HOMING */}
           {jobStage === 'homing' && (
             <div className="stage-box">
               <h4>Homing Machine...</h4>
               <div className="spinner"></div>
+            </div>
+          )}
+
+          {/* STAGE: PURGING */}
+          {jobStage === 'purging' && (
+            <div className="stage-box">
+              <h4>Purging Nozzle...</h4>
+              <p style={{ color: '#8b949e', fontSize: '0.85em' }}>
+                Priming nozzle for {(purgeDurationMs / 1000).toFixed(1)}s at {localPressure} PSI before first pad.
+              </p>
+              <div className="spinner"></div>
+              <button className="btn danger full-width" style={{ marginTop: 10 }} onClick={cancelJob}>STOP</button>
             </div>
           )}
 
