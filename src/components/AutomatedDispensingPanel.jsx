@@ -40,6 +40,8 @@ export default function AutomatedDispensingPanel({
   isConnected = false,
   machinePosition = { x: 0, y: 0, z: 0 },
   panelBoards = [],
+  panelInfo = null,
+  panelXf = null,
   toolOffset = { dx: 0, dy: 0 }
 }) {
   const [isJobRunning, setIsJobRunning] = useState(false);
@@ -437,11 +439,18 @@ export default function AutomatedDispensingPanel({
           }
 
           let tp = null;
-          if (transform) {
+          if (panelXf && board.offsetX != null) {
+            // Global panel transform: shift pad into panel space first, then apply T_panel
+            const panelSpacePt = { x: p.x + board.offsetX, y: p.y + board.offsetY };
+            tp = applyTransform(panelXf, panelSpacePt);
+            // Optional per-board local correction on top (if transform != panelXf)
+            if (transform && transform !== panelXf) tp = applyTransform(transform, tp);
+            const camX = tp.x - (toolOffset?.dx || 0) + calibCorrection.x;
+            const camY = tp.y - (toolOffset?.dy || 0) + calibCorrection.y;
+            await sendGcodeWait(`G1 X${camX.toFixed(3)} Y${camY.toFixed(3)} F${speedSettings.travelSpeed || 6000}`);
+            p = { ...p, x: tp.x, y: tp.y };
+          } else if (transform) {
             tp = applyTransform(transform, p);
-            // Move the machine so the camera crosshair is over the pad center before dispensing.
-            // Camera is at (machine + toolOffset), so machine must be at (tp - toolOffset) for
-            // the crosshair to show the pad. calibCorrection shifts both moves identically.
             const camX = tp.x - (toolOffset?.dx || 0) + calibCorrection.x;
             const camY = tp.y - (toolOffset?.dy || 0) + calibCorrection.y;
             await sendGcodeWait(`G1 X${camX.toFixed(3)} Y${camY.toFixed(3)} F${speedSettings.travelSpeed || 6000}`);

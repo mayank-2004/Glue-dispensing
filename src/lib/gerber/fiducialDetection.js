@@ -157,7 +157,7 @@ export function detectFiducials(gerberText) {
     return filterFiducialCandidates(candidates);
   } catch (error) {
     console.warn('Error detecting fiducials in Gerber file:', error);
-    return [];
+    return { local: [], rail: [] };
   }
 }
 
@@ -241,38 +241,46 @@ function filterFiducialCandidates(candidates) {
     }
   }
 
-  // If we have a good group, verify it's likely fiducials
+  // If we have a good group, separate local board fiducials from panel rail marks
   if (bestGroup.length >= 2 && bestScore > 15) {
-    // Panel-rail exclusion: board-local fiducials repeat N times (once per sub-board)
-    // so they always have a companion in the same X-column.  Panel rail marks are
-    // isolated in X — no other fiducial within 10 mm horizontally.  Remove them.
+    let localGroup = bestGroup;
+    let railGroup = [];
+
+    // Panel-rail separation: board-local fiducials repeat N times (once per sub-board)
+    // so they always have a companion in the same X-column. Panel rail marks are
+    // isolated in X — no other fiducial within 10 mm horizontally.
     if (bestGroup.length > 4) {
       const X_TOLERANCE = 10; // mm
       const local = bestGroup.filter(c =>
         bestGroup.some(other => other !== c && Math.abs(other.x - c.x) < X_TOLERANCE)
       );
+      const rail = bestGroup.filter(c =>
+        !bestGroup.some(other => other !== c && Math.abs(other.x - c.x) < X_TOLERANCE)
+      );
       if (local.length >= 4) {
-        const removed = bestGroup.length - local.length;
-        if (removed > 0) {
-          console.log(`[FiducialFilter] Panel-rail exclusion: removed ${removed} isolated mark(s), kept ${local.length} local fiducials`);
-        }
-        bestGroup = local;
+        console.log(`[FiducialFilter] Panel-rail separation: ${local.length} local + ${rail.length} rail fiducials`);
+        localGroup = local;
+        railGroup = rail;
       }
     }
 
-    // Sort top-left → bottom-right for consistent F1/F2/… ordering
-    bestGroup.sort((a, b) => (a.y * 1000 + a.x) - (b.y * 1000 + b.x));
-
-    return bestGroup.map((fid, idx) => ({
-      id: `F${idx + 1}`,
-      x: fid.x,
-      y: fid.y,
+    const toFid = (fid, idx, prefix = 'F') => ({
+      id: `${prefix}${idx + 1}`,
+      x: fid.x, y: fid.y,
       diameter: fid.diameter,
-      confidence: Math.min(bestScore / 30, 1.0)
-    }));
+      confidence: Math.min(bestScore / 30, 1.0),
+    });
+
+    localGroup.sort((a, b) => (a.y * 1000 + a.x) - (b.y * 1000 + b.x));
+    railGroup.sort((a, b) => (a.y * 1000 + a.x) - (b.y * 1000 + b.x));
+
+    return {
+      local: localGroup.map((f, i) => toFid(f, i, 'F')),
+      rail:  railGroup.map((f, i) => toFid(f, i, 'R')),
+    };
   }
 
-  return [];
+  return { local: [], rail: [] };
 }
 
 /**
@@ -327,47 +335,71 @@ function calculateDistributionScore(candidates) {
 }
 
 /**
- * Analyze all layers to find fiducials
+ * Analyze all layers to find fiducials — returns { localFiducials, railFiducials }
  */
-export function analyzeFiducialsInLayers(layers) {
-  // console.log('[FiducialParser] Layers available:', layers.map(l => `${l.filename}(${l.type})`));
-  const allFiducials = [];
-  // Only top-side copper layers carry the fiducials we want to display on the top SVG.
-  // Bottom copper fiducials are X-mirrored and would appear at wrong positions on the top view.
-  // Layers with side === null are ambiguous (single-sided boards) — include them as a fallback.
-  const relevantLayers = layers.filter(layer => {
-    if (layer.type === 'copper') return layer.side !== 'bottom'; // top or ambiguous only
+export function analyzeFiducialsWithRails(layers) {
+  const allLocal = [];
+  const allRail = [];
+
+  // Layers to search for local board fiducials (tight size/score criteria)
+  const localLayers = layers.filter(layer => {
+    if (layer.side === 'bottom') return false;
+    if (layer.type === 'copper') return true;
     const name = layer.filename.toLowerCase();
     return name.includes('fiducial') || name.includes('fid') ||
            name.includes('fab') || name.includes('assembly');
   });
 
-  // Prioritize layers that are more likely to contain fiducials
-  const priorityOrder = ['fiducial', 'fid', 'fab', 'assembly', 'copper'];
+  // All non-bottom layers — searched for rail marks too (rail marks may be on
+  // mechanical, user, or other non-standard layers not covered by localLayers)
+  const allTopLayers = layers.filter(layer => layer.side !== 'bottom');
 
-  relevantLayers.sort((a, b) => {
+  const priorityOrder = ['fiducial', 'fid', 'fab', 'assembly', 'copper'];
+  localLayers.sort((a, b) => {
     const aScore = priorityOrder.findIndex(p => a.filename.toLowerCase().includes(p));
     const bScore = priorityOrder.findIndex(p => b.filename.toLowerCase().includes(p));
     return (aScore === -1 ? 999 : aScore) - (bScore === -1 ? 999 : bScore);
   });
 
-  for (const layer of relevantLayers) {
-    // console.log('Checking layer:', layer.filename, 'type:', layer.type);
-    const fiducials = detectFiducials(layer.text);
-    if (fiducials.length > 0) {
-      console.log('Found', fiducials.length, 'fiducial candidates in', layer.filename);
-      allFiducials.push({
-        layer: layer.filename,
-        fiducials: fiducials,
-        priority: priorityOrder.findIndex(p => layer.filename.toLowerCase().includes(p))
-      });
+  const searchedNames = new Set();
+  for (const layer of localLayers) {
+    if (!layer.text) continue;
+    searchedNames.add(layer.filename);
+    const result = detectFiducials(layer.text);
+    const local = result?.local ?? [];
+    const rail  = result?.rail  ?? [];
+    const pri = priorityOrder.findIndex(p => layer.filename.toLowerCase().includes(p));
+    if (local.length > 0) {
+      console.log('Found', local.length, 'local +', rail.length, 'rail fiducials in', layer.filename);
+      allLocal.push({ layer: layer.filename, fiducials: local, priority: pri });
+    }
+    if (rail.length > 0) {
+      console.log('Found', rail.length, 'rail fiducials in', layer.filename);
+      allRail.push({ layer: layer.filename, fiducials: rail, priority: pri });
     }
   }
 
-  // Merge fiducials from different layers (same position = same fiducial)
-  const result = mergeFiducials(allFiducials);
-  console.log('Final fiducial detection result:', result.length, 'fiducials found');
-  return result;
+  // Also search remaining top-side layers for rail marks only
+  for (const layer of allTopLayers) {
+    if (!layer.text || searchedNames.has(layer.filename)) continue;
+    const result = detectFiducials(layer.text);
+    const rail = result?.rail ?? [];
+    if (rail.length > 0) {
+      console.log('Found', rail.length, 'rail fiducials in extra layer', layer.filename);
+      allRail.push({ layer: layer.filename, fiducials: rail, priority: 999 });
+    }
+  }
+
+  const localFiducials = mergeFiducials(allLocal);
+  const railFiducials  = mergeFiducials(allRail).map((f, i) => ({ ...f, id: `R${i + 1}` }));
+
+  console.log(`Final fiducial detection: ${localFiducials.length} local, ${railFiducials.length} rail`);
+  return { localFiducials, railFiducials };
+}
+
+/** Backward-compatible wrapper — returns only local fiducials as a flat array */
+export function analyzeFiducialsInLayers(layers) {
+  return analyzeFiducialsWithRails(layers).localFiducials;
 }
 
 /**

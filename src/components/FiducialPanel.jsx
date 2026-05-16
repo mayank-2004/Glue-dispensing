@@ -19,12 +19,16 @@ export default function FiducialPanel({
   onRedetectFiducials,
   onAutoAlign,
   onAutoDetectCamera,
-  // Multi-board mapping state
   panelBoards = [],
   setPanelBoards,
   activeBoardIndex = 0,
   setActiveBoardIndex,
-  boardOutline
+  boardOutline,
+  panelInfo = null,
+  panelRailFiducials = [],
+  setPanelRailFiducials,
+  panelXf = null,
+  onSolvePanelXf,
 }) {
   const ready2 = fiducials.filter(f => f.design && f.machine).length >= 2;
   const ready3 = fiducials.filter(f => f.design && f.machine).length >= 3;
@@ -149,8 +153,14 @@ export default function FiducialPanel({
           {pickMode ? "Pick/Drag fiducials: ON" : "Pick/Drag fiducials"}
         </button>
         <select value={activeId ?? ""} onChange={(e) => setActiveId(e.target.value || null)} style={{ minWidth: 150, flex: 1 }}>
-          <option value="">(select F to arm)</option>
+          <option value="">(select to arm)</option>
           {fiducials.map(f => <option key={f.id} value={f.id}>{f.id}</option>)}
+          {panelRailFiducials.length > 0 && (
+            <>
+              <option disabled>── Rail ──</option>
+              {panelRailFiducials.map(f => <option key={f.id} value={f.id}>{f.id} (Rail)</option>)}
+            </>
+          )}
         </select>
       </div>
 
@@ -234,6 +244,107 @@ export default function FiducialPanel({
           {"scale" in transformSummary && <div>Scale: {transformSummary.scale.toFixed(6)}×</div>}
           <div>tx: {transformSummary.tx.toFixed(3)} mm, ty: {transformSummary.ty.toFixed(3)} mm</div>
           {"rms" in transformSummary && <div>RMS error: {transformSummary.rms.toFixed(3)} mm</div>}
+        </div>
+      )}
+
+      {/* Panel Rail Fiducials — shown whenever rail fiducials exist or a panel grid is detected */}
+      {(panelRailFiducials.length > 0 || panelInfo) && (
+        <div style={{ marginTop: 20, paddingTop: 16, borderTop: '2px solid #ff9800' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <strong style={{ color: '#ff9800', fontSize: '0.95em' }}>◆ Panel Rail Fiducials</strong>
+            <span style={{ fontSize: '0.75em', color: '#888', fontStyle: 'italic' }}>global panel alignment</span>
+          </div>
+
+          <div style={{ fontSize: '0.82em', color: '#666', marginBottom: 10, padding: '6px 10px', background: '#fff8e1', border: '1px solid #ffe082', borderRadius: 4 }}>
+            Rail fiducials align the <strong>entire panel</strong> to machine space. Measuring them once
+            lets all boards dispense correctly without per-board fiducial capture.
+            {panelXf && <span style={{ color: '#388e3c', fontWeight: 600 }}> ✓ Panel transform solved.</span>}
+          </div>
+
+          {panelRailFiducials.length === 0 ? (
+            <div style={{ fontSize: '0.82em', color: '#aaa', fontStyle: 'italic', marginBottom: 8 }}>
+              No rail fiducials detected from Gerber. Add them manually if your panel has rail marks.
+              <button
+                className="btn sm"
+                style={{ marginLeft: 8 }}
+                onClick={() => setPanelRailFiducials(prev => [
+                  ...prev,
+                  { id: `R${prev.length + 1}`, design: null, machine: null, color: '#ff9800', isRail: true }
+                ])}
+              >+ Add Rail Fiducial</button>
+            </div>
+          ) : (
+            <>
+              <table className="kv small" style={{ marginBottom: 8 }}>
+                <thead>
+                  <tr>
+                    <th>Rail Fid</th>
+                    <th>Design (mm)</th>
+                    <th>Machine (mm)</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {panelRailFiducials.map((f, idx) => (
+                    <tr key={f.id}>
+                      <td>
+                        <span style={{ display: 'inline-block', width: 10, height: 10, background: f.color || '#ff9800', borderRadius: 2, marginRight: 6, transform: 'rotate(45deg)' }} />
+                        <strong style={{ color: '#ff9800' }}>{f.id}</strong>
+                      </td>
+                      <td style={{ fontSize: '0.85em' }}>
+                        {f.design ? `X ${f.design.x.toFixed(3)}, Y ${f.design.y.toFixed(3)}` : <em style={{ color: '#aaa' }}>— not set —</em>}
+                      </td>
+                      <td>
+                        <div className="flex-row" style={{ gap: 6, alignItems: 'center' }}>
+                          <input className="in sm" placeholder="Mx"
+                            value={f.machine?.x ?? ''}
+                            onChange={e => setPanelRailFiducials(prev => prev.map((r, i) => i === idx ? { ...r, machine: { x: parseFloat(e.target.value), y: r.machine?.y } } : r))}
+                          />
+                          <input className="in sm" placeholder="My"
+                            value={f.machine?.y ?? ''}
+                            onChange={e => setPanelRailFiducials(prev => prev.map((r, i) => i === idx ? { ...r, machine: { x: r.machine?.x, y: parseFloat(e.target.value) } } : r))}
+                          />
+                          {f.machine && (
+                            <button className="btn icon-btn" style={{ padding: '0 6px', fontSize: 16, background: 'transparent', border: 'none', color: '#ff4d4f', cursor: 'pointer' }}
+                              onClick={() => setPanelRailFiducials(prev => prev.map((r, i) => i === idx ? { ...r, machine: null } : r))}>×</button>
+                          )}
+                        </div>
+                      </td>
+                      <td>
+                        <button className="btn secondary" style={{ fontSize: '0.8em' }}
+                          onClick={() => setPanelRailFiducials(prev => prev.filter((_, i) => i !== idx))}>✕</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <button
+                  className="btn"
+                  style={{ background: '#ff9800', borderColor: '#ff9800' }}
+                  disabled={panelRailFiducials.filter(f => f.design && f.machine).length < 2}
+                  onClick={onSolvePanelXf}
+                >
+                  ◆ Solve Panel Transform
+                </button>
+                <button className="btn secondary" style={{ fontSize: '0.82em' }}
+                  onClick={() => setPanelRailFiducials(prev => [
+                    ...prev,
+                    { id: `R${prev.length + 1}`, design: null, machine: null, color: '#ff9800', isRail: true }
+                  ])}>+ Add</button>
+              </div>
+
+              {panelXf && (
+                <div className="info" style={{ marginTop: 8, borderLeft: '3px solid #ff9800' }}>
+                  <div><strong>Panel Transform</strong>: {panelXf.type}</div>
+                  <div style={{ fontSize: '0.85em' }}>tx: {panelXf.tx.toFixed(3)} mm, ty: {panelXf.ty.toFixed(3)} mm</div>
+                  {'scale' in panelXf && <div style={{ fontSize: '0.85em' }}>Scale: {panelXf.scale.toFixed(5)}×</div>}
+                  {'theta' in panelXf && <div style={{ fontSize: '0.85em' }}>Rotation: {(panelXf.theta * 180 / Math.PI).toFixed(3)}°</div>}
+                </div>
+              )}
+            </>
+          )}
         </div>
       )}
     </div>

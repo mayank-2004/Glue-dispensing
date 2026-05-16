@@ -28,7 +28,11 @@ export default function CameraPanel({
   setPixelsPerMm,
   fiducialVisionDetector,
   pads = [],
-  gerberFiducials = []  // Raw Gerber-parsed fiducial positions (design space)
+  gerberFiducials = [],
+  fidActiveId = null,
+  panelRailFiducials = [],
+  setPanelRailFiducials,
+  onAdvanceArmedFid,
 }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -43,10 +47,10 @@ export default function CameraPanel({
   useEffect(() => { localStorage.setItem("cameraOffset", JSON.stringify(cameraOffset)); }, [cameraOffset]);
 
   // Ref to hold latest props for stale-closure avoidance in setInterval
-  const latestPropsRef = useRef({ fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, pads, cameraOffset: { dx: 0, dy: 0 } });
+  const latestPropsRef = useRef({ fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, pads, cameraOffset: { dx: 0, dy: 0 }, fidActiveId, panelRailFiducials, setPanelRailFiducials, onAdvanceArmedFid });
   useEffect(() => {
-    latestPropsRef.current = { fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, pads, cameraOffset };
-  }, [fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, pads, cameraOffset]);
+    latestPropsRef.current = { fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, pads, cameraOffset, fidActiveId, panelRailFiducials, setPanelRailFiducials, onAdvanceArmedFid };
+  }, [fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, pads, cameraOffset, fidActiveId, panelRailFiducials, setPanelRailFiducials, onAdvanceArmedFid]);
 
   const [streamOn, setStreamOn] = useState(false);
 
@@ -725,10 +729,34 @@ export default function CameraPanel({
     return () => delete window.__DETECT_PAD_OFFSET__;
   }, [streamOn, pixelsPerMm, fiducialDetector]);
 
+  // Blocks detection for N ms after any successful fiducial save, preventing the auto-advanced
+  // arm (e.g. R2 after R1) from receiving the same machine position before the machine moves.
+  const saveBlockRef = useRef(0);
+
   // --- FIDUCIAL STORAGE HELPER ---
   // Takes a confirmed machine coordinate for a fiducial and saves it into the panelBoards state
   const saveFiducialCoordinate = (estimatedWorld, confidence = 1.0) => {
     const cProps = latestPropsRef.current;
+
+    // RAIL ROUTING: if the operator has armed a rail fiducial, save there and return.
+    // This is the sole mechanism for routing camera-detected coords to the rail table vs
+    // the local table — the operator selects R1/R2 from the arm dropdown before detection.
+    const armedId = cProps.fidActiveId;
+    const railFids = cProps.panelRailFiducials || [];
+    const setRailFids = cProps.setPanelRailFiducials;
+    if (armedId && setRailFids) {
+      const armedRailIdx = railFids.findIndex(f => f.id === armedId);
+      if (armedRailIdx >= 0) {
+        setRailFids(railFids.map((f, i) =>
+          i === armedRailIdx ? { ...f, machine: estimatedWorld, autoDetected: true } : f
+        ));
+        console.log(`[FiducialDetect] Rail ${armedId} ← Machine(${estimatedWorld.x.toFixed(3)}, ${estimatedWorld.y.toFixed(3)})`);
+        saveBlockRef.current = Date.now() + 4000; // block detection 4s — operator must physically move to next fiducial
+        cProps.onAdvanceArmedFid?.(armedId);
+        return;
+      }
+    }
+
     const currentFids = cProps.fiducials || [];
     const updateCallback = cProps.onUpdateFiducials;
     const boardName = cProps.activeBoardName || 'Unknown Board';
@@ -741,6 +769,7 @@ export default function CameraPanel({
     let fidsChanged = false;
     let nextFids = [...currentFids];
     const activeBIdx = hasMultiBoards ? Math.max(0, pBoards.findIndex(b => b.name === boardName)) : -1;
+    let savedFidId = null; // captured in each branch for auto-advance
 
     // Sort Gerber fiducials top-left first (ascending Y, then X within same row).
     // This gives a consistent 1-to-1 mapping: snap 1 → gerberFids[0], snap 2 → gerberFids[1], ...
@@ -794,6 +823,7 @@ export default function CameraPanel({
       else newFiducials.push(newFid);
       nextBoards[activeBIdx] = { ...nextBoards[activeBIdx], fiducials: newFiducials };
       changedBoards = true;
+      savedFidId = newFid.id;
     } else {
       // Legacy single-board path
       // Check for a nearby already-saved slot to overwrite
@@ -822,6 +852,7 @@ export default function CameraPanel({
         confidence
       };
       fidsChanged = true;
+      savedFidId = nextFids[pushIdx].id;
       console.log(`[FiducialDetect] ${action} slot #${pushIdx + 1} at Machine(${estimatedWorld.x.toFixed(3)}, ${estimatedWorld.y.toFixed(3)})`);
     }
 
@@ -830,6 +861,10 @@ export default function CameraPanel({
       console.log(`[FiducialStorage] Saved machine coord (${estimatedWorld.x.toFixed(3)}, ${estimatedWorld.y.toFixed(3)}) to board [${boardName}]`);
     } else if (fidsChanged && updateCallback) {
       updateCallback(nextFids);
+    }
+    if (savedFidId) {
+      saveBlockRef.current = Date.now() + 4000; // block detection 4s — operator must physically move to next fiducial
+      cProps.onAdvanceArmedFid?.(savedFidId);
     }
   };
 
@@ -841,6 +876,23 @@ export default function CameraPanel({
   const SERVO_FEED      = 800;           // mm/min jog speed
   const SERVO_SETTLE_MS = 800;           // ms to wait after each jog before re-checking
   const CONVERGE_MM     = 0.05;          // crosshair within 0.05mm → declare converged & save
+
+  // Motion guard: whenever the machine position changes significantly (manual jogging between
+  // fiducials), extend the settle timer so the detection loop cannot false-trigger on
+  // intermediate positions while the machine is in motion.
+  const prevMachPosRef = useRef(null);
+  useEffect(() => {
+    if (!machinePosition) return;
+    const prev = prevMachPosRef.current;
+    if (prev) {
+      const moved = Math.hypot(machinePosition.x - prev.x, machinePosition.y - prev.y);
+      if (moved > 0.05) {
+        // Machine is moving — block detection until 1.5 s after the last position change
+        settleUntilRef.current = Date.now() + 1500;
+      }
+    }
+    prevMachPosRef.current = { x: machinePosition.x, y: machinePosition.y };
+  }, [machinePosition]);
 
   // hasJoggedRef: legacy ref kept for snapToFiducial lock (browser mode uses it too)
   const hasJoggedRef = useRef(false);
@@ -867,6 +919,7 @@ export default function CameraPanel({
           setPythonVisionData(data);
 
           if (Date.now() < settleUntilRef.current) return;
+          if (Date.now() < saveBlockRef.current) return; // wait until operator moves to next fiducial
 
           const machPos = machinePositionRef.current || { x: 0, y: 0 };
 
@@ -1121,6 +1174,10 @@ export default function CameraPanel({
       const camOffset = cameraOffset || { dx: 0, dy: 0 };
 
       if (Math.abs(dx) < 0.005 && Math.abs(dy) < 0.005) {
+        if (Date.now() < saveBlockRef.current) {
+          console.log('[SnapToFiducial] Save blocked — move to next fiducial first.');
+          return;
+        }
         console.log('[SnapToFiducial] Already centred — saving coordinate.');
         saveFiducialCoordinate({ x: machPos.x + camOffset.dx, y: machPos.y + camOffset.dy });
         return;

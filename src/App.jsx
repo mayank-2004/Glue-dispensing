@@ -13,8 +13,8 @@ import FiducialPanel from "./components/FiducialPanel.jsx";
 import AutomatedDispensingPanel from "./components/AutomatedDispensingPanel.jsx";
 import { identifyLayers } from "./lib/gerber/identifyLayers.js";
 import { stackupToSvg } from "./lib/gerber/stackupToSvg.js";
-import { extractPadsMm } from "./lib/gerber/extractPads.js";
-import { analyzeFiducialsInLayers } from "./lib/gerber/fiducialDetection.js";
+import { extractPadsMm, extractPadsWithPanel } from "./lib/gerber/extractPads.js";
+import { analyzeFiducialsInLayers, analyzeFiducialsWithRails } from "./lib/gerber/fiducialDetection.js";
 import { detectPcbOrigins } from "./lib/gerber/originDetection.js";
 import { FiducialVisionDetector } from "./lib/vision/fiducialVision.js";
 import { zipTextFiles, downloadBlob } from "./lib/zip/zipUtils.js";
@@ -242,6 +242,9 @@ export default function App() {
   }, []);
 
   const [applyXf, setApplyXf] = useState(false);
+  const [panelInfo, setPanelInfo] = useState(null);
+  const [panelRailFiducials, setPanelRailFiducials] = useState([]);
+  const [panelXf, setPanelXf] = useState(null);
   const [activeComponent, setActiveComponent] = useState('SerialPanel')
 
   // Move nozzle to the PCB's Gerber origin point in machine coordinates
@@ -522,18 +525,17 @@ export default function App() {
     }
 
     setPasteIdx(pi >= 0 ? pi : null);
+    let detectedPanelGrid = null;
     if (pi >= 0) {
-      const padData = extractPadsMm(ls[pi].text).map(padCenter);
-      console.log("pad data: ", padData);
-      setPads(processPads(padData));
-      if (ls[pi].side === 'bottom') {
-        setSide('bottom');
-      } else {
-        setSide('top');
-      }
+      const { pads: basePads, panel: panelGrid } = extractPadsWithPanel(ls[pi].text);
+      detectedPanelGrid = panelGrid;
+      console.log("pad data:", basePads.length, "base pads | panel:", panelGrid);
+      setPads(processPads(basePads.map(padCenter)));
+      if (ls[pi].side === 'bottom') setSide('bottom');
+      else setSide('top');
     } else setPads([]);
 
-    let detectedFiducials = analyzeFiducialsInLayers(ls);
+    const { localFiducials: detectedFiducials, railFiducials: detectedRailFiducials } = analyzeFiducialsWithRails(ls);
     setFiducialDetectionResult(detectedFiducials);
 
     // ── GERBER UPLOAD SUMMARY LOG ─────────────────────────────────────────────
@@ -617,29 +619,59 @@ export default function App() {
       setPcbOriginOffset({ x: origin.x, y: origin.y });
     }
 
-    if (detectedFiducials.length > 0) {
-      const colors = ["#2ea8ff", "#8e2bff", "#00c49a", "#ff6b35", "#9c27b0", "#4caf50"];
-      // Populate design coords for ALL detected fiducials; leave machine null (user fills via camera)
-      const autoFiducials = detectedFiducials.map((fid, idx) => ({
-        id: fid.id || `F${idx + 1}`,
-        design: { x: parseFloat(fid.x.toFixed(4)), y: parseFloat(fid.y.toFixed(4)) },
-        machine: null,
-        color: colors[idx % colors.length],
-        confidence: fid.confidence
-      }));
-      setFiducials(autoFiducials);
+    const fidColors = ["#2ea8ff", "#8e2bff", "#b7c400", "#ff6b35", "#9c27b0", "#25d9be"];
+    const railColors = ["#ff9800", "#ff5722", "#ffc107", "#ff6d00"];
+    const makeBoardFiducials = (offsetX = 0, offsetY = 0) =>
+      detectedFiducials.length > 0
+        ? detectedFiducials.map((fid, idx) => ({
+            id: fid.id || `F${idx + 1}`,
+            design: { x: parseFloat((fid.x + offsetX).toFixed(4)), y: parseFloat((fid.y + offsetY).toFixed(4)) },
+            machine: null, color: fidColors[idx % fidColors.length], confidence: fid.confidence,
+          }))
+        : [
+            { id: "F1", design: null, machine: null, color: "#2ea8ff" },
+            { id: "F2", design: null, machine: null, color: "#8e2bff" },
+          ];
+
+    // Always store detected rail fiducials — they exist independently of panel detection
+    const autoRailFids = detectedRailFiducials.map((fid, idx) => ({
+      id: fid.id || `R${idx + 1}`,
+      design: { x: parseFloat(fid.x.toFixed(4)), y: parseFloat(fid.y.toFixed(4)) },
+      machine: null, color: railColors[idx % railColors.length], isRail: true,
+    }));
+    setPanelRailFiducials(autoRailFids);
+    setPanelXf(null);
+
+    if (detectedPanelGrid && (detectedPanelGrid.dimX > 1 || detectedPanelGrid.dimY > 1)) {
+      const { dimX, dimY, stepX, stepY } = detectedPanelGrid;
+      const boards = [];
+      let bid = 1;
+      for (let j = 0; j < dimY; j++) {
+        for (let i = 0; i < dimX; i++) {
+          const ox = parseFloat((i * stepX).toFixed(4));
+          const oy = parseFloat((j * stepY).toFixed(4));
+          const defaultXf = { type: 'translation', a: 1, b: 0, c: 0, d: 1, tx: ox, ty: oy };
+          const label = dimY > 1 ? `Board R${j + 1}C${i + 1}` : `Board ${i + 1}`;
+          boards.push({ id: bid++, name: label, offsetX: ox, offsetY: oy, fiducials: makeBoardFiducials(ox, oy), xf: defaultXf });
+        }
+      }
+      setPanelBoards(boards);
+      _setActiveBoardIndex(0);
+      setPanelInfo(detectedPanelGrid);
+      setApplyXf(true);
+      console.log(`[Panel] ${dimX}×${dimY} SR grid (step ${stepX}×${stepY} mm). Created ${boards.length} boards.`);
     } else {
-      setFiducials([
-        { id: "F1", design: null, machine: null, color: "#2ea8ff" },
-        { id: "F2", design: null, machine: null, color: "#8e2bff" },
-      ]);
-      setFiducialDetectionResult([]);
+      setPanelBoards([{ id: 1, name: 'Board 1', fiducials: makeBoardFiducials(), xf: null }]);
+      _setActiveBoardIndex(0);
+      setPanelInfo(null);
+      if (!detectedFiducials.length) setFiducialDetectionResult([]);
     }
 
     await rebuild(ls, side);
 
     setSelectedMm(null);
-    setXf(null); setApplyXf(false);
+    setXf(null);
+    if (!detectedPanelGrid) setApplyXf(false);
     setFidPickMode(false); setFidActiveId(null);
 
     queueMicrotask(() => { updateOverlay(); });
@@ -1153,7 +1185,6 @@ export default function App() {
           const label = isBoardActive ? f.id : `${board.name} ${f.id}`;
 
           drawCircle(gf, u.x, u.y, u.r, hexToRgba(f.color, opacity), f.color);
-          drawText(gf, u.x + u.r * 1.2, u.y - u.r * 0.8, label, u.r * (isBoardActive ? 1.1 : 0.8), f.color);
         }
       });
     });
@@ -1194,6 +1225,46 @@ export default function App() {
         ggf.appendChild(vLine);
 
         drawText(ggf, u.x + u.r * 2.4, u.y - u.r * 0.6, fid.id, u.r * 1.0, fidColor, 'rgba(0,0,0,0.7)');
+      });
+    }
+
+    // Draw panel rail fiducials — same crosshair style as local fiducials, orange colour
+    const ggr = ensureGroup("overlay-rail-fids");
+    if (panelRailFiducials.length > 0) {
+      panelRailFiducials.forEach(fid => {
+        if (!fid.design) return;
+        const u = mmToCurrentUnits({ x: fid.design.x, y: fid.design.y });
+        const color = fid.color || '#ff9800';
+        const ringR = u.r * 1.5;
+        const crossSize = u.r * 2.2;
+
+        const ring = document.createElementNS(NS, 'circle');
+        ring.setAttribute('cx', u.x); ring.setAttribute('cy', u.y);
+        ring.setAttribute('r', ringR);
+        ring.setAttribute('fill', 'rgba(255,152,0,0.15)');
+        ring.setAttribute('stroke', color);
+        ring.setAttribute('stroke-width', u.r * 0.2);
+        ggr.appendChild(ring);
+
+        const dot = document.createElementNS(NS, 'circle');
+        dot.setAttribute('cx', u.x); dot.setAttribute('cy', u.y);
+        dot.setAttribute('r', u.r * 0.3);
+        dot.setAttribute('fill', color);
+        ggr.appendChild(dot);
+
+        const hLine = document.createElementNS(NS, 'line');
+        hLine.setAttribute('x1', u.x - crossSize); hLine.setAttribute('y1', u.y);
+        hLine.setAttribute('x2', u.x + crossSize); hLine.setAttribute('y2', u.y);
+        hLine.setAttribute('stroke', color); hLine.setAttribute('stroke-width', u.r * 0.15);
+        ggr.appendChild(hLine);
+
+        const vLine = document.createElementNS(NS, 'line');
+        vLine.setAttribute('x1', u.x); vLine.setAttribute('y1', u.y - crossSize);
+        vLine.setAttribute('x2', u.x); vLine.setAttribute('y2', u.y + crossSize);
+        vLine.setAttribute('stroke', color); vLine.setAttribute('stroke-width', u.r * 0.15);
+        ggr.appendChild(vLine);
+
+        drawText(ggr, u.x + u.r * 2.4, u.y - u.r * 0.6, `${fid.id} (Rail)`, u.r * 1.0, color, 'rgba(0,0,0,0.7)');
       });
     }
 
@@ -1268,6 +1339,7 @@ export default function App() {
   };
 
   useEffect(() => { updateOverlay(); }, [updateOverlay]);
+  useEffect(() => { updateOverlay(); }, [panelRailFiducials]);
 
   useEffect(() => {
     const refPoint = referencePoint || selectedOrigin;
@@ -1438,44 +1510,61 @@ export default function App() {
 
   const handleFiducialMouseDown = (e) => {
     if (!fidPickMode) return;
-    console.log('handleFiducialMouseDown fired');
 
     const svgEl = getSvgEl();
-    if (!svgEl) {
-      console.warn('SVG element not found during mousedown');
-      return;
-    }
+    if (!svgEl) return;
 
     const mm = getEventMm(e); if (!mm) return;
 
     let targetId = null;
-    let best = { id: null, d: Infinity };
+    let targetIsRail = false;
+    let best = { id: null, d: Infinity, isRail: false };
 
+    // Check local fiducials
     for (const f of fiducials) {
       if (!f.design) continue;
       const d = Math.hypot(f.design.x - mm.x, f.design.y - mm.y);
-      if (d < best.d) { best = { id: f.id, d }; }
+      if (d < best.d) best = { id: f.id, d, isRail: false };
     }
 
-    if (best.d <= 2) targetId = best.id;
-    else if (fidActiveId) targetId = fidActiveId;
+    // Check rail fiducials
+    for (const f of panelRailFiducials) {
+      if (!f.design) continue;
+      const d = Math.hypot(f.design.x - mm.x, f.design.y - mm.y);
+      if (d < best.d) best = { id: f.id, d, isRail: true };
+    }
 
-    console.log('Fiducial click processed. Best match:', best.id, 'Target:', targetId);
+    if (best.d <= 2) {
+      targetId = best.id;
+      targetIsRail = best.isRail;
+    } else if (fidActiveId) {
+      targetId = fidActiveId;
+      targetIsRail = panelRailFiducials.some(f => f.id === fidActiveId);
+    }
 
     if (targetId) {
-      setFiducials(prev => prev.map(f => f.id === targetId ? { ...f, design: mm } : f));
+      if (targetIsRail) {
+        setPanelRailFiducials(prev => prev.map(f => f.id === targetId ? { ...f, design: mm } : f));
+      } else {
+        setFiducials(prev => prev.map(f => f.id === targetId ? { ...f, design: mm } : f));
+      }
       setDragFid(targetId);
     }
   };
 
-  // Effect to handle global mouse move/up for dragging
+  // Effect to handle global mouse move/up for dragging (local + rail fiducials)
   useEffect(() => {
     if (!fidPickMode) return;
 
     const onMove = (e) => {
       if (!dragFid) return;
       const mm = getEventMm(e); if (!mm) return;
-      setFiducials(prev => prev.map(f => f.id === dragFid ? { ...f, design: mm } : f));
+      const isRail = panelRailFiducials.some(f => f.id === dragFid);
+      if (isRail) {
+        setPanelRailFiducials(prev => prev.map(f => f.id === dragFid ? { ...f, design: mm } : f));
+      } else {
+        setFiducials(prev => prev.map(f => f.id === dragFid ? { ...f, design: mm } : f));
+      }
     };
 
     const onUp = () => setDragFid(null);
@@ -1487,7 +1576,7 @@ export default function App() {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [fidPickMode, dragFid, fiducials, getSvgEl]);
+  }, [fidPickMode, dragFid, fiducials, panelRailFiducials, getSvgEl]);
 
   useEffect(() => {
     const svgEl = document.querySelector(".viewer .canvas svg");
@@ -1646,6 +1735,22 @@ export default function App() {
   const onClearOne = (id) => setFiducials(prev => prev.map(f => f.id === id ? { ...f, design: null, machine: null } : f));
   const onClearAll = () => { setFiducials(prev => prev.map(f => ({ ...f, design: null, machine: null }))); setXf(null); };
 
+  // Auto-advance arm dropdown after each successful fiducial save.
+  // Sequence: rail fiducials first (R1→R2→…), then local fiducials (F1→F2→…).
+  // Skips slots that already have a machine coord; disarms when all are filled.
+  const onAdvanceArmedFid = useCallback((justSavedId) => {
+    setFidActiveId(currentId => {
+      const sequence = [
+        ...panelRailFiducials.map(f => ({ ...f, _isRail: true })),
+        ...fiducials.map(f => ({ ...f, _isRail: false })),
+      ];
+      const justSavedIdx = sequence.findIndex(f => f.id === justSavedId);
+      if (justSavedIdx === -1) return currentId;
+      const nextFid = sequence.slice(justSavedIdx + 1).find(f => !f.machine);
+      return nextFid ? nextFid.id : null;
+    });
+  }, [panelRailFiducials, fiducials]);
+
   const onSolve2 = () => {
     const P = fiducials.filter(f => f.design && f.machine);
     if (P.length < 2) return;
@@ -1657,6 +1762,15 @@ export default function App() {
     if (P.length < 3) return;
     const T = fitAffine(P.map(f => f.design), P.map(f => f.machine));
     setXf(T);
+  };
+
+  const onSolvePanelXf = () => {
+    const P = panelRailFiducials.filter(f => f.design && f.machine);
+    if (P.length < 2) return;
+    const T = P.length >= 3
+      ? fitAffine(P.map(f => f.design), P.map(f => f.machine))
+      : fitSimilarity(P.map(f => f.design), P.map(f => f.machine));
+    setPanelXf(T);
   };
 
   const onRedetectFiducials = () => {
@@ -2209,6 +2323,13 @@ export default function App() {
             }
 
             <div style={{ display: activeComponent === 'FiducialPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
+              {panelInfo && (
+                <div style={{ margin: '0 0 10px 0', padding: '8px 12px', background: 'rgba(56,139,253,0.1)', border: '1px solid #388bfd', borderRadius: 6, fontSize: '0.83em', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ color: '#79c0ff', fontWeight: 600 }}>
+                    Panel: {panelInfo.dimX}×{panelInfo.dimY} grid ({panelBoards.length} boards) — step {panelInfo.stepX}×{panelInfo.stepY} mm
+                  </span>
+                </div>
+              )}
               <div className="fiducial-panel">
                 <FiducialPanel
                   fiducials={fiducials}
@@ -2232,11 +2353,15 @@ export default function App() {
                   alignmentInfo={alignment}
                   onCaptureAlignment={handleAlignmentCapture}
                   boardOutline={boardOutline}
-
                   panelBoards={panelBoards}
                   setPanelBoards={setPanelBoards}
                   activeBoardIndex={activeBoardIndexState}
                   setActiveBoardIndex={setActiveBoardIndex}
+                  panelInfo={panelInfo}
+                  panelRailFiducials={panelRailFiducials}
+                  setPanelRailFiducials={setPanelRailFiducials}
+                  panelXf={panelXf}
+                  onSolvePanelXf={onSolvePanelXf}
                 />
                 {effectiveOrigin && selectedMm && xf && applyXf && (
                   <div style={{ padding: 8, background: '#f8f9fa', border: '1px solid #dee2e6', borderRadius: 4, marginTop: 8 }}>
@@ -2290,6 +2415,10 @@ export default function App() {
                 setPanelBoards={setPanelBoards}
                 pads={pads}
                 gerberFiducials={fiducialDetectionResult || []}
+                fidActiveId={fidActiveId}
+                panelRailFiducials={panelRailFiducials}
+                setPanelRailFiducials={setPanelRailFiducials}
+                onAdvanceArmedFid={onAdvanceArmedFid}
               />
             </div>
 
@@ -2352,6 +2481,8 @@ export default function App() {
                 setPanelBoards={setPanelBoards}
                 activeBoardIndex={activeBoardIndexState}
                 setActiveBoardIndex={setActiveBoardIndex}
+                panelInfo={panelInfo}
+                panelXf={panelXf}
                 xf={xf}
                 applyXf={applyXf}
                 isConnected={isSerialConnected}
