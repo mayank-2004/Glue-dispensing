@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { header, home, moveAbs, dispensePoint, jogRel } from "../lib/motion/gcode.js";
+import { header, home, moveAbs, dispensePoint, dispenseBead, jogRel } from "../lib/motion/gcode.js";
 import { applyTransform, fitSimilarity, fitAffine } from "../lib/utils/transform2d.js";
 import "./AutomatedDispensingPanel.css";
 import { buildJobGlueSummary, GlueStore } from '../lib/glue/glueTracker.js';
@@ -90,6 +90,8 @@ export default function AutomatedDispensingPanel({
   const [safeTravelHeight, setSafeTravelHeight] = useState(5.0);
   const [viscosity, setViscosity] = useState('medium'); // low, medium, high
   const [baseDwellTime, setBaseDwellTime] = useState(120);
+  const [beadAreaThreshold, setBeadAreaThreshold] = useState(2.0); // mm² — pads above this use bead mode
+  const [beadFeedRate, setBeadFeedRate] = useState(500);           // mm/min while sweeping the bead
   const [localPressure, setLocalPressure] = useState(() => pressureSettings?.customPressure || 25);
   const [currentPadInfo, setCurrentPadInfo] = useState(null);
   const [jobReport, setJobReport] = useState(null);
@@ -469,6 +471,7 @@ export default function AutomatedDispensingPanel({
           const pressure = dispensingSequencer.calculatePadPressure(p, { customPressure: localPressure });
           const configDwell = pressureSettings.customDwellTime || baseDwellTime;
           const dwell = dispensingSequencer.calculateDwellTime(p, { customDwellTime: configDwell });
+          const dispenseMode = dispensingSequencer.selectDispenseMode(p, { beadAreaThreshold });
 
           const padVolUl = glueSummary?.annotated?.[globalPointCount - 1]?.glue?.volUl ?? 0;
           setCurrentPadInfo({
@@ -477,6 +480,7 @@ export default function AutomatedDispensingPanel({
             pressure,
             dwellMs: dwell,
             volumeUl: padVolUl.toFixed ? padVolUl.toFixed(3) : '—',
+            mode: dispenseMode.mode,
           });
 
           // Accumulate log entry for this pad
@@ -492,15 +496,30 @@ export default function AutomatedDispensingPanel({
             dotDiameter_mm: '',
           });
 
-          const cmds = dispensePoint({
-            x: finalX, y: finalY,
-            zWork: dispenseHeight + getZOffsetForPoint(finalX, finalY),
-            zSafe: safeTravelHeight,
-            feedXY: speedSettings.travelSpeed || 6000,
-            feedZ: speedSettings.dispenseSpeed || 300,
-            pressure: pressure,
-            dwellMs: dwell
-          });
+          let cmds;
+          if (dispenseMode.mode === 'bead') {
+            cmds = dispenseBead({
+              x: finalX, y: finalY,
+              beadLength: dispenseMode.length,
+              beadAxis: dispenseMode.axis,
+              zWork: dispenseHeight + getZOffsetForPoint(finalX, finalY),
+              zSafe: safeTravelHeight,
+              feedXY: speedSettings.travelSpeed || 6000,
+              feedZ: speedSettings.dispenseSpeed || 300,
+              feedBead: beadFeedRate,
+              pressure,
+            });
+          } else {
+            cmds = dispensePoint({
+              x: finalX, y: finalY,
+              zWork: dispenseHeight + getZOffsetForPoint(finalX, finalY),
+              zSafe: safeTravelHeight,
+              feedXY: speedSettings.travelSpeed || 6000,
+              feedZ: speedSettings.dispenseSpeed || 300,
+              pressure,
+              dwellMs: dwell,
+            });
+          }
           for (const c of cmds) {
             await sendGcodeWait(c);
           }
@@ -721,6 +740,15 @@ export default function AutomatedDispensingPanel({
               Dispense Pressure (PSI):
               <input type="number" step="1" min="5" max="100" value={localPressure} onChange={e => setLocalPressure(Number(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
             </label>
+            <label>
+              Bead Threshold (mm²):
+              <input type="number" step="0.5" min="0.5" max="20" value={beadAreaThreshold} onChange={e => setBeadAreaThreshold(Number(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
+              <small style={{ color: '#888' }}>Pads above this area → bead; below → single dot</small>
+            </label>
+            <label>
+              Bead Speed (mm/min):
+              <input type="number" step="50" min="50" max="3000" value={beadFeedRate} onChange={e => setBeadFeedRate(Number(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
+            </label>
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
               <input
                 type="checkbox"
@@ -798,12 +826,14 @@ export default function AutomatedDispensingPanel({
                         <th style={{ padding: '4px 8px', borderBottom: '1px solid #ccc', color: '#00c49a' }}>Dots</th>
                         <th style={{ padding: '4px 8px', borderBottom: '1px solid #ccc', color: '#00c49a' }}>Vol (µL)</th>
                         <th style={{ padding: '4px 8px', borderBottom: '1px solid #ccc', color: '#ffa726' }}>PSI</th>
+                        <th style={{ padding: '4px 8px', borderBottom: '1px solid #ccc', color: '#ce93d8' }}>Mode</th>
                       </tr>
                     </thead>
                     <tbody>
                       {activeSequence.map((pad, idx) => {
                         const area = dispensingSequencer.calculatePadArea(pad);
                         const dwell = dispensingSequencer.calculateDwellTime(pad, { customDwellTime: baseDwellTime });
+                        const dm = dispensingSequencer.selectDispenseMode(pad, { beadAreaThreshold });
                         return (
                           <tr key={idx} style={{ borderBottom: '1px solid #eee' }}>
                             <td style={{ padding: '4px 8px' }}>{idx + 1}</td>
@@ -819,6 +849,9 @@ export default function AutomatedDispensingPanel({
                             </td>
                             <td style={{ padding: '4px 8px', color: '#ffa726' }}>
                               {dispensingSequencer.calculatePadPressure(pad, { customPressure: localPressure })}
+                            </td>
+                            <td style={{ padding: '4px 8px', color: '#ce93d8', fontWeight: 'bold' }}>
+                              {dm.mode === 'bead' ? `bead-${dm.axis}` : 'dot'}
                             </td>
                           </tr>
                         );
@@ -1135,8 +1168,9 @@ export default function AutomatedDispensingPanel({
               <p>{jobProgress.current} / {jobProgress.total}</p>
               {currentPadInfo && (
                 <div style={{ marginTop: 10, padding: '8px 12px', background: '#0d1117', border: '1px solid #30363d', borderRadius: 6, fontFamily: 'monospace', fontSize: '0.82em', display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                  <span style={{ color: '#ce93d8' }}>{currentPadInfo.mode === 'bead' ? '〰 bead' : '● dot'}</span>
                   <span style={{ color: '#ffa726' }}>⊕ {currentPadInfo.pressure} PSI</span>
-                  <span style={{ color: '#d32f2f' }}>⏱ {currentPadInfo.dwellMs} ms</span>
+                  {currentPadInfo.mode !== 'bead' && <span style={{ color: '#d32f2f' }}>⏱ {currentPadInfo.dwellMs} ms</span>}
                   <span style={{ color: '#00c49a' }}>💧 {currentPadInfo.volumeUl} µL</span>
                 </div>
               )}

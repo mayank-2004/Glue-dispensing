@@ -1,5 +1,4 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
-import JSZip from "jszip";
 import "./App.css";
 
 import LayerList from "./components/LayerList.jsx";
@@ -11,10 +10,7 @@ import ComponentList from "./components/ComponentList.jsx";
 import JogPanel from "./components/JogPanel.jsx";
 import FiducialPanel from "./components/FiducialPanel.jsx";
 import AutomatedDispensingPanel from "./components/AutomatedDispensingPanel.jsx";
-import { identifyLayers } from "./lib/gerber/identifyLayers.js";
-import { stackupToSvg } from "./lib/gerber/stackupToSvg.js";
-import { extractPadsMm, extractPadsWithPanel } from "./lib/gerber/extractPads.js";
-import { analyzeFiducialsInLayers, analyzeFiducialsWithRails } from "./lib/gerber/fiducialDetection.js";
+import { analyzeFiducialsInLayers } from "./lib/gerber/fiducialDetection.js";
 import { detectPcbOrigins } from "./lib/gerber/originDetection.js";
 import { FiducialVisionDetector } from "./lib/vision/fiducialVision.js";
 import { zipTextFiles, downloadBlob } from "./lib/zip/zipUtils.js";
@@ -25,23 +21,18 @@ import { QualityController } from "./lib/quality/qualityControl.js";
 import { NozzleMaintenanceManager } from "./lib/maintenance/nozzleMaintenance.js";
 import { generatePath } from "./lib/motion/pathGeneration.js";
 import { PasteVisualizer } from "./lib/paste/pasteVisualization.js";
-import { extractBoardOutline } from "./lib/gerber/boardOutline.js";
 import { DispensingSequencer } from "./lib/automation/dispensingSequence.js";
 import { SafePathPlanner } from "./lib/automation/safePathPlanner.js";
-import { LayerDataExtractor } from "./lib/gerber/layerDataExtractor.js";
+import { extractPadsMm } from "./lib/gerber/extractPads.js";
 import MaintenanceManager from "./components/MaintenanceManager.jsx";
 import ToolOffsetCalibration from "./components/ToolOffsetCalibration.jsx";
+import { useSerialMachine } from "./hooks/useSerialMachine.js";
+import { useGerberFiles } from "./hooks/useGerberFiles.js";
+import AppHeader from "./components/AppHeader.jsx";
 
 function calculatePadCenter(p) {
   if (typeof p.x === "number" && typeof p.y === "number") {
-    return {
-      x: p.x,
-      y: p.y,
-      valid: true,
-      method: 'gerber_flash_center',
-      width: p.width,
-      height: p.height
-    };
+    return { x: p.x, y: p.y, valid: true, method: 'gerber_flash_center', width: p.width, height: p.height };
   }
   return { x: 0, y: 0, valid: false, method: 'fallback' };
 }
@@ -53,18 +44,10 @@ function padCenter(p) {
 
 function processPads(points) {
   return points.map((pad, idx) => {
-    const centerInfo = calculatePadCenter(pad);
-    return {
-      ...pad,
-      x: centerInfo.x,
-      y: centerInfo.y,
-      id: pad.componentIdentifier || `P${idx + 1}`,
-      width: pad.width || centerInfo.width || 1,
-      height: pad.height || centerInfo.height || 1,
-      centerValid: centerInfo.valid,
-      centerMethod: centerInfo.method,
-      originalPad: pad
-    };
+    const c = calculatePadCenter(pad);
+    return { ...pad, x: c.x, y: c.y, id: pad.componentIdentifier || `P${idx + 1}`,
+      width: pad.width || c.width || 1, height: pad.height || c.height || 1,
+      centerValid: c.valid, centerMethod: c.method, originalPad: pad };
   });
 }
 
@@ -76,13 +59,24 @@ function parseLengthToMm(lenStr = "") {
 }
 
 export default function App() {
-  const [layers, setLayers] = useState([]);
-  const [side, setSide] = useState("top");
-  const [, forceRender] = useState({});
-  const [svg, setSvg] = useState("");
+  const {
+    isSerialConnected, machinePos,
+    isEmergencyStopped,
+    handleSerialConnect, handleSerialDisconnect,
+    triggerEmergencyStop, resetEmergencyStop,
+  } = useSerialMachine();
 
-  const [pads, setPads] = useState([]);
-  const [pasteIdx, setPasteIdx] = useState(null);
+  const {
+    layers, setLayers, side, setSide, svg,
+    pads, setPads, pasteIdx, setPasteIdx,
+    boardOutline, setBoardOutline, layerData,
+    rebuild, toggleLayer: toggleLayerFn, changeSide: changeSideFn, parseFiles,
+  } = useGerberFiles();
+
+  const toggleLayer = (idx) => toggleLayerFn(idx, layers, side);
+  const changeSide = (s, skip = false) => changeSideFn(s, layers, skip);
+
+  const [, forceRender] = useState({});
 
   const [selectedMm, setSelectedMm] = useState(null);
   const [padDistances, setPadDistances] = useState([]);
@@ -90,97 +84,6 @@ export default function App() {
   const [pathType, setPathType] = useState('direct');
 
   const cameraPanelRef = useRef(null);
-
-  const [isSerialConnected, setIsSerialConnected] = useState(false);
-  const [machinePos, setMachinePos] = useState({ x: 0, y: 0, z: 0 });
-  const statusIntervalRef = useRef(null);
-
-  const handleSerialConnect = (status) => {
-    setIsSerialConnected(status);
-    if (status) {
-      if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
-      statusIntervalRef.current = setInterval(async () => {
-        try {
-          if (window.serial && window.serial.writeLine) {
-            await window.serial.writeLine('M114');
-          }
-        } catch (e) { console.error('Status poll failed:', e); }
-      }, 500);
-    } else {
-      if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
-    }
-  };
-
-  const handleSerialDisconnect = () => {
-    setIsSerialConnected(false);
-    if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
-  };
-
-  const [isEmergencyStopped, setIsEmergencyStopped] = useState(false);
-
-  const triggerEmergencyStop = async () => {
-    setIsEmergencyStopped(true);
-    console.error('[E-STOP] Emergency Stop Triggered!');
-    try {
-      if (window.serial && window.serial.writeLine) {
-        if (window.serial.write) {
-          await window.serial.write('\x18');
-        }
-        await window.serial.writeLine('M112');
-        await window.serial.writeLine('!');
-        await window.serial.writeLine('M0');
-        await window.serial.writeLine('G91');
-        await window.serial.writeLine('G0 Z10 F1000');
-        await window.serial.writeLine('G90');
-      }
-    } catch (err) {
-      console.error('[E-STOP] Failed to send stop commands:', err);
-    }
-  };
-
-  const resetEmergencyStop = async () => {
-    setIsEmergencyStopped(false);
-    try {
-      if (window.serial && window.serial.writeLine) {
-        await window.serial.writeLine('$X');
-        await window.serial.writeLine('M999');
-      }
-    } catch (err) {
-      console.error('[E-STOP] Failed to send reset commands:', err);
-    }
-  };
-
-  // Global Serial Data Handler
-  useEffect(() => {
-    if (window.serial && window.serial.onData) {
-      window.serial.onData((line) => {
-        let x = null, y = null, z = null;
-
-        // Try Marlin format first
-        const marlinMatch = line.match(/X\s*:\s*([-\d.]+).*?Y\s*:\s*([-\d.]+).*?Z\s*:\s*([-\d.]+)/i);
-        if (marlinMatch) {
-          x = parseFloat(marlinMatch[1]);
-          y = parseFloat(marlinMatch[2]);
-          z = parseFloat(marlinMatch[3]);
-        } else {
-          // Try GRBL format as fallback
-          const grblMatch = line.match(/MPos:([-\d.]+),([-\d.]+),([-\d.]+)/);
-          if (grblMatch) {
-            x = parseFloat(grblMatch[1]);
-            y = parseFloat(grblMatch[2]);
-            z = parseFloat(grblMatch[3]);
-          }
-        }
-
-        if (x !== null && y !== null && z !== null) {
-          setMachinePos({ x, y, z });
-        }
-      });
-    }
-    return () => {
-      if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
-    };
-  }, []);
 
   const [fidPickMode, setFidPickMode] = useState(false);
   const [fidActiveId, setFidActiveId] = useState(null);
@@ -323,9 +226,7 @@ export default function App() {
   const [dispensingSequencer] = useState(() => new DispensingSequencer());
   const [safePathPlanner] = useState(() => new SafePathPlanner());
 
-  const [layerData, setLayerData] = useState({});
   const [showPasteDots, setShowPasteDots] = useState(false);
-  const [boardOutline, setBoardOutline] = useState(null);
   const [dispensingSequence, setDispensingSequence] = useState([]);
   const [safeSequence, setSafeSequence] = useState([]);
   const [jobStatistics, setJobStatistics] = useState(null);
@@ -498,129 +399,14 @@ export default function App() {
   const onDrop = async (e) => { e.preventDefault(); await handleFiles(e.dataTransfer.files); };
 
   async function handleFiles(fileList) {
-    const files = Array.from(fileList || []);
-    const zips = files.filter(f => /\.zip$/i.test(f.name));
-    let expanded = files.filter(f => !/\.zip$/i.test(f.name));
+    const result = await parseFiles(fileList);
+    const { detectedFiducials, detectedRailFiducials, detectedPanelGrid, origins } = result;
 
-    for (const zipFile of zips) {
-      const zip = await JSZip.loadAsync(zipFile);
-      const entries = Object.values(zip.files).filter(f => !f.dir);
-      for (const ent of entries) {
-        const text = await ent.async("text");
-        expanded.push(new File([text], ent.name, { type: "text/plain" }));
-      }
-    }
-
-    const read = await Promise.all(expanded.map(async f => ({ name: f.name, text: await f.text() })));
-    const ls = identifyLayers(read);
-    console.log("layers: ", ls);
-    setLayers(ls);
-
-    const extractedData = LayerDataExtractor.extractLayerData(ls);
-    setLayerData(extractedData);
-    console.log('Extracted layer data:', extractedData);
-    let pi = ls.findIndex(x => x.type === "solderpaste" && x.side === "top");
-    if (pi < 0) {
-      pi = ls.findIndex(x => x.type === "solderpaste");
-    }
-
-    setPasteIdx(pi >= 0 ? pi : null);
-    let detectedPanelGrid = null;
-    if (pi >= 0) {
-      const { pads: basePads, panel: panelGrid } = extractPadsWithPanel(ls[pi].text);
-      detectedPanelGrid = panelGrid;
-      console.log("pad data:", basePads.length, "base pads | panel:", panelGrid);
-      setPads(processPads(basePads.map(padCenter)));
-      if (ls[pi].side === 'bottom') setSide('bottom');
-      else setSide('top');
-    } else setPads([]);
-
-    const { localFiducials: detectedFiducials, railFiducials: detectedRailFiducials } = analyzeFiducialsWithRails(ls);
     setFiducialDetectionResult(detectedFiducials);
-
-    // ── GERBER UPLOAD SUMMARY LOG ─────────────────────────────────────────────
-    console.group('%c[Gerber Upload] Parsed file summary', 'color:#4ade80;font-weight:bold;font-size:13px');
-
-    // 1. All files in the upload (recognized + unrecognized)
-    const unrecognized = read.filter(r => !ls.some(l => l.filename === r.name));
-    // console.log(`%cFiles uploaded: ${read.length} total | ${ls.length} recognized | ${unrecognized.length} unrecognized`,
-    //   'font-weight:bold');
-    // console.table(
-    //   ls.map(l => ({
-    //     filename: l.filename,
-    //     type: l.type || '—',
-    //     side: l.side || '—',
-    //     chars: l.text?.length ?? 0,
-    //   }))
-    // );
-    if (unrecognized.length > 0) {
-      console.warn('Unrecognized files (skipped):', unrecognized.map(r => r.name));
-    }
-
-    // 2. Pads (solderpaste layer)
-    const pasteLayerIdx = ls.findIndex(l => l.type === 'solderpaste');
-    if (pasteLayerIdx >= 0) {
-      const rawPads = extractPadsMm(ls[pasteLayerIdx].text);
-      console.log(`%cPads (solderpaste): ${rawPads.length} pads extracted`, 'font-weight:bold');
-      if (rawPads.length > 0) {
-        // console.table(rawPads.slice(0, 5).map(p => ({
-        //   x: p.x, y: p.y, width: p.width, height: p.height, shape: p.shape,
-        //   component: p.componentIdentifier || '—',
-        // })));
-        // if (rawPads.length > 5) console.log(`  ... and ${rawPads.length - 5} more pads`);
-      }
-    } else {
-      console.warn('No solderpaste layer found — pad extraction skipped');
-    }
-
-    // 3. Fiducial check — the key output
-    if (detectedFiducials.length > 0) {
-      console.log(`%c✅ FIDUCIALS FOUND: ${detectedFiducials.length}`, 'color:#4ade80;font-weight:bold;font-size:12px');
-      console.table(detectedFiducials.map(f => ({
-        id: f.id,
-        x_mm: parseFloat(f.x.toFixed(4)),
-        y_mm: parseFloat(f.y.toFixed(4)),
-        diameter_mm: parseFloat((f.diameter || 0).toFixed(3)),
-        confidence_pct: Math.round((f.confidence || 0) * 100),
-        sourceLayer: f.sourceLayer,
-      })));
-    } else {
-      console.warn(
-        '❌ NO FIDUCIALS DETECTED — Gerber has no circular pads matching the fiducial pattern ' +
-        '(needs ≥2 circular pads, 0.5–5mm ⌀, well-separated). ' +
-        'You will need to place fiducials manually in the Fiducial Panel.'
-      );
-    }
-
-    console.groupEnd();
-    // ── END GERBER UPLOAD SUMMARY LOG ────────────────────────────────────────
-
-    const outlineLayer = ls.find(l => l.filename.toLowerCase().includes('outline') || l.filename.toLowerCase().includes('edge'));
-    if (outlineLayer) {
-      const outline = extractBoardOutline(outlineLayer.text);
-      if (outline) {
-        setBoardOutline(outline);
-        console.log('Board outline detected:', outline);
-        console.log(`PCB Board Size: ${outline.width}mm x ${outline.height}mm`);
-      } else {
-        console.warn('Failed to parse board dimensions from outline layer.');
-      }
-    } else {
-      console.log('No specific board outline layer found (checking for "outline" or "edge" in filenames).');
-    }
-
-    const origins = detectPcbOrigins(ls);
-    console.log('Detected origins:', origins);
-    setOriginCandidates(origins);
-    if (origins.length > 0) {
-      const origin = { ...origins[0], id: 'O1' };
-      console.log('Setting selected origin:', origin);
-      setSelectedOrigin(origin);
-      setPcbOriginOffset({ x: origin.x, y: origin.y });
-    }
 
     const fidColors = ["#2ea8ff", "#8e2bff", "#b7c400", "#ff6b35", "#9c27b0", "#25d9be"];
     const railColors = ["#ff9800", "#ff5722", "#ffc107", "#ff6d00"];
+
     const makeBoardFiducials = (offsetX = 0, offsetY = 0) =>
       detectedFiducials.length > 0
         ? detectedFiducials.map((fid, idx) => ({
@@ -633,13 +419,13 @@ export default function App() {
             { id: "F2", design: null, machine: null, color: "#8e2bff" },
           ];
 
-    // Always store detected rail fiducials — they exist independently of panel detection
     const autoRailFids = detectedRailFiducials.map((fid, idx) => ({
       id: fid.id || `R${idx + 1}`,
       design: { x: parseFloat(fid.x.toFixed(4)), y: parseFloat(fid.y.toFixed(4)) },
       machine: null, color: railColors[idx % railColors.length], isRail: true,
     }));
     setPanelRailFiducials(autoRailFids);
+    setFidActiveId(autoRailFids[0]?.id ?? null); // default arm to R1 on every Gerber load
     setPanelXf(null);
 
     if (detectedPanelGrid && (detectedPanelGrid.dimX > 1 || detectedPanelGrid.dimY > 1)) {
@@ -659,7 +445,6 @@ export default function App() {
       _setActiveBoardIndex(0);
       setPanelInfo(detectedPanelGrid);
       setApplyXf(true);
-      console.log(`[Panel] ${dimX}×${dimY} SR grid (step ${stepX}×${stepY} mm). Created ${boards.length} boards.`);
     } else {
       setPanelBoards([{ id: 1, name: 'Board 1', fiducials: makeBoardFiducials(), xf: null }]);
       _setActiveBoardIndex(0);
@@ -667,49 +452,21 @@ export default function App() {
       if (!detectedFiducials.length) setFiducialDetectionResult([]);
     }
 
-    await rebuild(ls, side);
+    if (origins.length > 0) {
+      const origin = { ...origins[0], id: 'O1' };
+      setOriginCandidates(origins);
+      setSelectedOrigin(origin);
+      setPcbOriginOffset({ x: origin.x, y: origin.y });
+    } else {
+      setOriginCandidates([]);
+    }
 
     setSelectedMm(null);
     setXf(null);
     if (!detectedPanelGrid) setApplyXf(false);
-    setFidPickMode(false); setFidActiveId(null);
-
+    setFidPickMode(false);
     queueMicrotask(() => { updateOverlay(); });
   }
-
-  async function rebuild(nextLayers = layers, s = side) {
-    const enabledCount = nextLayers.filter(l => l.enabled).length;
-    console.log(`Rebuilding SVG. Total layers: ${nextLayers.length}, Enabled: ${enabledCount}, Side: ${s}`);
-    const ssvg = await stackupToSvg(nextLayers, s);
-    console.log('SVG rebuilt. Length:', ssvg?.length);
-    setSvg(ssvg);
-  }
-
-  const toggleLayer = async (idx) => {
-    const layer = layers[idx];
-    console.log(`Toggling layer index ${idx}. Type: ${layer.type}, Side: ${layer.side}. Currently enabled: ${layer.enabled}`);
-    const next = layers.map((l, i) => (i === idx ? { ...l, enabled: !l.enabled } : l));
-    console.log(`New state for index ${idx}: ${next[idx].enabled}. Rebuilding for view-side: ${side}`);
-    setLayers(next); await rebuild(next, side);
-  };
-  const changeSide = async (s, skipPadSwitch = false) => {
-    setSide(s);
-
-    if (!skipPadSwitch) {
-      const newPasteIdx = layers.findIndex(x => x.type === "solderpaste" && x.side === s);
-      if (newPasteIdx >= 0) {
-        setPasteIdx(newPasteIdx);
-        const padData = extractPadsMm(layers[newPasteIdx].text).map(padCenter);
-        setPads(processPads(padData));
-        console.log(`Switched to ${s} solderpaste layer:`, padData.length, 'pads');
-      } else {
-        setPasteIdx(null);
-        setPads([]);
-      }
-    }
-
-    await rebuild(layers, s);
-  };
 
   const NS = "http://www.w3.org/2000/svg";
   const getSvgEl = useCallback(() => document.querySelector(".viewer .canvas svg"), []);
@@ -1852,6 +1609,7 @@ export default function App() {
       setSelectedOrigin(null);
     }
   };
+  
   useEffect(() => {
     window.updateFiducialsFromCamera = (detectedFiducials) => {
       const colors = ["#2ea8ff", "#8e2bff", "#00c49a", "#ff6b35", "#9c27b0", "#4caf50"];
@@ -1919,58 +1677,13 @@ export default function App() {
     <div id="root" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
 
       {/* ── TOP HEADER BAR ─────────────────────────────────── */}
-      <header className="app-header">
-        <div className="app-logo">
-          <div className="app-logo-icon">🔧</div>
-          <div>
-            <div className="app-logo-text">GlueDispenser</div>
-            <div className="app-logo-sub">Motion Control System</div>
-          </div>
-        </div>
-
-        <div className="header-divider" />
-
-        {/* DRO — Digital Read-Out */}
-        <div className="header-dro">
-          <div className="dro-axis">
-            <span className="dro-label">X</span>
-            <span className="dro-value">{mPos.x.toFixed(3)}</span>
-            <span className="dro-unit">mm</span>
-          </div>
-          <div className="dro-sep" />
-          <div className="dro-axis">
-            <span className="dro-label">Y</span>
-            <span className="dro-value">{mPos.y.toFixed(3)}</span>
-            <span className="dro-unit">mm</span>
-          </div>
-          <div className="dro-sep" />
-          <div className="dro-axis">
-            <span className="dro-label">Z</span>
-            <span className="dro-value">{(mPos.z ?? 0).toFixed(3)}</span>
-            <span className="dro-unit">mm</span>
-          </div>
-        </div>
-
-        <div className="header-spacer" />
-
-        <div className="header-right">
-          {/* Connection status */}
-          <div className={`status-pill ${isSerialConnected ? 'connected' : 'disconnected'}`}>
-            <span className="pill-dot" />
-            {isSerialConnected ? 'CONNECTED' : 'OFFLINE'}
-          </div>
-
-          {/* E-STOP */}
-          <button
-            className={`estop-btn ${isEmergencyStopped ? 'triggered' : ''}`}
-            onClick={isEmergencyStopped ? resetEmergencyStop : triggerEmergencyStop}
-            title={isEmergencyStopped ? 'Click to RESET machine' : 'Emergency Stop'}
-          >
-            <span className="estop-dot" />
-            {isEmergencyStopped ? 'RESET' : 'E-STOP'}
-          </button>
-        </div>
-      </header>
+      <AppHeader
+        mPos={mPos}
+        isSerialConnected={isSerialConnected}
+        isEmergencyStopped={isEmergencyStopped}
+        onStop={triggerEmergencyStop}
+        onReset={resetEmergencyStop}
+      />
 
       {/* ── BODY: Sidebar + Content ─────────────────────────── */}
       <div className="app-body">
@@ -2235,13 +1948,6 @@ export default function App() {
                   <JogPanel
                     isConnected={isSerialConnected}
                     machinePosition={livePreview.machinePosition}
-                    onSendGcode={async (lines) => {
-                      if (window.serial && window.serial.writeLine) {
-                        for (const line of lines) await window.serial.writeLine(line);
-                      } else {
-                        alert("Serial not connected.");
-                      }
-                    }}
                   />
                 </div>
               </div>
@@ -2400,8 +2106,6 @@ export default function App() {
                   maintenanceManager.setPixelsPerMm(val);
                   if (typeof forceRender === 'function') forceRender({});
                 }}
-                nozzleDia={0.6}
-                setNozzleDia={(d) => { }}
                 padDetector={padDetector}
                 qualityController={qualityController}
                 onCaptureAlignment={handleAlignmentCapture}
@@ -2434,21 +2138,9 @@ export default function App() {
                     xf={xf}
                     applyXf={applyXf}
                     isConnected={isSerialConnected}
-
-                    // Tells BedCalibrationPanel to sync the PCB origin back into App state
-                    // so pad distances, path planning, and the overlay all stay correct.
                     onSetPcbOrigin={(machineOrigin) => {
-                      // machineOrigin is where the nozzle physically is at the PCB BL corner.
-                      // We store the NEGATIVE so that adding it to a design coord gives machine coord.
                       setPcbOriginOffset({ x: -machineOrigin.x, y: -machineOrigin.y });
-                      if (selectedOrigin) {
-                        setSelectedOrigin(prev => prev ? { ...prev } : null);
-                      }
-                    }}
-
-                    // Thin wrapper so the panel never touches window.serial directly
-                    onSendGcode={async (line) => {
-                      if (window.serial?.writeLine) await window.serial.writeLine(line);
+                      if (selectedOrigin) setSelectedOrigin(prev => prev ? { ...prev } : null);
                     }}
                   />
                 </div>

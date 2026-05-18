@@ -104,3 +104,48 @@ export function dispensePoint({
 
   return cmds;
 }
+
+/**
+ * Dispense a continuous glue bead along the pad's longer axis.
+ * Valve opens at the start position, machine moves to the end while dispensing, then valve closes.
+ *
+ * @param {string} beadAxis - 'X' or 'Y' — the axis to travel along
+ * @param {number} beadLength - full length of the bead in mm (use pad.height or pad.width)
+ * @param {number} feedBead - feed rate while dispensing (mm/min) — slower = more glue
+ */
+export function dispenseBead({
+  x, y,
+  beadLength,
+  beadAxis = 'Y',
+  zWork = 0.5,
+  zSafe = 5,
+  feedXY = 1500,
+  feedZ = 500,
+  feedBead = 500,
+  pressure = 0,
+  valvePin = 4,
+  axisMap = defaultAxisMap
+}) {
+  const cmds = [];
+  const half = beadLength / 2;
+
+  const startX = beadAxis === 'X' ? x - half : x;
+  const startY = beadAxis === 'Y' ? y - half : y;
+  const endX   = beadAxis === 'X' ? x + half : x;
+  const endY   = beadAxis === 'Y' ? y + half : y;
+
+  // Travel to bead start at safe height
+  cmds.push(...moveAbs({ x: startX, y: startY, z: zSafe, feed: feedXY }, axisMap));
+  // Lower to work height
+  cmds.push(...moveAbs({ z: zWork, feed: feedZ }, axisMap));
+  // Valve ON
+  if (pressure > 0) cmds.push(`M42 P${valvePin} S${Math.round(pressure)}`);
+  // Sweep to bead end with valve open
+  cmds.push(...moveAbs({ x: endX, y: endY, feed: feedBead }, axisMap));
+  // Valve OFF
+  if (pressure > 0) cmds.push(`M42 P${valvePin} S0`);
+  // Retract to safe height
+  cmds.push(...moveAbs({ z: zSafe, feed: feedZ }, axisMap));
+
+  return cmds;
+}

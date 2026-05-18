@@ -316,17 +316,43 @@ export class DispensingSequencer {
   calculateDwellTime(pad, pressureSettings) {
     const area = this.calculatePadArea(pad);
     const baseDwell = pressureSettings.customDwellTime || 120;
-    
+
     // Assume the UI "Base Dwell Time" targets a standardized 1.0 mm² pad size reference.
-    const referenceAreaSqMm = 1.0; 
-    
+    const referenceAreaSqMm = 1.0;
+
     // Precise linear mathematical scaling based on physical area
     let calculatedDwell = baseDwell * (area / referenceAreaSqMm);
 
     // Provide sensible physical bounds to prevent machine stutters or ridiculous giant glue puddles
     calculatedDwell = Math.max(20, calculatedDwell);       // absolute minimum 20ms valve fire time
     calculatedDwell = Math.min(baseDwell * 5, calculatedDwell); // maximum 5x the base time
-    
+
     return Math.round(calculatedDwell);
+  }
+
+  /**
+   * Decide whether a pad should use a single dot or a continuous bead dispense.
+   *
+   * Rules:
+   *  - Sub-dots (already expanded from a larger pad) always use dot mode — the grid covers the area.
+   *  - Pads whose area is below beadAreaThreshold → dot mode.
+   *  - Larger pads → bead along the longer dimension (height or width).
+   *
+   * @param {Object} pad
+   * @param {Object} opts
+   * @param {number} opts.beadAreaThreshold  - mm² above which bead mode activates (default 2.0)
+   * @returns {{ mode: 'dot'|'bead', axis: 'X'|'Y', length: number }}
+   */
+  selectDispenseMode(pad, { beadAreaThreshold = 2.0 } = {}) {
+    if (pad.isSubDot) return { mode: 'dot', axis: 'Y', length: 0 };
+
+    const area = this.calculatePadArea(pad);
+    if (area < beadAreaThreshold) return { mode: 'dot', axis: 'Y', length: 0 };
+
+    const w = pad.width  || 0;
+    const h = pad.height || 0;
+    const axis   = h >= w ? 'Y' : 'X';
+    const length = axis === 'Y' ? h : w;
+    return { mode: 'bead', axis, length };
   }
 }

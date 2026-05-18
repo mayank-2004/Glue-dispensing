@@ -137,8 +137,7 @@ export default function BedCalibrationPanel({
   xf,
   applyXf,
   isConnected,
-  onSetPcbOrigin,   // (machinePos) => void — wired in App.jsx
-  onSendGcode,      // async (line) => void  — wired in App.jsx
+  onSetPcbOrigin,
 }) {
 
   // ── Mesh ────────────────────────────────────────────────────────────────────
@@ -186,19 +185,14 @@ export default function BedCalibrationPanel({
   const mPosRef     = useRef(machinePosition);
   useEffect(() => { mPosRef.current = machinePosition; }, [machinePosition]);
 
-  // ── Send helper (uses prop or falls back to window.serial) ──────────────────
+  // ── Send helper ───────────────────────────────────────────────────────────────
   const send = useCallback(async (cmd) => {
-    if (onSendGcode) {
-      // onSendGcode may accept newline-separated multi-commands
-      for (const line of cmd.split('\n').map(l => l.trim()).filter(Boolean)) {
-        await onSendGcode(line);
-      }
-    } else if (window.serial?.writeLine) {
+    if (window.serial?.writeLine) {
       for (const line of cmd.split('\n').map(l => l.trim()).filter(Boolean)) {
         await window.serial.writeLine(line);
       }
     }
-  }, [onSendGcode]);
+  }, []);
 
   // ── Coordinate mapping: design → machine ────────────────────────────────────
   const toMachine = useCallback((designPt, origin) => {

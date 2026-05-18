@@ -14,8 +14,6 @@ export default function CameraPanel({
   effectiveOrigin,
   toolOffset,
   setToolOffset,
-  nozzleDia,
-  setNozzleDia,
   qualityController,
   onCaptureAlignment,
   alignmentInfo,
@@ -45,6 +43,12 @@ export default function CameraPanel({
     catch { return { dx: 0, dy: 0 }; }
   });
   useEffect(() => { localStorage.setItem("cameraOffset", JSON.stringify(cameraOffset)); }, [cameraOffset]);
+
+  const [nozzleDia, setNozzleDia] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("nozzleDia") || "0.6"); }
+    catch { return 0.6; }
+  });
+  useEffect(() => { localStorage.setItem("nozzleDia", JSON.stringify(nozzleDia)); }, [nozzleDia]);
 
   // Ref to hold latest props for stale-closure avoidance in setInterval
   const latestPropsRef = useRef({ fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, pads, cameraOffset: { dx: 0, dy: 0 }, fidActiveId, panelRailFiducials, setPanelRailFiducials, onAdvanceArmedFid });
@@ -876,6 +880,8 @@ export default function CameraPanel({
   const SERVO_FEED      = 800;           // mm/min jog speed
   const SERVO_SETTLE_MS = 800;           // ms to wait after each jog before re-checking
   const CONVERGE_MM     = 0.05;          // crosshair within 0.05mm → declare converged & save
+  const CONVERGE_STABLE_FRAMES = 3;      // fine-phase polls needed before saving (prevents Hough false-centre saves)
+  const convergenceCountRef = useRef(0); // consecutive fine-phase frames within CONVERGE_MM
 
   // Motion guard: whenever the machine position changes significantly (manual jogging between
   // fiducials), extend the settle timer so the detection loop cannot false-trigger on
@@ -928,6 +934,7 @@ export default function CameraPanel({
             const locked = servoStateRef.current.lockedAt;
             if (locked && Math.hypot(machPos.x - locked.x, machPos.y - locked.y) > 5.0) {
               servoStateRef.current = { phase: 'idle', lockedAt: null };
+              convergenceCountRef.current = 0;
             } else {
               return; // same slot — already converged, nothing to do
             }
@@ -941,16 +948,17 @@ export default function CameraPanel({
             try {
               const sr   = await fetch(`${PYTHON_URL}/api/snap_offset`);
               const snap = await sr.json();
-              if (!snap.found) { servoStateRef.current = { phase: 'idle', lockedAt: null }; return; }
+              if (!snap.found) { servoStateRef.current = { phase: 'idle', lockedAt: null }; convergenceCountRef.current = 0; return; }
               dx   = parseFloat(snap.offset_dx.toFixed(4));
               dy   = parseFloat(snap.offset_dy.toFixed(4));
               dist = Math.hypot(dx, dy);
               // Sanity: sudden large offset after coarse move = false positive, restart
               if (dist > 1.5) {
                 servoStateRef.current = { phase: 'idle', lockedAt: null };
+                convergenceCountRef.current = 0;
                 return;
               }
-            } catch { servoStateRef.current = { phase: 'idle', lockedAt: null }; return; }
+            } catch { servoStateRef.current = { phase: 'idle', lockedAt: null }; convergenceCountRef.current = 0; return; }
           } else {
             // Phase 1: coarse positioning via Hough circle
             if (!data.best_circle) return;
@@ -961,14 +969,29 @@ export default function CameraPanel({
           }
 
           if (dist <= CONVERGE_MM) {
-            // ✅ Crosshair is on fiducial center — save coordinate
-            servoStateRef.current = { phase: 'converged', lockedAt: { x: machPos.x, y: machPos.y } };
-            const camOffset  = cameraOffset || { dx: 0, dy: 0 };
-            const savedCoord = { x: machPos.x + camOffset.dx, y: machPos.y + camOffset.dy };
-            saveFiducialCoordinate(savedCoord, 1.0);
-            console.log(`[PyServo] ✅ Converged. Saved X${savedCoord.x.toFixed(3)} Y${savedCoord.y.toFixed(3)}`);
+            if (servoPhase !== 'fine') {
+              // Coarse phase: Hough circle centre may be off by several pixels — do NOT save yet.
+              // Upgrade to fine mode so the next poll uses the sub-pixel Otsu centroid.
+              servoStateRef.current = { ...servoStateRef.current, phase: 'fine' };
+              convergenceCountRef.current = 0;
+              console.log('[PyServo] Within coarse threshold — switching to fine phase for sub-pixel confirmation');
+            } else {
+              convergenceCountRef.current++;
+              if (convergenceCountRef.current >= CONVERGE_STABLE_FRAMES) {
+                // ✅ Sub-pixel centroid stable for N consecutive frames — truly centred on fiducial
+                servoStateRef.current = { phase: 'converged', lockedAt: { x: machPos.x, y: machPos.y } };
+                convergenceCountRef.current = 0;
+                const camOffset  = cameraOffset || { dx: 0, dy: 0 };
+                const savedCoord = { x: machPos.x + camOffset.dx, y: machPos.y + camOffset.dy };
+                saveFiducialCoordinate(savedCoord, 1.0);
+                console.log(`[PyServo] ✅ Converged (${CONVERGE_STABLE_FRAMES} stable frames). Saved X${savedCoord.x.toFixed(3)} Y${savedCoord.y.toFixed(3)}`);
+              } else {
+                console.log(`[PyServo] Fine-phase stable ${convergenceCountRef.current}/${CONVERGE_STABLE_FRAMES} — holding...`);
+              }
+            }
             return;
           }
+          convergenceCountRef.current = 0; // moved away from convergence zone — reset count
 
           // Jog toward fiducial center. Coarse: faster + longer settle; Fine: normal.
           const jogFeed  = servoPhase === 'idle' ? SERVO_FEED * 1.5 : SERVO_FEED;
@@ -989,6 +1012,7 @@ export default function CameraPanel({
       pythonPollRef.current = pollId;
       setDetectionInterval(pollId);
       servoStateRef.current = { phase: 'idle', lockedAt: null };
+      convergenceCountRef.current = 0;
       settleUntilRef.current = 0;
       return;
     }

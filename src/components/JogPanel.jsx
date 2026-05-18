@@ -3,8 +3,7 @@ import "./JogPanel.css";
 import { jogRel } from "../lib/motion/gcode.js";
 
 export default function JogPanel({
-    onSendGcode, // Function to send G-code lines (async)
-    machinePosition, // Current machine position e.g. {x, y, z}
+    machinePosition,
     isConnected = false
 }) {
     const [stepSize, setStepSize] = useState(10); // mm
@@ -25,9 +24,7 @@ export default function JogPanel({
 
             const cmds = jogRel({ ...da, feed: feedRate });
 
-            if (onSendGcode) {
-                await onSendGcode(cmds);
-            } else if (window.serial && window.serial.writeLine) {
+            if (window.serial?.writeLine) {
                 for (const line of cmds) await window.serial.writeLine(line);
             }
         } catch (e) {
@@ -45,9 +42,7 @@ export default function JogPanel({
         try {
             const cmd = `G53 G0 Z${safeZ}`;
             console.log("Safe Z:", cmd);
-            if (onSendGcode) {
-                await onSendGcode([cmd]);
-            } else if (window.serial && window.serial.writeLine) {
+            if (window.serial?.writeLine) {
                 await window.serial.writeLine(cmd);
             }
         } catch (e) {
@@ -64,9 +59,7 @@ export default function JogPanel({
 
         setIsBusy(true);
         try {
-            if (onSendGcode) {
-                await onSendGcode(["G28"]);
-            } else if (window.serial && window.serial.writeLine) {
+            if (window.serial?.writeLine) {
                 await window.serial.writeLine("G28");
             }
         } catch (e) {
