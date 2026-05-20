@@ -1,0 +1,38 @@
+Critical gaps (machine is still semi-manual without these)
+1. Auto-fiducial search
+Currently the operator must manually jog the camera over each fiducial before the servo takes over. The app knows the fiducial design coordinates and the approximate board origin — it should move the camera to the expected fiducial position automatically, then let the servo centre it. This is the single biggest remaining manual step.
+
+2. Machine homing on startup
+No homing sequence is enforced before a job. If the machine is powered on mid-travel or after an e-stop, the coordinate system is wrong. The app should send G28 on serial connect (or before job start) and block the job until homing is confirmed.
+
+3. Z-axis surface probing
+Dispense height is set manually as a fixed number. The sharpness score from the Python server is already computed but never used. The machine should probe the PCB surface (via G38.2 or a BLTouch-style probe) at job start, set Z=0 at the actual board surface, then apply the configured dispense height on top. Without this, warped boards get inconsistent dots.
+
+4. Board presence detection
+Nothing confirms a board is actually loaded before the job starts. A simple camera-based check (look for the expected board outline or brightness pattern in the field of view) or a hardware input (photoelectric sensor on the fixture) would prevent dry-runs on an empty bed.
+
+Hardware items that need software integration
+5. Ring light PWM control
+Inconsistent illumination is the root cause of most Hough/Otsu detection failures. If the machine has a ring light (or can have one added), the app should control its brightness via a G-code M42 pin or a serial command. Consistent lighting = reliable vision = fewer jogs per fiducial.
+
+6. Actual pressure feedback
+Right now PSI is a commanded value — the app has no idea what pressure was actually delivered. A cheap analog pressure transducer on the syringe line, read via an ADC pin on the controller, would close the loop. The app could then flag pads where commanded vs actual pressure diverged.
+
+7. Glue stock by weight
+The current stock model is purely mathematical (volume consumed). A load cell under the syringe holder gives ground truth. The software side is mostly ready — GlueStore just needs a readActualWeight() source instead of the computed estimate.
+
+8. Nozzle tip camera / side camera
+A small fixed camera aimed at the nozzle tip (not the PCB) could detect clogging or dried glue before it ruins pads. The Python server already has the frame pipeline — adding a second camera index and a /api/nozzle_status endpoint is straightforward.
+
+Workflow gaps (production-readiness)
+9. Recipe save/load
+All the settings — pressure, dwell, speed, height, bead threshold, purge duration — live in component state and reset on refresh. A simple JSON recipe system (save current settings to a named file, load it back) would let operators switch between glue types and board types without manual reconfiguration.
+
+10. Job queue
+For panel production you want to load N boards sequentially without operator interaction. The app handles one panel per job. A queue that reuses the same transform for identical boards (common in SMT lines) would enable lights-out batch runs.
+
+11. SPC / dot quality trend
+Dot verification data is collected per-pad but discarded after the job (only the CSV captures it). Aggregating dot diameter and pass/fail rate across jobs would show nozzle wear (dots shrink as the tip clogs) and let the app trigger a mandatory purge before quality falls below spec.
+
+12. Soft axis limits enforcement
+Before any G1 move the app should check that the target coordinate is inside the machine's travel envelope. Currently nothing prevents sending a move that would crash into the frame. This is especially important for the vision-snap micro-jogs.

@@ -1,33 +1,24 @@
 export async function stackupToSvg(layers, side = 'top') {
-  // Force all layers to render on the requested view side so they are visible
-  // We treat them as part of the current stackup regardless of their physical location
-  const renderSide = side;
-
   const enabled = layers.filter(l => {
     if (!l.enabled) return false;
-    // Include shared layers (drill, outline, etc)
     if (l.type === 'drill' || l.type === 'outline') return true;
-    // Include layers matching the requested side
     return l.side === side;
   }).map(l => {
     const base = {
       filename: l.filename.replace(/^.*[\\\/]/, ''),
       gerber: l.text,
-      side: renderSide, // Force visibility on current side
+      side: side, // keep the real side so pcb-stackup renders correct orientation
       type: l.type,
       id: l.filename
     };
 
-    // Customize colors based on REAL Type and Side
-    // Top layers use standard/friendly colors
-    // Bottom layers use distinct/cool colors for contrast
+    // Colors based on layer side for visual contrast
     if (l.side === 'bottom') {
       if (l.type === 'soldermask') base.color = '#4b0082'; // Indigo
       else if (l.type === 'copper') base.color = '#008080'; // Teal
       else if (l.type === 'silkscreen') base.color = '#f0e68c'; // Khaki
       else if (l.type === 'solderpaste') base.color = '#cd853f'; // Peru
     } else {
-      // Top side defaults
       if (l.type === 'soldermask') base.color = '#006400'; // Dark Green
       else if (l.type === 'copper') base.color = '#cc0000'; // Red
       else if (l.type === 'silkscreen') base.color = '#ffffff'; // White

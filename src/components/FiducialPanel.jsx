@@ -242,7 +242,7 @@ export default function FiducialPanel({
           <div><strong>Transform</strong>: {transformSummary.type}</div>
           {"thetaDeg" in transformSummary && <div>Rotation: {transformSummary.thetaDeg.toFixed(3)}°</div>}
           {"scale" in transformSummary && <div>Scale: {transformSummary.scale.toFixed(6)}×</div>}
-          <div>tx: {transformSummary.tx.toFixed(3)} mm, ty: {transformSummary.ty.toFixed(3)} mm</div>
+          <div>tx: {(transformSummary.tx ?? 0).toFixed(3)} mm, ty: {(transformSummary.ty ?? 0).toFixed(3)} mm</div>
           {"rms" in transformSummary && <div>RMS error: {transformSummary.rms.toFixed(3)} mm</div>}
         </div>
       )}

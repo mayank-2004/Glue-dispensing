@@ -3,8 +3,99 @@ import { fitAffine, fitSimilarity, fitTranslation, applyTransform } from "../lib
 import LensCalibration from "./LensCalibration.jsx";
 import { FiducialVisionDetector } from "../lib/vision/fiducialVision.js";
 import { PadDetector } from "../lib/vision/padDetection.js";
-import { jogRel } from "../lib/motion/gcode";
+import { jogRel, moveAbs } from "../lib/motion/gcode";
 import "./CameraPanel.css";
+
+/**
+ * Predict where a fiducial should be in machine coordinates.
+ * Priority: full transform → translation from one solved point → origin offset → null.
+ */
+function predictFidMachinePos(fid, allFiducials, xf, effectiveOrigin) {
+  if (!fid?.design) return null;
+  if (xf) return applyTransform(xf, fid.design);
+  const solved = (allFiducials || []).find(f => f.id !== fid.id && f.design && f.machine);
+  if (solved) return { x: fid.design.x + (solved.machine.x - solved.design.x), y: fid.design.y + (solved.machine.y - solved.design.y) };
+  if (effectiveOrigin) return { x: fid.design.x + effectiveOrigin.x, y: fid.design.y + effectiveOrigin.y };
+  return null;
+}
+
+function LensDistortionCalibration() {
+  const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  const BASE = 'http://localhost:8000/api/calibration';
+
+  const refreshStatus = async () => {
+    try {
+      const r = await fetch(`${BASE}/status`);
+      if (r.ok) setStatus(await r.json());
+    } catch { setStatus(null); }
+  };
+
+  const capture = async () => {
+    setBusy(true);
+    try {
+      const r = await fetch(`${BASE}/capture`, { method: 'POST' });
+      const d = await r.json();
+      if (d.ok) { alert(`Frame ${d.captures} captured — pattern found!`); await refreshStatus(); }
+      else alert(`Not captured: ${d.error}`);
+    } catch { alert('Vision server offline'); }
+    finally { setBusy(false); }
+  };
+
+  const compute = async () => {
+    setBusy(true);
+    try {
+      const r = await fetch(`${BASE}/compute`, { method: 'POST' });
+      const d = await r.json();
+      if (d.ok) { alert(`Calibration done — RMS=${d.rms_error} using ${d.frames_used} frames`); await refreshStatus(); }
+      else alert(`Compute failed: ${d.error}`);
+    } catch { alert('Vision server offline'); }
+    finally { setBusy(false); }
+  };
+
+  const reset = async () => {
+    if (!confirm('Delete all calibration data?')) return;
+    setBusy(true);
+    try { await fetch(`${BASE}/reset`, { method: 'POST' }); await refreshStatus(); }
+    catch { alert('Vision server offline'); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ border: '1px solid #444', borderRadius: 4, marginBottom: 12 }}>
+      <div
+        style={{ padding: '8px 12px', background: '#2c2e33', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+        onClick={() => { setExpanded(e => !e); if (!expanded) refreshStatus(); }}
+      >
+        <strong style={{ color: '#4fc3f7', fontSize: '0.9em' }}>Lens Distortion Calibration</strong>
+        <span style={{ color: '#888', fontSize: '0.8em' }}>{expanded ? '▼' : '▶'}</span>
+      </div>
+      {expanded && (
+        <div style={{ padding: 12, background: '#1d1f24', fontSize: '0.82em' }}>
+          <p style={{ color: '#9aa0a6', margin: '0 0 10px' }}>
+            Print a 9×6 inner-corner chessboard. Hold it at various angles in front of the camera.
+            Click <em>Capture</em> ≥10 times, then <em>Compute</em>.
+          </p>
+          {status && (
+            <div style={{ marginBottom: 10, padding: '6px 10px', background: status.calibrated ? 'rgba(0,196,154,0.1)' : '#222', borderRadius: 4, borderLeft: `3px solid ${status.calibrated ? '#00c49a' : '#888'}` }}>
+              {status.calibrated
+                ? <span style={{ color: '#00c49a' }}>Active — RMS: {status.rms_error}  ({status.captures} frames)</span>
+                : <span style={{ color: '#888' }}>Not calibrated — {status.captures} frame(s) captured</span>}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn sm" onClick={capture} disabled={busy}>Capture</button>
+            <button className="btn sm primary" onClick={compute} disabled={busy}>Compute</button>
+            <button className="btn sm danger" onClick={reset} disabled={busy}>Reset</button>
+            <button className="btn sm" onClick={refreshStatus} disabled={busy}>Status</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function CameraPanel({
   fiducials = [],
@@ -31,6 +122,8 @@ export default function CameraPanel({
   panelRailFiducials = [],
   setPanelRailFiducials,
   onAdvanceArmedFid,
+  panelXf = null,
+  side = 'top',
 }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -51,10 +144,10 @@ export default function CameraPanel({
   useEffect(() => { localStorage.setItem("nozzleDia", JSON.stringify(nozzleDia)); }, [nozzleDia]);
 
   // Ref to hold latest props for stale-closure avoidance in setInterval
-  const latestPropsRef = useRef({ fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, pads, cameraOffset: { dx: 0, dy: 0 }, fidActiveId, panelRailFiducials, setPanelRailFiducials, onAdvanceArmedFid });
+  const latestPropsRef = useRef({ fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, pads, cameraOffset: { dx: 0, dy: 0 }, fidActiveId, panelRailFiducials, setPanelRailFiducials, onAdvanceArmedFid, xf, panelXf });
   useEffect(() => {
-    latestPropsRef.current = { fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, pads, cameraOffset, fidActiveId, panelRailFiducials, setPanelRailFiducials, onAdvanceArmedFid };
-  }, [fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, pads, cameraOffset, fidActiveId, panelRailFiducials, setPanelRailFiducials, onAdvanceArmedFid]);
+    latestPropsRef.current = { fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, pads, cameraOffset, fidActiveId, panelRailFiducials, setPanelRailFiducials, onAdvanceArmedFid, xf, panelXf };
+  }, [fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, pads, cameraOffset, fidActiveId, panelRailFiducials, setPanelRailFiducials, onAdvanceArmedFid, xf, panelXf]);
 
   const [streamOn, setStreamOn] = useState(false);
 
@@ -736,11 +829,140 @@ export default function CameraPanel({
   // Blocks detection for N ms after any successful fiducial save, preventing the auto-advanced
   // arm (e.g. R2 after R1) from receiving the same machine position before the machine moves.
   const saveBlockRef = useRef(0);
+  // Tracks the most recently auto-saved fiducial so snap corrections overwrite it instead of advancing.
+  const lastAutoSavedRef = useRef(null);   // { id: string, position: {x,y} }
+  // When snap detects a correction jog, it sets this so the next servo convergence routes to the right slot.
+  const correctionTargetRef = useRef(null); // { id: string, position: {x,y} }
+
+  // Clear all correction/servo state on side switch to prevent top-side refs contaminating bottom-side saves.
+  useEffect(() => {
+    lastAutoSavedRef.current = null;
+    correctionTargetRef.current = null;
+    hasJoggedInCycleRef.current = false;
+    convergenceCountRef.current = 0;
+    servoStateRef.current = { phase: 'idle', lockedAt: null };
+  }, [side]);
+
+  // ── Auto-fiducial search ──────────────────────────────────────────────────
+  // When the armed fiducial changes AND detection is running, compute the
+  // expected camera position from the transform (or a solved-point translation)
+  // and send one absolute G1 move so the machine arrives near the fiducial.
+  // The servo loop then centres it precisely without manual jogging.
+  const [autoSearchStatus, setAutoSearchStatus] = useState('');
+
+  useEffect(() => {
+    if (!fidActiveId) { setAutoSearchStatus(''); return; }
+    if (!detectionInterval) return; // only move when detection is active
+    if (!window.serial?.writeLine) return;
+
+    const cProps = latestPropsRef.current;
+
+    // Find the armed fiducial in rail list first, then board list
+    const isRail = (cProps.panelRailFiducials || []).some(f => f.id === fidActiveId);
+    const allFids = [...(cProps.panelRailFiducials || []), ...(cProps.fiducials || [])];
+    const fid = allFids.find(f => f.id === fidActiveId);
+    if (!fid || !fid.design) { setAutoSearchStatus(''); return; }
+
+    // Rail fiducials use panelXf; board fiducials use xf
+    const transform = isRail ? cProps.panelXf : cProps.xf;
+    const machPos = predictFidMachinePos(fid, cProps.fiducials, transform, cProps.effectiveOrigin);
+    if (!machPos) { setAutoSearchStatus('No transform — jog manually'); return; }
+
+    // Camera target = machine position minus camera-to-nozzle offset
+    const camOff = cProps.cameraOffset || { dx: 0, dy: 0 };
+    const camX = machPos.x - camOff.dx;
+    const camY = machPos.y - camOff.dy;
+
+    // Skip move if already within 2 mm (operator is already close enough)
+    const curPos = machinePositionRef.current;
+    if (curPos && Math.hypot(camX - curPos.x, camY - curPos.y) < 2.0) {
+      setAutoSearchStatus('');
+      return;
+    }
+
+    // Reset servo so it doesn't try to save the old position during transit
+    servoStateRef.current = { phase: 'idle', lockedAt: null };
+    convergenceCountRef.current = 0;
+    hasJoggedInCycleRef.current = false;
+    settleUntilRef.current = Date.now() + 2200; // ~2 s for machine to arrive and settle
+
+    const cmds = moveAbs({ x: camX, y: camY, feed: 3000 });
+    window.serial.writeLine('G90').catch(() => {});
+    cmds.forEach(c => window.serial.writeLine(c).catch(() => {}));
+
+    setAutoSearchStatus(`Moving to ${fidActiveId}…`);
+    setTimeout(() => setAutoSearchStatus(''), 2500);
+    console.log(`[AutoSearch] ${fidActiveId} → camera (${camX.toFixed(3)}, ${camY.toFixed(3)})`);
+  }, [fidActiveId, detectionInterval]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // --- OVERWRITE HELPER: update a specific slot by ID without advancing the arm dropdown ---
+  const overwriteFiducialById = (id, coord) => {
+    const cProps = latestPropsRef.current;
+    // Rail slots first
+    const railFids = cProps.panelRailFiducials || [];
+    const railIdx  = railFids.findIndex(f => f.id === id);
+    if (railIdx >= 0 && cProps.setPanelRailFiducials) {
+      cProps.setPanelRailFiducials(railFids.map((f, i) =>
+        i === railIdx ? { ...f, machine: coord, autoDetected: true } : f
+      ));
+      console.log(`[SnapCorrect] Corrected rail ${id} ← (${coord.x.toFixed(3)}, ${coord.y.toFixed(3)})`);
+      return;
+    }
+    // panelBoards local fiducials
+    const pBoards    = cProps.panelBoards;
+    const setPBoards = cProps.setPanelBoards;
+    const boardName  = cProps.activeBoardName;
+    if (pBoards && setPBoards) {
+      const bIdx = Math.max(0, pBoards.findIndex(b => b.name === boardName));
+      if (pBoards[bIdx]) {
+        const newFids = pBoards[bIdx].fiducials.map(f =>
+          f.id === id ? { ...f, machine: coord, autoDetected: true } : f
+        );
+        setPBoards(pBoards.map((b, i) => i === bIdx ? { ...b, fiducials: newFids } : b));
+        console.log(`[SnapCorrect] Corrected local ${id} ← (${coord.x.toFixed(3)}, ${coord.y.toFixed(3)})`);
+        return;
+      }
+    }
+    // Legacy single-board fallback
+    const updated = (cProps.fiducials || []).map(f =>
+      f.id === id ? { ...f, machine: coord, autoDetected: true } : f
+    );
+    cProps.onUpdateFiducials?.(updated);
+    console.log(`[SnapCorrect] Corrected fid ${id} ← (${coord.x.toFixed(3)}, ${coord.y.toFixed(3)})`);
+  };
 
   // --- FIDUCIAL STORAGE HELPER ---
   // Takes a confirmed machine coordinate for a fiducial and saves it into the panelBoards state
   const saveFiducialCoordinate = (estimatedWorld, confidence = 1.0) => {
     const cProps = latestPropsRef.current;
+
+    // Correction mode: snap triggered a jog toward a specific slot — route there, not the armed slot.
+    const corrTarget = correctionTargetRef.current;
+    if (corrTarget) {
+      const CORR_DIST = 8; // mm — cancel if machine moved far from where correction was initiated
+      if (Math.hypot(estimatedWorld.x - corrTarget.position.x, estimatedWorld.y - corrTarget.position.y) < CORR_DIST) {
+        correctionTargetRef.current = null;
+        overwriteFiducialById(corrTarget.id, estimatedWorld);
+        lastAutoSavedRef.current = { id: corrTarget.id, position: { ...estimatedWorld } };
+        saveBlockRef.current = Date.now() + 2000;
+        return;
+      }
+      // Machine moved away — cancel correction mode and fall through to normal save
+      correctionTargetRef.current = null;
+    }
+
+    // SAME-FIDUCIAL GUARD: machine hasn't physically moved to a new fiducial yet.
+    // If the new position is within 3 mm of the last auto-save, overwrite that
+    // same slot instead of advancing the arm — prevents the servo re-firing after
+    // saveBlockRef expires and writing the same position into the next slot (R2/F2).
+    const lastSaved = lastAutoSavedRef.current;
+    if (lastSaved && Math.hypot(estimatedWorld.x - lastSaved.position.x, estimatedWorld.y - lastSaved.position.y) < 3.0) {
+      overwriteFiducialById(lastSaved.id, estimatedWorld);
+      lastAutoSavedRef.current = { id: lastSaved.id, position: { ...estimatedWorld } };
+      saveBlockRef.current = Date.now() + 2000;
+      console.log(`[FiducialDetect] Still near ${lastSaved.id} — overwriting same slot, arm stays.`);
+      return;
+    }
 
     // RAIL ROUTING: if the operator has armed a rail fiducial, save there and return.
     // This is the sole mechanism for routing camera-detected coords to the rail table vs
@@ -756,6 +978,7 @@ export default function CameraPanel({
         ));
         console.log(`[FiducialDetect] Rail ${armedId} ← Machine(${estimatedWorld.x.toFixed(3)}, ${estimatedWorld.y.toFixed(3)})`);
         saveBlockRef.current = Date.now() + 4000; // block detection 4s — operator must physically move to next fiducial
+        lastAutoSavedRef.current = { id: armedId, position: { ...estimatedWorld } };
         cProps.onAdvanceArmedFid?.(armedId);
         return;
       }
@@ -868,6 +1091,7 @@ export default function CameraPanel({
     }
     if (savedFidId) {
       saveBlockRef.current = Date.now() + 4000; // block detection 4s — operator must physically move to next fiducial
+      lastAutoSavedRef.current = { id: savedFidId, position: { ...estimatedWorld } };
       cProps.onAdvanceArmedFid?.(savedFidId);
     }
   };
@@ -880,8 +1104,13 @@ export default function CameraPanel({
   const SERVO_FEED      = 800;           // mm/min jog speed
   const SERVO_SETTLE_MS = 800;           // ms to wait after each jog before re-checking
   const CONVERGE_MM     = 0.05;          // crosshair within 0.05mm → declare converged & save
+  const TRULY_CENTRED_MM = 0.008;        // sub-pixel threshold — safe to skip jog requirement
   const CONVERGE_STABLE_FRAMES = 3;      // fine-phase polls needed before saving (prevents Hough false-centre saves)
   const convergenceCountRef = useRef(0); // consecutive fine-phase frames within CONVERGE_MM
+  // Guard: servo must have physically jogged at least once per convergence cycle before saving.
+  // Prevents saving at a visually off-centre position when the Python API happens to report
+  // a near-zero offset on the very first poll (e.g. bottom-side fiducials with different reflectance).
+  const hasJoggedInCycleRef = useRef(false);
 
   // Motion guard: whenever the machine position changes significantly (manual jogging between
   // fiducials), extend the settle timer so the detection loop cannot false-trigger on
@@ -935,6 +1164,7 @@ export default function CameraPanel({
             if (locked && Math.hypot(machPos.x - locked.x, machPos.y - locked.y) > 5.0) {
               servoStateRef.current = { phase: 'idle', lockedAt: null };
               convergenceCountRef.current = 0;
+              hasJoggedInCycleRef.current = false;
             } else {
               return; // same slot — already converged, nothing to do
             }
@@ -968,7 +1198,12 @@ export default function CameraPanel({
             if (dist > 8.0) return; // no fiducial in view
           }
 
-          if (dist <= CONVERGE_MM) {
+          // Allow convergence only if the servo has jogged at least once this cycle,
+          // OR the offset is truly sub-pixel (< TRULY_CENTRED_MM). This prevents saving at
+          // a visually off-centre position when Python reports near-zero offset on the first poll.
+          const canConverge = hasJoggedInCycleRef.current || dist <= TRULY_CENTRED_MM;
+
+          if (dist <= CONVERGE_MM && canConverge) {
             if (servoPhase !== 'fine') {
               // Coarse phase: Hough circle centre may be off by several pixels — do NOT save yet.
               // Upgrade to fine mode so the next poll uses the sub-pixel Otsu centroid.
@@ -981,6 +1216,7 @@ export default function CameraPanel({
                 // ✅ Sub-pixel centroid stable for N consecutive frames — truly centred on fiducial
                 servoStateRef.current = { phase: 'converged', lockedAt: { x: machPos.x, y: machPos.y } };
                 convergenceCountRef.current = 0;
+                hasJoggedInCycleRef.current = false; // reset for next fiducial
                 const camOffset  = cameraOffset || { dx: 0, dy: 0 };
                 const savedCoord = { x: machPos.x + camOffset.dx, y: machPos.y + camOffset.dy };
                 saveFiducialCoordinate(savedCoord, 1.0);
@@ -993,6 +1229,12 @@ export default function CameraPanel({
           }
           convergenceCountRef.current = 0; // moved away from convergence zone — reset count
 
+          // If dist > CONVERGE_MM, OR within CONVERGE_MM but haven't jogged yet → jog toward center
+          if (dist <= CONVERGE_MM && !canConverge) {
+            // First-poll near-zero offset: treat as a residual — do a micro-jog to physically verify
+            console.log(`[PyServo] Near-zero offset (${dist.toFixed(4)}mm) but haven't jogged yet — micro-jogging to verify centring`);
+          }
+
           // Jog toward fiducial center. Coarse: faster + longer settle; Fine: normal.
           const jogFeed  = servoPhase === 'idle' ? SERVO_FEED * 1.5 : SERVO_FEED;
           const settleMs = servoPhase === 'idle' ? SERVO_SETTLE_MS + 400 : SERVO_SETTLE_MS;
@@ -1001,6 +1243,7 @@ export default function CameraPanel({
           try {
             const cmds = jogRel({ dx, dy, feed: jogFeed });
             if (window.serial?.writeLine) for (const line of cmds) await window.serial.writeLine(line);
+            hasJoggedInCycleRef.current = true; // servo has now physically moved this cycle
           } catch (err) { console.error('[PyServo] Jog failed:', err); }
 
           // After the coarse jog, switch to fine mode for sub-pixel correction
@@ -1014,6 +1257,7 @@ export default function CameraPanel({
       servoStateRef.current = { phase: 'idle', lockedAt: null };
       convergenceCountRef.current = 0;
       settleUntilRef.current = 0;
+      hasJoggedInCycleRef.current = false;
       return;
     }
 
@@ -1196,15 +1440,35 @@ export default function CameraPanel({
       console.log(`[SnapToFiducial] Centroid offset ΔX:${dx} ΔY:${dy} mm`);
 
       const camOffset = cameraOffset || { dx: 0, dy: 0 };
+      const snapCoord = { x: machPos.x + camOffset.dx, y: machPos.y + camOffset.dy };
+      const CORR_DIST = 8; // mm — within this radius of last auto-save = correction, not new slot
 
       if (Math.abs(dx) < 0.005 && Math.abs(dy) < 0.005) {
+        const last = lastAutoSavedRef.current;
+        if (last && Math.hypot(snapCoord.x - last.position.x, snapCoord.y - last.position.y) < CORR_DIST) {
+          // Machine is still near the last auto-saved fiducial — user is correcting it.
+          // Overwrite that slot directly without advancing the arm dropdown.
+          console.log(`[SnapToFiducial] Correcting ${last.id} — overwriting same slot, arm stays.`);
+          overwriteFiducialById(last.id, snapCoord);
+          lastAutoSavedRef.current = null;
+          return;
+        }
         if (Date.now() < saveBlockRef.current) {
           console.log('[SnapToFiducial] Save blocked — move to next fiducial first.');
           return;
         }
         console.log('[SnapToFiducial] Already centred — saving coordinate.');
-        saveFiducialCoordinate({ x: machPos.x + camOffset.dx, y: machPos.y + camOffset.dy });
+        saveFiducialCoordinate(snapCoord);
         return;
+      }
+
+      // Jog branch: check if this is a correction jog (machine still near last auto-save).
+      // If so, set correctionTargetRef so the servo's final convergence save routes to the right slot.
+      const lastJog = lastAutoSavedRef.current;
+      if (lastJog && Math.hypot(snapCoord.x - lastJog.position.x, snapCoord.y - lastJog.position.y) < CORR_DIST) {
+        correctionTargetRef.current = { id: lastJog.id, position: { ...snapCoord } };
+        lastAutoSavedRef.current = null;
+        console.log(`[SnapToFiducial] Correction jog for ${lastJog.id} — next convergence will overwrite same slot.`);
       }
 
       const cmds = jogRel({ dx, dy, feed: 800 });
@@ -1379,6 +1643,14 @@ export default function CameraPanel({
               Clear
             </button>
           </div>
+
+          {/* Auto-search status — shows while machine is travelling to the predicted fiducial position */}
+          {autoSearchStatus && (
+            <div style={{ marginTop: 6, padding: '4px 10px', background: 'rgba(79,195,247,0.12)', border: '1px solid #4fc3f7', borderRadius: 4, fontSize: '0.82em', color: '#4fc3f7', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span>
+              {autoSearchStatus}
+            </div>
+          )}
 
           {!pythonMode && (
             <small style={{ fontSize: '12px', color: '#6c757d' }}>
@@ -1624,13 +1896,8 @@ export default function CameraPanel({
       </div>
 
       <div className="camera-controls-row" style={{ marginTop: 12 }}>
-        {/* Added Lens Calibration Wizard to the sidebar */}
-        {/* <LensCalibration
-          pixelsPerMm={pixelsPerMm}
-          setPixelsPerMm={setPixelsPerMm}
-          machinePosition={machinePosition}
-          visionResult={visionResult}
-        /> */}
+        {/* Lens Distortion Calibration — checkerboard-based OpenCV calibration */}
+        <LensDistortionCalibration />
 
         {/* <div className="section" style={{ border: '1px solid #444', borderRadius: '4px', marginBottom: '12px', padding: '12px', background: '#2c2e33' }}>
           <legend style={{ color: '#007bff', fontWeight: 'bold', marginBottom: 8 }}>Mini Jog Controls</legend>

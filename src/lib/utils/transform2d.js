@@ -3,6 +3,7 @@
 
 export function applyTransform(T, pt) {
   if (!T) return { ...pt };
+  if (T.type === "homography") return applyHomography(T, pt);
   const { a, b, c, d, tx, ty } = T;
   return { x: a * pt.x + b * pt.y + tx, y: c * pt.x + d * pt.y + ty };
 }
@@ -94,6 +95,53 @@ export function invert(T) {
   return { type: T.type, a: ia, b: ib, c: ic, d: id, tx: itx, ty: ity };
 }
 
+export function fitHomography(srcPts, dstPts) {
+  const n = srcPts.length;
+  if (n < 4) throw new Error("Need at least 4 pairs for homography fit.");
+
+  // Normalize srcPts
+  const cs = centroid(srcPts);
+  let ds = 0;
+  for (const p of srcPts) ds += Math.hypot(p.x - cs.x, p.y - cs.y);
+  const ss = ds > 0 ? Math.sqrt(2) * n / ds : 1;
+
+  // Normalize dstPts
+  const cd = centroid(dstPts);
+  let dd = 0;
+  for (const p of dstPts) dd += Math.hypot(p.x - cd.x, p.y - cd.y);
+  const sd = dd > 0 ? Math.sqrt(2) * n / dd : 1;
+
+  // Build 2n×8 DLT system (h8=1 normalization)
+  const A = [], b = [];
+  for (let i = 0; i < n; i++) {
+    const x = ss * (srcPts[i].x - cs.x);
+    const y = ss * (srcPts[i].y - cs.y);
+    const X = sd * (dstPts[i].x - cd.x);
+    const Y = sd * (dstPts[i].y - cd.y);
+    A.push([x, y, 1, 0, 0, 0, -X * x, -X * y]); b.push(X);
+    A.push([0, 0, 0, x, y, 1, -Y * x, -Y * y]); b.push(Y);
+  }
+
+  const At = transpose(A);
+  const h = solveGaussian(matMul(At, A), matVecMul(At, b));
+
+  const Hn = [[h[0], h[1], h[2]], [h[3], h[4], h[5]], [h[6], h[7], 1.0]];
+  const Ts = [[ss, 0, -ss * cs.x], [0, ss, -ss * cs.y], [0, 0, 1]];
+  const Tdi = [[1 / sd, 0, cd.x], [0, 1 / sd, cd.y], [0, 0, 1]];
+  const H = mat3Mul(mat3Mul(Tdi, Hn), Ts);
+
+  return { type: "homography", H };
+}
+
+export function applyHomography(Hobj, pt) {
+  const H = Hobj.H;
+  const w = H[2][0] * pt.x + H[2][1] * pt.y + H[2][2];
+  return {
+    x: (H[0][0] * pt.x + H[0][1] * pt.y + H[0][2]) / w,
+    y: (H[1][0] * pt.x + H[1][1] * pt.y + H[1][2]) / w,
+  };
+}
+
 /* ---------- helpers ---------- */
 function centroid(pts) {
   let sx = 0, sy = 0;
@@ -124,6 +172,14 @@ function matVecMul(A, v) {
     out[i] = s;
   }
   return out;
+}
+function mat3Mul(A, B) {
+  const C = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  for (let i = 0; i < 3; i++)
+    for (let j = 0; j < 3; j++)
+      for (let k = 0; k < 3; k++)
+        C[i][j] += A[i][k] * B[k][j];
+  return C;
 }
 function solveGaussian(A, b) {
   const n = A.length;

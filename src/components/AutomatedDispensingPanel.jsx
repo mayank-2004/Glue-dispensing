@@ -10,6 +10,19 @@ import { NozzleMaintenanceManager } from '../lib/maintenance/nozzleMaintenance.j
 
 const nozzleMaintenance = new NozzleMaintenanceManager();
 
+// IDW (Inverse Distance Weighting) interpolation for spatial correction map
+function idwCorrect(x, y, vectors, power = 2) {
+  if (!vectors || !vectors.length) return { dx: 0, dy: 0 };
+  let wdx = 0, wdy = 0, wsum = 0;
+  for (const v of vectors) {
+    const d2 = (x - v.x) * (x - v.x) + (y - v.y) * (y - v.y);
+    if (d2 < 1e-6) return { dx: v.dx, dy: v.dy };
+    const w = 1 / Math.pow(d2, power);
+    wdx += w * v.dx; wdy += w * v.dy; wsum += w;
+  }
+  return { dx: wdx / wsum, dy: wdy / wsum };
+}
+
 export default function AutomatedDispensingPanel({
   side = 'top',
   dispensingSequencer,
@@ -38,6 +51,7 @@ export default function AutomatedDispensingPanel({
   xf,
   applyXf,
   isConnected = false,
+  isHomed = false,
   machinePosition = { x: 0, y: 0, z: 0 },
   panelBoards = [],
   panelInfo = null,
@@ -108,6 +122,8 @@ export default function AutomatedDispensingPanel({
 
   // Per-pad log accumulator (ref so it's readable inside async loop without stale closure)
   const padLogRef = useRef([]);
+  // Spatial correction map: [{x, y, dx, dy}] vectors accumulated across jobs via find_pad
+  const correctionVectorsRef = useRef([]);
 
   // Apply viscosity presets automatically when changed
   useEffect(() => {
@@ -226,6 +242,15 @@ export default function AutomatedDispensingPanel({
         detail: isConnected ? 'Connected' : 'Not connected — open Serial panel first',
       },
       {
+        id: 'homed',
+        label: 'Machine homed',
+        critical: true,
+        passed: isHomed,
+        detail: isHomed
+          ? 'Homed — coordinate system is valid'
+          : 'Not homed — connect and home the machine (Serial panel → G28)',
+      },
+      {
         id: 'sequence',
         label: 'Dispensing sequence loaded',
         critical: true,
@@ -311,6 +336,7 @@ export default function AutomatedDispensingPanel({
     setCurrentPadInfo(null);
     setDotCheckResults([]);
     padLogRef.current = [];
+    correctionVectorsRef.current = [];
     try {
       if (!panelBoards || panelBoards.length === 0) {
         throw new Error("No boards defined in panel configuration.");
@@ -434,11 +460,6 @@ export default function AutomatedDispensingPanel({
           if (globalPointCount <= startFromPad) continue;
 
           let p = seq[i];
-
-          // Mirror X-axis for bottom side components BEFORE applying alignment transform
-          if (side === 'bottom' && currentBoardSize?.width) {
-            p = { ...p, x: currentBoardSize.width - p.x };
-          }
 
           let tp = null;
           if (panelXf && board.offsetX != null) {
@@ -920,10 +941,7 @@ export default function AutomatedDispensingPanel({
 
             {(() => {
               const pad = activeSequence[previewPadIdx];
-              let previewP = { ...pad };
-              if (side === 'bottom' && currentBoardSize?.width) {
-                previewP.x = currentBoardSize.width - previewP.x;
-              }
+              const previewP = { ...pad };
               const machineCoord = (applyXf && xf) ? applyTransform(xf, previewP) : null;
               // Apply calibration correction to show the corrected target
               const correctedCoord = machineCoord

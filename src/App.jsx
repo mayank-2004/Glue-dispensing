@@ -10,11 +10,11 @@ import ComponentList from "./components/ComponentList.jsx";
 import JogPanel from "./components/JogPanel.jsx";
 import FiducialPanel from "./components/FiducialPanel.jsx";
 import AutomatedDispensingPanel from "./components/AutomatedDispensingPanel.jsx";
-import { analyzeFiducialsInLayers } from "./lib/gerber/fiducialDetection.js";
+import { analyzeFiducialsInLayers, analyzeFiducialsWithRails } from "./lib/gerber/fiducialDetection.js";
 import { detectPcbOrigins } from "./lib/gerber/originDetection.js";
 import { FiducialVisionDetector } from "./lib/vision/fiducialVision.js";
 import { zipTextFiles, downloadBlob } from "./lib/zip/zipUtils.js";
-import { fitSimilarity, fitAffine, fitTranslation, applyTransform, rmsError } from "./lib/utils/transform2d.js";
+import { fitSimilarity, fitAffine, fitTranslation, fitHomography, applyTransform, rmsError } from "./lib/utils/transform2d.js";
 import { CollisionDetector } from "./lib/collision/collisionDetection.js";
 import { PadDetector } from "./lib/vision/padDetection.js";
 import { QualityController } from "./lib/quality/qualityControl.js";
@@ -74,7 +74,6 @@ export default function App() {
   } = useGerberFiles();
 
   const toggleLayer = (idx) => toggleLayerFn(idx, layers, side);
-  const changeSide = (s, skip = false) => changeSideFn(s, layers, skip);
 
   const [, forceRender] = useState({});
 
@@ -187,7 +186,10 @@ export default function App() {
     originStateRef.current = { xf, applyXf, selectedOrigin, pcbOriginOffset };
   }, [xf, applyXf, selectedOrigin, pcbOriginOffset]);
 
+  const [isHomed, setIsHomed] = useState(false);
+
   const handleHomingComplete = useCallback(async () => {
+    setIsHomed(true);
     const { xf: curXf, applyXf: curApplyXf, selectedOrigin: curOrigin, pcbOriginOffset: curOffset } = originStateRef.current;
     let targetX, targetY;
 
@@ -375,7 +377,10 @@ export default function App() {
 
   const transformSummary = useMemo(() => {
     if (!xf) return null;
-    const out = { type: xf.type, tx: xf.tx, ty: xf.ty };
+    // Homography has no tx/ty — extract translation from last column of H matrix
+    const tx = xf.type === "homography" ? xf.H?.[0]?.[2] : xf.tx;
+    const ty = xf.type === "homography" ? xf.H?.[1]?.[2] : xf.ty;
+    const out = { type: xf.type, tx: tx ?? 0, ty: ty ?? 0 };
     if (xf.type === "similarity") {
       out.thetaDeg = xf.theta * 180 / Math.PI;
       out.scale = xf.scale;
@@ -394,6 +399,54 @@ export default function App() {
     console.log(`Transform verification: Design(${designPt.x.toFixed(3)}, ${designPt.y.toFixed(3)}) → Machine(${transformed.x.toFixed(3)}, ${transformed.y.toFixed(3)})`);
     return transformed;
   }, [xf, applyXf]);
+
+  const FID_COLORS  = ["#2ea8ff", "#8e2bff", "#b7c400", "#ff6b35", "#9c27b0", "#25d9be"];
+  const RAIL_COLORS = ["#ff9800", "#ff5722", "#ffc107", "#ff6d00"];
+
+  // Full re-initialisation for a given side: re-detects fiducials, replaces the fiducial
+  // table, clears machine coords and the transform. Called on side-switch and on file load.
+  const reinitSideState = useCallback((s, currentLayers) => {
+    if (!currentLayers || currentLayers.length === 0) return;
+
+    const { localFiducials: detected, railFiducials: detectedRail } =
+      analyzeFiducialsWithRails(currentLayers, s);
+
+    setFiducialDetectionResult(detected.length > 0 ? detected : []);
+
+    const makeBoardFids = (offsetX = 0, offsetY = 0) =>
+      detected.length > 0
+        ? detected.map((fid, idx) => ({
+            id: fid.id || `F${idx + 1}`,
+            design: { x: parseFloat((fid.x + offsetX).toFixed(4)), y: parseFloat((fid.y + offsetY).toFixed(4)) },
+            machine: null, color: FID_COLORS[idx % FID_COLORS.length], confidence: fid.confidence,
+          }))
+        : [
+            { id: 'F1', design: null, machine: null, color: '#2ea8ff' },
+            { id: 'F2', design: null, machine: null, color: '#8e2bff' },
+          ];
+
+    const newRailFids = detectedRail.map((fid, idx) => ({
+      id: fid.id || `R${idx + 1}`,
+      design: { x: parseFloat(fid.x.toFixed(4)), y: parseFloat(fid.y.toFixed(4)) },
+      machine: null, color: RAIL_COLORS[idx % RAIL_COLORS.length], isRail: true,
+    }));
+
+    setPanelBoards(prev => prev.map(board => ({
+      ...board,
+      fiducials: makeBoardFids(board.offsetX || 0, board.offsetY || 0),
+      xf: null,
+    })));
+
+    setPanelRailFiducials(newRailFids);
+    setFidActiveId(newRailFids[0]?.id ?? (detected[0]?.id || 'F1'));
+    setXf(null);
+    setPanelXf(null);
+  }, [analyzeFiducialsWithRails]);
+
+  const changeSide = (s, skip = false) => {
+    changeSideFn(s, layers, skip);
+    reinitSideState(s, layers);
+  };
 
   const pickFiles = async (e) => handleFiles(e.target.files);
   const onDrop = async (e) => { e.preventDefault(); await handleFiles(e.dataTransfer.files); };
@@ -556,23 +609,14 @@ export default function App() {
     const geom = getSvgGeom(); if (!geom) return;
 
     const mmToCurrentUnits = (ptMm) => {
-      let xUnits = ptMm.x / geom.mmPerUnit;
-      if (side === 'bottom') {
-        xUnits = (2 * geom.minX + geom.vbW) - xUnits;
-      }
-
-      // Y: FLIP relative to Board Bounds
-      // localY = (MinY + MaxY) - GerberY_units
+      // Y: FLIP — Gerber Y grows up, SVG Y grows down
       const yUnits = (2 * geom.minY + geom.vbH) - (ptMm.y / geom.mmPerUnit);
-
-      const result = {
-        x: xUnits,
-        y: yUnits,
-        r: 1 / geom.mmPerUnit,
-        _vb: geom
-      };
-
-      return result;
+      // X: pcb-stackup mirrors the bottom SVG, so we mirror the coordinate to match
+      const xRaw = ptMm.x / geom.mmPerUnit;
+      const xUnits = side === 'bottom'
+        ? (2 * geom.minX + geom.vbW) - xRaw
+        : xRaw;
+      return { x: xUnits, y: yUnits, r: 1 / geom.mmPerUnit, _vb: geom };
     };
 
     if (livePreview.isActive) {
@@ -946,9 +990,9 @@ export default function App() {
       });
     });
 
-    // Draw Gerber-detected fiducials — top side only
+    // Draw Gerber-detected fiducials — both sides (mmToCurrentUnits handles bottom X-mirror)
     const ggf = ensureGroup("overlay-gerber-fids");
-    if (side === 'top' && fiducialDetectionResult && fiducialDetectionResult.length > 0) {
+    if (fiducialDetectionResult && fiducialDetectionResult.length > 0) {
       fiducialDetectionResult.forEach((fid) => {
         const u = mmToCurrentUnits({ x: fid.x, y: fid.y });
         const fidColor = '#00e5ff';
@@ -1212,13 +1256,12 @@ export default function App() {
     const ctm = innerNode.getScreenCTM(); if (!ctm) return null;
     const local = pt.matrixTransform(ctm.inverse());
 
-    let mmX = local.x * geom.mmPerUnit;
-
-    if (side === 'bottom') {
-      mmX = (2 * geom.minX + geom.vbW - local.x) * geom.mmPerUnit;
-    }
-
+    // Y: inverse of the Y-flip applied in mmToCurrentUnits
     const mmY = (2 * geom.minY + geom.vbH - local.y) * geom.mmPerUnit;
+    // X: inverse of the bottom X-mirror applied in mmToCurrentUnits
+    const mmX = side === 'bottom'
+      ? (2 * geom.minX + geom.vbW - local.x) * geom.mmPerUnit
+      : local.x * geom.mmPerUnit;
     return { x: mmX, y: mmY };
   };
 
@@ -1517,49 +1560,26 @@ export default function App() {
   const onSolve3 = () => {
     const P = fiducials.filter(f => f.design && f.machine);
     if (P.length < 3) return;
-    const T = fitAffine(P.map(f => f.design), P.map(f => f.machine));
+    const T = P.length >= 4
+      ? fitHomography(P.map(f => f.design), P.map(f => f.machine))
+      : fitAffine(P.map(f => f.design), P.map(f => f.machine));
     setXf(T);
   };
 
   const onSolvePanelXf = () => {
     const P = panelRailFiducials.filter(f => f.design && f.machine);
     if (P.length < 2) return;
-    const T = P.length >= 3
-      ? fitAffine(P.map(f => f.design), P.map(f => f.machine))
-      : fitSimilarity(P.map(f => f.design), P.map(f => f.machine));
+    const T = P.length >= 4
+      ? fitHomography(P.map(f => f.design), P.map(f => f.machine))
+      : P.length >= 3
+        ? fitAffine(P.map(f => f.design), P.map(f => f.machine))
+        : fitSimilarity(P.map(f => f.design), P.map(f => f.machine));
     setPanelXf(T);
   };
 
   const onRedetectFiducials = () => {
     if (layers.length === 0) return;
-
-    let detectedFiducials = analyzeFiducialsInLayers(layers);
-    setFiducialDetectionResult(detectedFiducials);
-
-    if (detectedFiducials.length > 0) {
-      const colors = ["#2ea8ff", "#8e2bff", "#00c49a", "#ff6b35", "#9c27b0", "#4caf50"];
-      const autoFiducials = detectedFiducials.slice(0, 3).map((fid, idx) => ({
-        id: fid.id || `F${idx + 1}`,
-        design: { x: fid.x, y: fid.y },
-        machine: { x: fid.x, y: fid.y },
-        color: colors[idx % colors.length],
-        confidence: fid.confidence
-      }));
-
-      while (autoFiducials.length < 3) {
-        autoFiducials.push({
-          id: `F${autoFiducials.length + 1}`,
-          design: null,
-          machine: null,
-          color: colors[autoFiducials.length % colors.length]
-        });
-      }
-
-      setFiducials(autoFiducials);
-    } else {
-      setFiducials(prev => prev.map(f => ({ ...f, design: null })));
-    }
-    setXf(null);
+    reinitSideState(side, layers);
   };
 
   const onAutoAlign = () => {
@@ -1584,6 +1604,9 @@ export default function App() {
       setXf(T);
     } else if (validFiducials.length === 2) {
       const T = fitSimilarity(validFiducials.map(f => f.design), validFiducials.map(f => f.machine));
+      setXf(T);
+    } else if (validFiducials.length >= 4) {
+      const T = fitHomography(validFiducials.map(f => f.design), validFiducials.map(f => f.machine));
       setXf(T);
     } else if (validFiducials.length >= 3) {
       const T = fitAffine(validFiducials.map(f => f.design), validFiducials.map(f => f.machine));
@@ -1640,6 +1663,9 @@ export default function App() {
         setXf(T);
       } else if (validFiducials.length === 2) {
         const T = fitSimilarity(validFiducials.map(f => f.design), validFiducials.map(f => f.machine));
+        setXf(T);
+      } else if (validFiducials.length >= 4) {
+        const T = fitHomography(validFiducials.map(f => f.design), validFiducials.map(f => f.machine));
         setXf(T);
       } else if (validFiducials.length >= 3) {
         const T = fitAffine(validFiducials.map(f => f.design), validFiducials.map(f => f.machine));
@@ -1908,8 +1934,8 @@ export default function App() {
                 <div style={{ padding: 12 }}>
                   <SerialPanel
                     isConnected={isSerialConnected}
-                    onConnect={() => handleSerialConnect(true)}
-                    onDisconnect={() => handleSerialDisconnect()}
+                    onConnect={() => { handleSerialConnect(true); setIsHomed(false); }}
+                    onDisconnect={() => { handleSerialDisconnect(); setIsHomed(false); }}
                     onHomingComplete={handleHomingComplete}
                     dispensingSequence={dispensingSequence}
                     jobStatistics={jobStatistics}
@@ -2029,6 +2055,12 @@ export default function App() {
             }
 
             <div style={{ display: activeComponent === 'FiducialPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
+              {side === 'bottom' && (
+                <div style={{ margin: '0 0 10px 0', padding: '8px 12px', background: 'rgba(255,152,0,0.12)', border: '1px solid #ff9800', borderRadius: 6, fontSize: '0.83em' }}>
+                  <span style={{ color: '#ffb74d', fontWeight: 600 }}>⟳ Bottom Side</span>
+                  <span style={{ color: '#90a4ae', marginLeft: 8 }}>SVG is X-mirrored. Click fiducials on the flipped view — design coords are stored in Gerber space and the transform will account for the mirror automatically.</span>
+                </div>
+              )}
               {panelInfo && (
                 <div style={{ margin: '0 0 10px 0', padding: '8px 12px', background: 'rgba(56,139,253,0.1)', border: '1px solid #388bfd', borderRadius: 6, fontSize: '0.83em', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <span style={{ color: '#79c0ff', fontWeight: 600 }}>
@@ -2123,6 +2155,8 @@ export default function App() {
                 panelRailFiducials={panelRailFiducials}
                 setPanelRailFiducials={setPanelRailFiducials}
                 onAdvanceArmedFid={onAdvanceArmedFid}
+                panelXf={panelXf}
+                side={side}
               />
             </div>
 
@@ -2178,6 +2212,7 @@ export default function App() {
                 xf={xf}
                 applyXf={applyXf}
                 isConnected={isSerialConnected}
+                isHomed={isHomed}
                 machinePosition={machinePos}
                 onStartJob={(gcode, mode) => {
                   console.log(`Job started in ${mode} mode`);

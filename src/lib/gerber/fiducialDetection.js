@@ -337,22 +337,21 @@ function calculateDistributionScore(candidates) {
 /**
  * Analyze all layers to find fiducials — returns { localFiducials, railFiducials }
  */
-export function analyzeFiducialsWithRails(layers) {
+export function analyzeFiducialsWithRails(layers, side = 'top') {
   const allLocal = [];
   const allRail = [];
 
   // Layers to search for local board fiducials (tight size/score criteria)
   const localLayers = layers.filter(layer => {
-    if (layer.side === 'bottom') return false;
+    if (layer.side !== side) return false;
     if (layer.type === 'copper') return true;
     const name = layer.filename.toLowerCase();
     return name.includes('fiducial') || name.includes('fid') ||
            name.includes('fab') || name.includes('assembly');
   });
 
-  // All non-bottom layers — searched for rail marks too (rail marks may be on
-  // mechanical, user, or other non-standard layers not covered by localLayers)
-  const allTopLayers = layers.filter(layer => layer.side !== 'bottom');
+  // All layers on the current side — searched for rail marks too
+  const allSideLayers = layers.filter(layer => layer.side === side);
 
   const priorityOrder = ['fiducial', 'fid', 'fab', 'assembly', 'copper'];
   localLayers.sort((a, b) => {
@@ -379,8 +378,8 @@ export function analyzeFiducialsWithRails(layers) {
     }
   }
 
-  // Also search remaining top-side layers for rail marks only
-  for (const layer of allTopLayers) {
+  // Also search remaining current-side layers for rail marks only
+  for (const layer of allSideLayers) {
     if (!layer.text || searchedNames.has(layer.filename)) continue;
     const result = detectFiducials(layer.text);
     const rail = result?.rail ?? [];
@@ -398,8 +397,8 @@ export function analyzeFiducialsWithRails(layers) {
 }
 
 /** Backward-compatible wrapper — returns only local fiducials as a flat array */
-export function analyzeFiducialsInLayers(layers) {
-  return analyzeFiducialsWithRails(layers).localFiducials;
+export function analyzeFiducialsInLayers(layers, side = 'top') {
+  return analyzeFiducialsWithRails(layers, side).localFiducials;
 }
 
 /**

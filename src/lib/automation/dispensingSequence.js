@@ -161,11 +161,6 @@ export class DispensingSequencer {
     const transform = (pt) => {
       let mapped = { ...pt };
 
-      // Mirror X-axis for bottom side components
-      if (side === 'bottom' && boardWidth > 0) {
-        mapped.x = boardWidth - mapped.x;
-      }
-
       if (applyXf && xf) {
         mapped = applyTransform(xf, mapped);
       }

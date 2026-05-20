@@ -12,6 +12,8 @@ import cv2
 import numpy as np
 import threading
 import time
+import os
+import json
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -49,6 +51,43 @@ shared_state = {
     "frame_count":   0,
     "camera_ok":     True,
 }
+
+# ──────────────────────────────────────────────
+# Lens distortion calibration state
+# ──────────────────────────────────────────────
+CALIBRATION_DIR  = os.path.join(os.path.dirname(__file__), "calibration_frames")
+CALIBRATION_FILE = os.path.join(os.path.dirname(__file__), "lens_calibration.json")
+CHESSBOARD_SIZE  = (9, 6)   # inner corners (columns, rows) on your printed pattern
+
+calib_lock = threading.Lock()
+calib_state = {
+    "calibrated":    False,
+    "camera_matrix": None,   # 3×3 np array, None until computed
+    "dist_coeffs":   None,   # 1×5 np array, None until computed
+    "captures":      0,      # number of accepted calibration frames
+    "rms_error":     None,
+}
+
+def _load_calibration():
+    """Try to restore lens calibration from the saved JSON file on disk."""
+    if not os.path.exists(CALIBRATION_FILE):
+        return
+    try:
+        with open(CALIBRATION_FILE, "r") as f:
+            data = json.load(f)
+        mtx = np.array(data["camera_matrix"], dtype=np.float64)
+        dist = np.array(data["dist_coeffs"], dtype=np.float64)
+        with calib_lock:
+            calib_state["camera_matrix"] = mtx
+            calib_state["dist_coeffs"]   = dist
+            calib_state["calibrated"]    = True
+            calib_state["rms_error"]     = data.get("rms_error")
+            calib_state["captures"]      = data.get("captures", 0)
+        print(f"[Calibration] Loaded from {CALIBRATION_FILE} (RMS={data.get('rms_error')})")
+    except Exception as e:
+        print(f"[Calibration] Load failed: {e}")
+
+_load_calibration()
 
 # ──────────────────────────────────────────────
 # Camera capture (runs in a dedicated background thread)
@@ -94,7 +133,13 @@ def camera_loop():
 
 def get_frame() -> np.ndarray | None:
     with frame_lock:
-        return latest_frame.copy() if latest_frame is not None else None
+        if latest_frame is None:
+            return None
+        frame = latest_frame.copy()
+    with calib_lock:
+        if calib_state["calibrated"] and calib_state["camera_matrix"] is not None:
+            frame = cv2.undistort(frame, calib_state["camera_matrix"], calib_state["dist_coeffs"])
+    return frame
 
 
 # ──────────────────────────────────────────────
@@ -722,6 +767,129 @@ def api_set_px_per_mm(value: float):
     PX_PER_MM = value
     print(f"[Vision] px/mm updated to {PX_PER_MM}")
     return {"px_per_mm": PX_PER_MM}
+
+
+# ──────────────────────────────────────────────
+# Lens distortion calibration endpoints
+# ──────────────────────────────────────────────
+
+@app.post("/api/calibration/capture")
+def api_calibration_capture():
+    """
+    Save the current camera frame as a calibration image.
+    The caller should show a printed 9×6 chessboard to the camera, move it to
+    different positions/angles, then POST here once per position.
+    OpenCV will try to locate the inner corners — the frame is only accepted if
+    the full pattern is found.
+    """
+    frame = get_frame()
+    if frame is None:
+        return JSONResponse({"ok": False, "error": "no_frame"})
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    ret, corners = cv2.findChessboardCorners(gray, CHESSBOARD_SIZE, None)
+    if not ret:
+        return JSONResponse({"ok": False, "error": "chessboard_not_found", "captures": calib_state["captures"]})
+
+    os.makedirs(CALIBRATION_DIR, exist_ok=True)
+    idx = calib_state["captures"] + 1
+    path = os.path.join(CALIBRATION_DIR, f"calib_{idx:03d}.jpg")
+    cv2.imwrite(path, frame)
+    with calib_lock:
+        calib_state["captures"] = idx
+    print(f"[Calibration] Captured frame {idx}: {path}")
+    return JSONResponse({"ok": True, "captures": idx, "path": path})
+
+
+@app.post("/api/calibration/compute")
+def api_calibration_compute():
+    """
+    Run full OpenCV camera calibration using all previously captured frames.
+    Requires ≥10 frames for a reliable result.  Saves the calibration matrix
+    to lens_calibration.json and activates undistortion immediately.
+    """
+    if not os.path.exists(CALIBRATION_DIR):
+        return JSONResponse({"ok": False, "error": "no_frames_captured"})
+
+    image_files = sorted(f for f in os.listdir(CALIBRATION_DIR) if f.endswith(".jpg"))
+    if len(image_files) < 6:
+        return JSONResponse({"ok": False, "error": f"need ≥6 frames, have {len(image_files)}"})
+
+    obj_points = []  # 3D points in real-world space
+    img_points = []  # 2D points in image plane
+    objp = np.zeros((CHESSBOARD_SIZE[0] * CHESSBOARD_SIZE[1], 3), np.float32)
+    objp[:, :2] = np.mgrid[0:CHESSBOARD_SIZE[0], 0:CHESSBOARD_SIZE[1]].T.reshape(-1, 2)
+
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+    accepted = 0
+
+    for fname in image_files:
+        img = cv2.imread(os.path.join(CALIBRATION_DIR, fname))
+        if img is None:
+            continue
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        ret, corners = cv2.findChessboardCorners(gray, CHESSBOARD_SIZE, None)
+        if not ret:
+            continue
+        corners2 = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
+        obj_points.append(objp)
+        img_points.append(corners2)
+        accepted += 1
+
+    if accepted < 6:
+        return JSONResponse({"ok": False, "error": f"only {accepted} usable frames after re-detection"})
+
+    h, w = img.shape[:2]
+    rms, mtx, dist, _, _ = cv2.calibrateCamera(obj_points, img_points, (w, h), None, None)
+
+    # Persist to disk
+    data = {
+        "camera_matrix": mtx.tolist(),
+        "dist_coeffs":   dist.tolist(),
+        "rms_error":     round(float(rms), 4),
+        "captures":      accepted,
+    }
+    with open(CALIBRATION_FILE, "w") as f:
+        json.dump(data, f)
+
+    with calib_lock:
+        calib_state["camera_matrix"] = mtx
+        calib_state["dist_coeffs"]   = dist
+        calib_state["calibrated"]    = True
+        calib_state["rms_error"]     = data["rms_error"]
+        calib_state["captures"]      = accepted
+
+    print(f"[Calibration] Computed from {accepted} frames. RMS={rms:.4f}. Saved to {CALIBRATION_FILE}")
+    return JSONResponse({"ok": True, "rms_error": data["rms_error"], "frames_used": accepted})
+
+
+@app.get("/api/calibration/status")
+def api_calibration_status():
+    """Return current calibration state (calibrated, rms_error, captures)."""
+    with calib_lock:
+        return JSONResponse({
+            "calibrated": calib_state["calibrated"],
+            "rms_error":  calib_state["rms_error"],
+            "captures":   calib_state["captures"],
+        })
+
+
+@app.post("/api/calibration/reset")
+def api_calibration_reset():
+    """Clear saved calibration data and captured frames."""
+    import shutil
+    if os.path.exists(CALIBRATION_DIR):
+        shutil.rmtree(CALIBRATION_DIR)
+    if os.path.exists(CALIBRATION_FILE):
+        os.remove(CALIBRATION_FILE)
+    with calib_lock:
+        calib_state["calibrated"]    = False
+        calib_state["camera_matrix"] = None
+        calib_state["dist_coeffs"]   = None
+        calib_state["captures"]      = 0
+        calib_state["rms_error"]     = None
+    print("[Calibration] Reset — all calibration data cleared.")
+    return JSONResponse({"ok": True})
 
 
 # ──────────────────────────────────────────────
