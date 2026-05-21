@@ -95,6 +95,7 @@ _load_calibration()
 latest_frame = None
 frame_lock = threading.Lock()
 camera_thread_running = True
+camera_cap = None          # Global reference so API endpoints can adjust camera properties
 
 def camera_loop():
     """
@@ -102,7 +103,7 @@ def camera_loop():
     Runs in its own daemon thread so it never blocks the web server or the
     vision analysis thread.
     """
-    global latest_frame
+    global latest_frame, camera_cap
     cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)  # CAP_DSHOW for Windows USB cameras
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  FRAME_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
@@ -115,6 +116,7 @@ def camera_loop():
             shared_state["camera_ok"] = False
         return
 
+    camera_cap = cap  # Expose to API endpoints for live property changes
     print(f"[Vision] Camera opened on index {CAMERA_INDEX} ({FRAME_WIDTH}x{FRAME_HEIGHT})")
 
     while camera_thread_running:
@@ -127,6 +129,7 @@ def camera_loop():
         else:
             time.sleep(0.01)
 
+    camera_cap = None
     cap.release()
     print("[Vision] Camera released.")
 
@@ -890,6 +893,113 @@ def api_calibration_reset():
         calib_state["rms_error"]     = None
     print("[Calibration] Reset — all calibration data cleared.")
     return JSONResponse({"ok": True})
+
+
+@app.get("/api/check_board_present")
+def api_check_board_present():
+    """
+    Snap the current camera frame and decide whether a PCB is likely present.
+
+    Method: compare the std-dev of pixel intensities in the centre region of
+    the frame against a threshold.  An empty, uniform machine bed has low
+    std-dev (< ~18).  A PCB with copper traces, solder mask and pads produces
+    high contrast → high std-dev (> ~28).
+
+    Returns:
+        present   : bool   – best guess
+        confidence: float  – 0-1 (higher = more certain)
+        std_dev   : float  – raw grayscale std-dev of the centre crop
+        reason    : str    – human-readable explanation
+    """
+    frame = get_frame()
+    if frame is None:
+        return JSONResponse({
+            "present": False, "confidence": 0.0,
+            "std_dev": 0.0, "reason": "Camera not available"
+        })
+
+    h, w = frame.shape[:2]
+    # Analyse only the centre 60% of the frame to ignore rig borders
+    x1, y1 = int(w * 0.2), int(h * 0.2)
+    x2, y2 = int(w * 0.8), int(h * 0.8)
+    crop = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+
+    std_dev   = float(np.std(crop))
+    mean_val  = float(np.mean(crop))
+
+    # Thresholds tuned for typical FR4 PCB under white-light / ring-light
+    EMPTY_MAX = 18.0   # below this → almost certainly empty bed
+    BOARD_MIN = 28.0   # above this → PCB almost certainly present
+
+    if std_dev >= BOARD_MIN:
+        present    = True
+        confidence = min(1.0, (std_dev - BOARD_MIN) / 20.0 + 0.75)
+        reason     = f"High contrast detected (σ={std_dev:.1f}) — board likely present"
+    elif std_dev <= EMPTY_MAX:
+        present    = False
+        confidence = min(1.0, (EMPTY_MAX - std_dev) / 10.0 + 0.6)
+        reason     = f"Low contrast (σ={std_dev:.1f}, mean={mean_val:.0f}) — bed appears empty"
+    else:
+        present    = std_dev >= (EMPTY_MAX + BOARD_MIN) / 2
+        confidence = 0.4
+        reason     = f"Ambiguous (σ={std_dev:.1f}) — check camera position or lighting"
+
+    return JSONResponse({
+        "present":    present,
+        "confidence": round(confidence, 2),
+        "std_dev":    round(std_dev, 2),
+        "reason":     reason,
+    })
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Option A: Camera exposure / gain / brightness control
+#   Sliders in CameraPanel.jsx call these endpoints to adjust how the camera
+#   sees the PCB without needing any additional hardware.
+#   This directly improves fiducial detection under varying ambient lighting.
+# ──────────────────────────────────────────────────────────────────────────────
+
+class CameraSettingsModel(BaseModel):
+    auto_exposure: bool  = None   # True = let camera auto-expose, False = manual
+    exposure:      float = None   # Manual exposure (DirectShow log scale: -13 to -1)
+    gain:          float = None   # Sensor gain 0–255
+    brightness:    float = None   # Image brightness 0–255
+
+@app.post("/api/camera/settings")
+def api_set_camera_settings(s: CameraSettingsModel):
+    """Apply exposure / gain / brightness to the live camera capture object."""
+    if camera_cap is None:
+        return JSONResponse({"ok": False, "error": "Camera not running"}, status_code=503)
+
+    if s.auto_exposure is not None:
+        # DirectShow: 0.75 = auto, 0.25 = manual
+        camera_cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75 if s.auto_exposure else 0.25)
+
+    if s.exposure is not None and not (s.auto_exposure is True):
+        camera_cap.set(cv2.CAP_PROP_EXPOSURE, s.exposure)
+
+    if s.gain is not None:
+        camera_cap.set(cv2.CAP_PROP_GAIN, s.gain)
+
+    if s.brightness is not None:
+        camera_cap.set(cv2.CAP_PROP_BRIGHTNESS, s.brightness)
+
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/camera/settings")
+def api_get_camera_settings():
+    """Read current camera property values."""
+    if camera_cap is None:
+        return JSONResponse({"ok": False, "error": "Camera not running"}, status_code=503)
+
+    return JSONResponse({
+        "ok":           True,
+        "auto_exposure": camera_cap.get(cv2.CAP_PROP_AUTO_EXPOSURE),
+        "exposure":      camera_cap.get(cv2.CAP_PROP_EXPOSURE),
+        "gain":          camera_cap.get(cv2.CAP_PROP_GAIN),
+        "brightness":    camera_cap.get(cv2.CAP_PROP_BRIGHTNESS),
+    })
 
 
 # ──────────────────────────────────────────────

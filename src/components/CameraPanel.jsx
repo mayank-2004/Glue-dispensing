@@ -124,6 +124,7 @@ export default function CameraPanel({
   onAdvanceArmedFid,
   panelXf = null,
   side = 'top',
+  isJobRunning = false,
 }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -150,6 +151,24 @@ export default function CameraPanel({
   }, [fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, pads, cameraOffset, fidActiveId, panelRailFiducials, setPanelRailFiducials, onAdvanceArmedFid, xf, panelXf]);
 
   const [streamOn, setStreamOn] = useState(false);
+
+  // ─── Option A: Camera exposure / gain / brightness (software, works now) ──
+  // Controlled via POST /api/camera/settings on the Python vision server.
+  // No additional hardware required — adjusts how the USB camera captures frames.
+  const [camAutoExposure, setCamAutoExposure] = useState(true);
+  const [camExposure,     setCamExposure]     = useState(-6);   // DirectShow log scale -13..−1
+  const [camGain,         setCamGain]         = useState(0);    // 0–255
+  const [camBrightness,   setCamBrightness]   = useState(128);  // 0–255
+
+  const applyCameraSettings = async (patch) => {
+    try {
+      await fetch(`${PYTHON_URL}/api/camera/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      });
+    } catch { /* vision server offline — ignore silently */ }
+  };
 
   // ─── Python Vision Mode ────────────────────────────────────────────
   const [pythonMode, setPythonMode] = useState(() => {
@@ -226,6 +245,24 @@ export default function CameraPanel({
   }, [canvasRef.current, H, padDetector]);
 
   const [detectionInterval, setDetectionInterval] = useState(null);
+  const detectionIntervalRef = useRef(null);
+  useEffect(() => { detectionIntervalRef.current = detectionInterval; }, [detectionInterval]);
+
+  // Stop auto-detect when a dispensing job starts
+  useEffect(() => {
+    if (!isJobRunning) return;
+    const iv = detectionIntervalRef.current;
+    if (!iv) return;
+    clearInterval(iv);
+    setDetectionInterval(null);
+    setVisionResult(null);
+    // Also stop Python-mode detection if active
+    if (pythonPollRef.current) {
+      clearInterval(pythonPollRef.current);
+      pythonPollRef.current = null;
+      fetch(`${PYTHON_URL}/api/stop_detect`, { method: 'POST' }).catch(() => {});
+    }
+  }, [isJobRunning]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [jogStep, setJogStep] = useState(1);
   const [jogMultiplier, setJogMultiplier] = useState(1);
@@ -1898,6 +1935,140 @@ export default function CameraPanel({
       <div className="camera-controls-row" style={{ marginTop: 12 }}>
         {/* Lens Distortion Calibration — checkerboard-based OpenCV calibration */}
         <LensDistortionCalibration />
+
+        {/* ── Camera & Lighting Controls ─────────────────────────────────── */}
+        <details style={{ border: '1px solid #444', borderRadius: 4, marginBottom: 12 }}>
+          <summary style={{ padding: '8px 12px', background: '#2c2e33', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <strong style={{ color: '#4fc3f7', fontSize: '0.9em' }}>Camera &amp; Lighting Controls</strong>
+          </summary>
+          <div style={{ padding: 12, background: '#1d1f24', fontSize: '0.82em', display: 'flex', flexDirection: 'column', gap: 10 }}>
+
+            {/* ── Option A: Software camera controls (active now) ── */}
+            <div style={{ color: '#3fb950', fontWeight: 600, marginBottom: 2 }}>
+              Option A — Camera Exposure / Gain (software, no hardware needed)
+            </div>
+            <p style={{ color: '#8b949e', margin: 0 }}>
+              Adjust how the USB camera captures frames. Use these to compensate for
+              ambient light changes and improve fiducial detection reliability.
+            </p>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={camAutoExposure}
+                onChange={e => {
+                  setCamAutoExposure(e.target.checked);
+                  applyCameraSettings({ auto_exposure: e.target.checked });
+                }}
+              />
+              Auto Exposure
+            </label>
+
+            {!camAutoExposure && (
+              <label>
+                Exposure ({camExposure})
+                <input type="range" min="-13" max="-1" step="1" value={camExposure}
+                  style={{ width: '100%', marginTop: 4 }}
+                  onChange={e => { setCamExposure(Number(e.target.value)); applyCameraSettings({ auto_exposure: false, exposure: Number(e.target.value) }); }}
+                />
+                <div style={{ display: 'flex', justifyContent: 'space-between', color: '#8b949e', fontSize: '0.78em' }}><span>Dark (-13)</span><span>Bright (-1)</span></div>
+              </label>
+            )}
+
+            <label>
+              Gain ({camGain})
+              <input type="range" min="0" max="255" step="1" value={camGain}
+                style={{ width: '100%', marginTop: 4 }}
+                onChange={e => { setCamGain(Number(e.target.value)); applyCameraSettings({ gain: Number(e.target.value) }); }}
+              />
+              <div style={{ display: 'flex', justifyContent: 'space-between', color: '#8b949e', fontSize: '0.78em' }}><span>0</span><span>255</span></div>
+            </label>
+
+            <label>
+              Brightness ({camBrightness})
+              <input type="range" min="0" max="255" step="1" value={camBrightness}
+                style={{ width: '100%', marginTop: 4 }}
+                onChange={e => { setCamBrightness(Number(e.target.value)); applyCameraSettings({ brightness: Number(e.target.value) }); }}
+              />
+              <div style={{ display: 'flex', justifyContent: 'space-between', color: '#8b949e', fontSize: '0.78em' }}><span>0</span><span>255</span></div>
+            </label>
+
+            <button
+              className="btn secondary"
+              style={{ fontSize: '0.8em', marginTop: 2 }}
+              onClick={() => {
+                setCamAutoExposure(true); setCamGain(0); setCamBrightness(128);
+                applyCameraSettings({ auto_exposure: true, gain: 0, brightness: 128 });
+              }}
+            >↺ Reset to Defaults</button>
+
+            <hr style={{ borderColor: '#30363d', margin: '6px 0' }} />
+
+            {/*
+             * ── Option B: Ring Light PWM via G-code M42 (hardware required) ──
+             *
+             * WHEN TO USE: Uncomment this block when a physical ring light is wired
+             * to a PWM-capable output pin on the motion controller (e.g. fan pin).
+             *
+             * WHERE THIS CODE IS: CameraPanel.jsx → "Camera & Lighting Controls"
+             * section → Option B comment block (search "Option B" in CameraPanel.jsx).
+             *
+             * STEPS TO ENABLE:
+             *  1. Wire ring light to a PWM pin on your controller (e.g. pin 4 for M42 P4).
+             *  2. Update the M42_PIN constant below to match your wiring.
+             *  3. Remove the opening and closing comment block markers (/* and * /) below.
+             *
+             * ─────────────────────────────────────────────────────────────────────
+             *
+             * const M42_PIN = 4;  // ← change to your actual PWM pin number
+             *
+             * <div style={{ color: '#ffa726', fontWeight: 600, marginBottom: 2 }}>
+             *   Option B — Ring Light PWM (requires hardware wiring)
+             * </div>
+             * <p style={{ color: '#8b949e', margin: 0 }}>
+             *   Controls ring light brightness via M42 G-code. Requires a ring light
+             *   wired to a PWM pin on the motion controller.
+             * </p>
+             *
+             * <label>
+             *   Ring Light Brightness ({ringLightBrightness}/255)
+             *   <input type="range" min="0" max="255" step="5"
+             *     value={ringLightBrightness}
+             *     style={{ width: '100%', marginTop: 4 }}
+             *     onChange={async e => {
+             *       const val = Number(e.target.value);
+             *       setRingLightBrightness(val);
+             *       if (window.serial?.writeLine) {
+             *         await window.serial.writeLine(`M42 P${M42_PIN} S${val}`);
+             *       }
+             *     }}
+             *   />
+             *   <div style={{ display: 'flex', justifyContent: 'space-between', color: '#8b949e', fontSize: '0.78em' }}>
+             *     <span>Off (0)</span><span>Full (255)</span>
+             *   </div>
+             * </label>
+             *
+             * <div style={{ display: 'flex', gap: 6 }}>
+             *   <button className="btn secondary" style={{ flex: 1, fontSize: '0.8em' }}
+             *     onClick={() => { setRingLightBrightness(0); window.serial?.writeLine?.(`M42 P${M42_PIN} S0`); }}>
+             *     Off
+             *   </button>
+             *   <button className="btn" style={{ flex: 1, fontSize: '0.8em' }}
+             *     onClick={() => { setRingLightBrightness(255); window.serial?.writeLine?.(`M42 P${M42_PIN} S255`); }}>
+             *     Full
+             *   </button>
+             * </div>
+             *
+             * NOTE: Also add this state variable near the top of the CameraPanel component:
+             *   const [ringLightBrightness, setRingLightBrightness] = useState(128);
+             */}
+
+            <div style={{ color: '#8b949e', fontSize: '0.78em', fontStyle: 'italic' }}>
+              Option B (ring light PWM via M42) is implemented but commented out — see CameraPanel.jsx → "Option B" comment block to enable it when hardware is wired.
+            </div>
+
+          </div>
+        </details>
 
         {/* <div className="section" style={{ border: '1px solid #444', borderRadius: '4px', marginBottom: '12px', padding: '12px', background: '#2c2e33' }}>
           <legend style={{ color: '#007bff', fontWeight: 'bold', marginBottom: 8 }}>Mini Jog Controls</legend>

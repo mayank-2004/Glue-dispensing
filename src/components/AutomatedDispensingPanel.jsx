@@ -92,9 +92,9 @@ export default function AutomatedDispensingPanel({
   // Averaged correction vector applied to every pad
   const calibCorrection = calibCaptures.length > 0
     ? {
-        x: calibCaptures.reduce((s, c) => s + c.delta.x, 0) / calibCaptures.length,
-        y: calibCaptures.reduce((s, c) => s + c.delta.y, 0) / calibCaptures.length,
-      }
+      x: calibCaptures.reduce((s, c) => s + c.delta.x, 0) / calibCaptures.length,
+      y: calibCaptures.reduce((s, c) => s + c.delta.y, 0) / calibCaptures.length,
+    }
     : { x: 0, y: 0 };
 
   // Machine Configuration State
@@ -110,6 +110,23 @@ export default function AutomatedDispensingPanel({
   const [currentPadInfo, setCurrentPadInfo] = useState(null);
   const [jobReport, setJobReport] = useState(null);
   const jobStartTimeRef = useRef(null);
+
+  // Z-axis surface probing
+  const [enableSurfaceProbe, setEnableSurfaceProbe] = useState(false);
+  const probedSurfaceZRef = useRef(null);
+  const [probeResult, setProbeResult] = useState(null); // null | 'contact' | 'no-contact'
+
+  // Board presence detection
+  const [boardCheckResult, setBoardCheckResult] = useState(null); // null | {present, confidence, std_dev, reason}
+  const [boardCheckBusy, setBoardCheckBusy] = useState(false);
+  const [boardConfirmed, setBoardConfirmed] = useState(false);
+
+  // Recipe save/load
+  const [savedRecipes, setSavedRecipes] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('glueRecipes') || '{}'); } catch { return {}; }
+  });
+  const [recipeName, setRecipeName] = useState('');
+  const [activeRecipe, setActiveRecipe] = useState('');
 
   // Nozzle purge
   const [purgeEnabled, setPurgeEnabled] = useState(true);
@@ -152,9 +169,16 @@ export default function AutomatedDispensingPanel({
   // Queue for synchronous sending
   const ackQueue = useRef([]);
 
+  // Soft axis limits — prevent moves outside machine travel envelope
+  const [axisLimits, setAxisLimits] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('axisLimits') || 'null') || { maxX: 300, maxY: 300, maxZ: 50 }; }
+    catch { return { maxX: 300, maxY: 300, maxZ: 50 }; }
+  });
+
   useEffect(() => { xfRef.current = xf; }, [xf]);
   useEffect(() => { fiducialsRef.current = fiducials; }, [fiducials]);
   useEffect(() => { localStorage.setItem('nozzleDia', String(nozzleDia)); }, [nozzleDia]);
+  useEffect(() => { localStorage.setItem('axisLimits', JSON.stringify(axisLimits)); }, [axisLimits]);
   // useEffect(() => { localStorage.setItem('fineTuneX', String(fineTuneX)); }, [fineTuneX]);
   // useEffect(() => { localStorage.setItem('fineTuneY', String(fineTuneY)); }, [fineTuneY]);
   useEffect(() => { localStorage.setItem('calibCaptures', JSON.stringify(calibCaptures)); }, [calibCaptures]);
@@ -200,7 +224,13 @@ export default function AutomatedDispensingPanel({
       //   });
       // }
 
-      // 2. Handle ACKs (Marlin/GRBL sends 'ok')
+      // 2. Parse probe response [PRB:x,y,z:1] (contact=1 means probe triggered)
+      const prbMatch = line.match(/\[PRB:([-\d.]+),([-\d.]+),([-\d.]+):(0|1)\]/);
+      if (prbMatch && prbMatch[4] === '1') {
+        probedSurfaceZRef.current = parseFloat(prbMatch[3]);
+      }
+
+      // 3. Handle ACKs (Marlin/GRBL sends 'ok')
       if (line.trim().startsWith('ok')) {
         const resolver = ackQueue.current.shift();
         if (resolver) resolver(true);
@@ -295,6 +325,49 @@ export default function AutomatedDispensingPanel({
           ? `Need ${needed.toFixed(2)} µL, have ${stock.toFixed(2)} µL${stock < needed ? ' — refill or update stock' : ''}`
           : 'No volume estimate available',
       },
+      ...(enableSurfaceProbe ? [{
+        id: 'probe',
+        label: 'Z surface probe',
+        critical: false,
+        passed: false, // always amber — we can't verify probe wiring from software
+        detail: 'Surface probe enabled — ensure probe/BLTouch is wired to controller. If no contact is detected, the job will continue with your manually-set Z (no G92 Z0 applied). Disable this setting if no probe is connected.',
+      }] : []),
+      {
+        id: 'board',
+        label: 'PCB loaded',
+        critical: false,
+        passed: false, // always amber at preflight — confirmed in the LOADING stage
+        detail: 'You will confirm board presence in the next step (Load PCB stage). Camera check is available there.',
+      },
+      (() => {
+        // Check every transformed pad position against axis limits
+        const { maxX, maxY } = axisLimits;
+        let outCount = 0;
+        let firstOut = null;
+        if (activeSequence?.length > 0 && panelBoards?.length > 0) {
+          for (const board of panelBoards) {
+            const xfm = applyXf ? board.xf : null;
+            for (const pad of activeSequence) {
+              let tp = xfm ? applyTransform(xfm, pad) : pad;
+              const px = tp.x - (toolOffset?.dx || 0);
+              const py = tp.y - (toolOffset?.dy || 0);
+              if (px < 0 || px > maxX || py < 0 || py > maxY) {
+                outCount++;
+                if (!firstOut) firstOut = `${pad.id || 'pad'} @ X${px.toFixed(1)}, Y${py.toFixed(1)}`;
+              }
+            }
+          }
+        }
+        return {
+          id: 'limits',
+          label: 'Pad positions within travel limits',
+          critical: outCount > 0,
+          passed: outCount === 0,
+          detail: outCount === 0
+            ? `All pads within X[0–${maxX}] Y[0–${maxY}] mm`
+            : `${outCount} pad(s) out of bounds — first: ${firstOut}. Check transform or increase axis limits in Settings.`,
+        };
+      })(),
     ];
     return checks;
   };
@@ -305,10 +378,13 @@ export default function AutomatedDispensingPanel({
   };
 
   const proceedFromPreflight = async () => {
+    setBoardCheckResult(null);
+    setBoardConfirmed(false);
     setJobStage('homing');
     setMachineStatus('busy');
     setIsJobRunning(true);
     isJobRunningRef.current = true;
+    if (onStartJob) onStartJob();
 
     try {
       window.pauseSerialPolling = true;
@@ -323,7 +399,22 @@ export default function AutomatedDispensingPanel({
     }
   };
 
-  const proceedToRegistration = async () => {
+  // Returns true if contact detected and Z=0 was set, false if no contact (soft fail — job continues).
+  const probeZSurface = async () => {
+    probedSurfaceZRef.current = null;
+    await sendGcodeWait('G38.2 Z-30 F50');
+    // Brief settle: some firmware sends [PRB:...] a few ms after the 'ok'
+    await new Promise(r => setTimeout(r, 250));
+    if (probedSurfaceZRef.current === null) {
+      console.log('[SurfaceProbe] No [PRB:x,y,z:1] response received — probe not wired, firmware does not support G38.2, or no contact within 30 mm travel. Continuing with current Z.');
+      return false;
+    }
+    await sendGcodeWait('G92 Z0'); // Redefine Z=0 at the probed PCB surface
+    console.log('[SurfaceProbe] PCB surface at machine Z:', probedSurfaceZRef.current.toFixed(3), '→ G92 Z0 applied');
+    return true;
+  };
+
+  const proceedToRegistration = () => {
     setJobStage('dispensing');
     runDispenseLoop(resumeFromPad);
   };
@@ -335,6 +426,7 @@ export default function AutomatedDispensingPanel({
     setJobReport(null);
     setCurrentPadInfo(null);
     setDotCheckResults([]);
+    setProbeResult(null);
     padLogRef.current = [];
     correctionVectorsRef.current = [];
     try {
@@ -354,6 +446,39 @@ export default function AutomatedDispensingPanel({
       }
 
       const seq = activeSequence;
+
+      // ── Z-axis surface probe ─────────────────────────────────────────
+      if (enableSurfaceProbe) {
+        setJobStage('probing');
+        // Move to first pad's machine position for a representative surface reading
+        if (seq.length > 0 && panelBoards.length > 0) {
+          const firstBoard = panelBoards[0];
+          const firstXf = applyXf ? firstBoard.xf : null;
+          const fp = seq[0];
+          let probeTarget = null;
+          if (panelXf && firstBoard.offsetX != null) {
+            const ps = { x: fp.x + firstBoard.offsetX, y: fp.y + firstBoard.offsetY };
+            probeTarget = applyTransform(panelXf, ps);
+            if (firstXf && firstXf !== panelXf) probeTarget = applyTransform(firstXf, probeTarget);
+          } else if (firstXf) {
+            probeTarget = applyTransform(firstXf, fp);
+          }
+          if (probeTarget) {
+            const cx = probeTarget.x - (toolOffset?.dx || 0) + calibCorrection.x;
+            const cy = probeTarget.y - (toolOffset?.dy || 0) + calibCorrection.y;
+            await sendGcodeWait(`G1 X${cx.toFixed(3)} Y${cy.toFixed(3)} F4000`);
+            await sendGcodeWait('M400');
+            await new Promise(r => setTimeout(r, 300));
+          }
+        }
+        const probeOk = await probeZSurface();
+        setProbeResult(probeOk ? 'contact' : 'no-contact');
+        await sendGcodeWait(`G1 Z${safeTravelHeight} F3000`); // retract
+        if (!probeOk) {
+          console.log('[SurfaceProbe] Skipped — running with operator-set Z reference.');
+        }
+        setJobStage('dispensing');
+      }
       const totalPoints = seq.length * panelBoards.length;
       let globalPointCount = 0;
 
@@ -373,7 +498,7 @@ export default function AutomatedDispensingPanel({
         if (applyXf && dynamicPanelCorrection && solvedFiducials.length >= 2) {
           console.log(`[Dynamic Vision] Auto-correcting board: ${board.name} using ${solvedFiducials.length} fiducials`);
           setJobStage('auto-aligning');
-          
+
           let updatedMachineFiducials = [];
           let success = true;
 
@@ -382,18 +507,16 @@ export default function AutomatedDispensingPanel({
 
             // 1. Where do we EXPECT this fiducial to be in machine space?
             //    The transform maps design → camera machine coords directly.
-            //    No toolOffset subtraction needed here — the transform already
-            //    produces the position where the CAMERA crosshair should be.
             const expectedMachine = applyTransform(transform, f.design);
-            
+
             console.log(`[Dynamic Vision] Moving camera to expected fiducial ${f.id}: X${expectedMachine.x.toFixed(3)} Y${expectedMachine.y.toFixed(3)}`);
             await sendGcodeWait(`G1 Z${safeTravelHeight} F3000`);
             await sendGcodeWait(`G1 X${expectedMachine.x.toFixed(3)} Y${expectedMachine.y.toFixed(3)} F4000`);
-            
+
             // 2. Wait for camera mechanics to settle
             await sendGcodeWait('M400');
-            await new Promise(r => setTimeout(r, 800)); 
-            
+            await new Promise(r => setTimeout(r, 800));
+
             // 3. Snap via vision API
             if (window.__SNAP_FIDUCIAL_MACHINE_COORD__) {
               let snap = null;
@@ -423,14 +546,14 @@ export default function AutomatedDispensingPanel({
 
           if (success && updatedMachineFiducials.length >= 2) {
             try {
-              const freshXf = updatedMachineFiducials.length >= 3 
+              const freshXf = updatedMachineFiducials.length >= 3
                 ? fitAffine(updatedMachineFiducials.map(f => f.design), updatedMachineFiducials.map(f => f.machine))
                 : fitSimilarity(updatedMachineFiducials.map(f => f.design), updatedMachineFiducials.map(f => f.machine));
               if (freshXf) {
                 console.log(`[Dynamic Vision] Board ${board.name} corrected. New XF applied.`);
-                transform = freshXf; 
+                transform = freshXf;
               }
-            } catch(e) {
+            } catch (e) {
               console.warn(`[Dynamic Vision] XF solve failed, falling back to baseline: ${e.message}`);
             }
           }
@@ -489,6 +612,10 @@ export default function AutomatedDispensingPanel({
           const finalX = p.x + calibCorrection.x;
           const finalY = p.y + calibCorrection.y;
 
+          // Soft axis limits guard — abort job if this pad is outside travel envelope
+          const zWork = dispenseHeight + getZOffsetForPoint(finalX, finalY);
+          assertInBounds(finalX, finalY, zWork, `pad ${globalPointCount}`);
+
           const pressure = dispensingSequencer.calculatePadPressure(p, { customPressure: localPressure });
           const configDwell = pressureSettings.customDwellTime || baseDwellTime;
           const dwell = dispensingSequencer.calculateDwellTime(p, { customDwellTime: configDwell });
@@ -523,7 +650,7 @@ export default function AutomatedDispensingPanel({
               x: finalX, y: finalY,
               beadLength: dispenseMode.length,
               beadAxis: dispenseMode.axis,
-              zWork: dispenseHeight + getZOffsetForPoint(finalX, finalY),
+              zWork,
               zSafe: safeTravelHeight,
               feedXY: speedSettings.travelSpeed || 6000,
               feedZ: speedSettings.dispenseSpeed || 300,
@@ -533,7 +660,7 @@ export default function AutomatedDispensingPanel({
           } else {
             cmds = dispensePoint({
               x: finalX, y: finalY,
-              zWork: dispenseHeight + getZOffsetForPoint(finalX, finalY),
+              zWork,
               zSafe: safeTravelHeight,
               feedXY: speedSettings.travelSpeed || 6000,
               feedZ: speedSettings.dispenseSpeed || 300,
@@ -589,6 +716,7 @@ export default function AutomatedDispensingPanel({
           basePressure: localPressure,
           dotsFailed: enableDotVerification ? failed : null,
           dotsChecked: enableDotVerification ? prev.length : null,
+          probedSurfaceZ: probedSurfaceZRef.current,
         });
         return prev;
       });
@@ -597,7 +725,7 @@ export default function AutomatedDispensingPanel({
       if (window.fs?.saveJobLog) {
         const now = new Date();
         // const ts = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
-        const filename = `glue-job.csv`; 
+        const filename = `glue-job.csv`;
         const header = [
           `# Glue Dispensing Job Log`,
           `# Date: ${now.toISOString()}`,
@@ -668,6 +796,7 @@ export default function AutomatedDispensingPanel({
     setJobStage('idle');
     setMachineStatus('idle');
     setCurrentPadInfo(null);
+    if (onJobComplete) onJobComplete();
   };
 
   const jog = async (axis, dir) => {
@@ -716,6 +845,94 @@ export default function AutomatedDispensingPanel({
     URL.revokeObjectURL(url);
   };
 
+  // ── Soft axis limits ─────────────────────────────────────────────────────
+  const assertInBounds = (x, y, z, label = '') => {
+    const { maxX, maxY, maxZ } = axisLimits;
+    const errs = [];
+    if (x != null && (x < 0 || x > maxX)) errs.push(`X${x.toFixed(3)} outside [0, ${maxX}]`);
+    if (y != null && (y < 0 || y > maxY)) errs.push(`Y${y.toFixed(3)} outside [0, ${maxY}]`);
+    if (z != null && (z < 0 || z > maxZ)) errs.push(`Z${z.toFixed(3)} outside [0, ${maxZ}]`);
+    if (errs.length) throw new Error(`Move out of bounds${label ? ` [${label}]` : ''}: ${errs.join(', ')}`);
+  };
+
+  // ── Recipe helpers ────────────────────────────────────────────────────────
+  const RECIPE_KEY = 'glueRecipes';
+
+  const recipeSnapshot = () => ({
+    localPressure, baseDwellTime, dispenseHeight, safeTravelHeight,
+    viscosity, beadAreaThreshold, beadFeedRate,
+    purgeEnabled, purgeDurationMs,
+    valveOnCmd, valveOffCmd,
+    enableDotVerification, enableSurfaceProbe,
+    nozzleDia,
+  });
+
+  const persistRecipes = (obj) => {
+    localStorage.setItem(RECIPE_KEY, JSON.stringify(obj));
+    setSavedRecipes(obj);
+  };
+
+  const handleSaveRecipe = () => {
+    const name = recipeName.trim();
+    if (!name) return;
+    persistRecipes({ ...savedRecipes, [name]: recipeSnapshot() });
+    setActiveRecipe(name);
+  };
+
+  const handleLoadRecipe = (name) => {
+    const r = savedRecipes[name];
+    if (!r) return;
+    if (r.localPressure     != null) setLocalPressure(r.localPressure);
+    if (r.baseDwellTime     != null) setBaseDwellTime(r.baseDwellTime);
+    if (r.dispenseHeight    != null) setDispenseHeight(r.dispenseHeight);
+    if (r.safeTravelHeight  != null) setSafeTravelHeight(r.safeTravelHeight);
+    if (r.viscosity         != null) setViscosity(r.viscosity);
+    if (r.beadAreaThreshold != null) setBeadAreaThreshold(r.beadAreaThreshold);
+    if (r.beadFeedRate      != null) setBeadFeedRate(r.beadFeedRate);
+    if (r.purgeEnabled      != null) setPurgeEnabled(r.purgeEnabled);
+    if (r.purgeDurationMs   != null) setPurgeDurationMs(r.purgeDurationMs);
+    if (r.valveOnCmd        != null) setValveOnCmd(r.valveOnCmd);
+    if (r.valveOffCmd       != null) setValveOffCmd(r.valveOffCmd);
+    if (r.enableDotVerification != null) setEnableDotVerification(r.enableDotVerification);
+    if (r.enableSurfaceProbe    != null) setEnableSurfaceProbe(r.enableSurfaceProbe);
+    if (r.nozzleDia         != null) setNozzleDia(r.nozzleDia);
+    setActiveRecipe(name);
+    setRecipeName(name);
+  };
+
+  const handleDeleteRecipe = (name) => {
+    if (!confirm(`Delete recipe "${name}"?`)) return;
+    const updated = { ...savedRecipes };
+    delete updated[name];
+    persistRecipes(updated);
+    if (activeRecipe === name) { setActiveRecipe(''); setRecipeName(''); }
+  };
+
+  const handleExportRecipes = () => {
+    const blob = new Blob([JSON.stringify(savedRecipes, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'glue-recipes.json'; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportRecipes = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const imported = JSON.parse(ev.target.result);
+        if (typeof imported !== 'object' || Array.isArray(imported)) throw new Error();
+        const merged = { ...savedRecipes, ...imported };
+        persistRecipes(merged);
+        alert(`Imported ${Object.keys(imported).length} recipe(s).`);
+      } catch { alert('Invalid recipe file — expected a JSON object of recipes.'); }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
   return (
     <div className="panel automated-panel">
       <h3 style={{ marginLeft: '10px' }}>🤖 Automated Dispensing</h3>
@@ -753,6 +970,30 @@ export default function AutomatedDispensingPanel({
               Safe Travel Z (mm):
               <input type="number" step="1" value={safeTravelHeight} onChange={e => setSafeTravelHeight(parseFloat(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
             </label>
+            <label style={{ gridColumn: '1 / -1' }}>
+              <span style={{ color: '#f85149', fontWeight: 600 }}>⬛ Axis Limits (mm)</span>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6, marginTop: 4 }}>
+                <label style={{ fontSize: '0.85em' }}>
+                  Max X
+                  <input type="number" step="10" min="10" value={axisLimits.maxX}
+                    onChange={e => setAxisLimits(l => ({ ...l, maxX: Number(e.target.value) }))}
+                    style={{ width: '100%', marginTop: 2 }} />
+                </label>
+                <label style={{ fontSize: '0.85em' }}>
+                  Max Y
+                  <input type="number" step="10" min="10" value={axisLimits.maxY}
+                    onChange={e => setAxisLimits(l => ({ ...l, maxY: Number(e.target.value) }))}
+                    style={{ width: '100%', marginTop: 2 }} />
+                </label>
+                <label style={{ fontSize: '0.85em' }}>
+                  Max Z
+                  <input type="number" step="5" min="5" value={axisLimits.maxZ}
+                    onChange={e => setAxisLimits(l => ({ ...l, maxZ: Number(e.target.value) }))}
+                    style={{ width: '100%', marginTop: 2 }} />
+                </label>
+              </div>
+              <small style={{ color: '#8b949e' }}>Min is always 0. Pre-flight will fail if any pad exceeds these.</small>
+            </label>
             <label>
               Base Dwell (ms):
               <input type="number" step="10" value={baseDwellTime} onChange={e => setBaseDwellTime(Number(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
@@ -770,6 +1011,20 @@ export default function AutomatedDispensingPanel({
               Bead Speed (mm/min):
               <input type="number" step="50" min="50" max="3000" value={beadFeedRate} onChange={e => setBeadFeedRate(Number(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
             </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', gridColumn: '1 / -1' }}>
+              <input
+                type="checkbox"
+                checked={enableSurfaceProbe}
+                onChange={e => setEnableSurfaceProbe(e.target.checked)}
+                style={{ width: 'auto', marginTop: 0 }}
+              />
+              <span>Z-axis surface probe before dispensing</span>
+            </label>
+            {enableSurfaceProbe && (
+              <div style={{ gridColumn: '1 / -1', fontSize: '0.78em', color: '#8b949e', paddingLeft: 22, marginTop: -4 }}>
+                Sends <code>G38.2 Z-30 F50</code> after PCB load — detects actual PCB surface, sets Z=0 there. Dispense Z is then clearance above that surface. Requires a probe/BLTouch wired to the controller.
+              </div>
+            )}
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
               <input
                 type="checkbox"
@@ -803,6 +1058,84 @@ export default function AutomatedDispensingPanel({
               </label>
             )}
           </div>
+
+          {/* ── Recipe Manager ──────────────────────────────────────────── */}
+          <details style={{ marginTop: 14 }}>
+            <summary style={{ cursor: 'pointer', fontWeight: 600, color: '#58a6ff', fontSize: '0.9em', userSelect: 'none' }}>
+              🗂 Recipe Manager
+            </summary>
+            <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+
+              {/* Save current settings */}
+              <div style={{ display: 'flex', gap: 6 }}>
+                <input
+                  type="text"
+                  placeholder="Recipe name…"
+                  value={recipeName}
+                  onChange={e => setRecipeName(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleSaveRecipe()}
+                  style={{ flex: 1, padding: '4px 8px', fontSize: '0.85em', background: '#161b22', border: '1px solid #30363d', color: '#e6edf3', borderRadius: 4 }}
+                />
+                <button
+                  className="btn"
+                  style={{ fontSize: '0.82em', padding: '4px 12px', whiteSpace: 'nowrap' }}
+                  disabled={!recipeName.trim()}
+                  onClick={handleSaveRecipe}
+                  title="Save current settings as a recipe"
+                >💾 Save</button>
+              </div>
+
+              {/* Saved recipes list */}
+              {Object.keys(savedRecipes).length > 0 ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 190, overflowY: 'auto' }}>
+                  {Object.keys(savedRecipes).map(name => (
+                    <div key={name} style={{
+                      display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px',
+                      background: activeRecipe === name ? 'rgba(88,166,255,0.1)' : '#161b22',
+                      border: `1px solid ${activeRecipe === name ? '#58a6ff44' : '#30363d'}`,
+                      borderRadius: 4, fontSize: '0.82em',
+                    }}>
+                      <span style={{ flex: 1, color: '#e6edf3', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={name}>
+                        {activeRecipe === name && <span style={{ color: '#58a6ff', marginRight: 4 }}>▶</span>}
+                        {name}
+                      </span>
+                      <button
+                        style={{ fontSize: '0.75em', padding: '2px 8px', background: '#1f6feb', color: '#fff', border: 'none', borderRadius: 3, cursor: 'pointer', flexShrink: 0 }}
+                        onClick={() => handleLoadRecipe(name)}
+                      >Load</button>
+                      <button
+                        style={{ fontSize: '0.75em', padding: '2px 6px', background: 'transparent', color: '#f85149', border: '1px solid #f8514966', borderRadius: 3, cursor: 'pointer', flexShrink: 0 }}
+                        onClick={() => handleDeleteRecipe(name)}
+                        title={`Delete "${name}"`}
+                      >✕</button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ color: '#8b949e', fontSize: '0.8em', fontStyle: 'italic', padding: '4px 0' }}>
+                  No saved recipes. Enter a name above and click Save.
+                </div>
+              )}
+
+              {/* Import / Export */}
+              <div style={{ display: 'flex', gap: 6, borderTop: '1px solid #21262d', paddingTop: 8, marginTop: 2 }}>
+                <button
+                  className="btn secondary"
+                  style={{ flex: 1, fontSize: '0.78em', padding: '4px 0' }}
+                  disabled={Object.keys(savedRecipes).length === 0}
+                  onClick={handleExportRecipes}
+                  title="Download all recipes as a JSON file"
+                >⬇ Export JSON</button>
+                <label style={{ flex: 1 }}>
+                  <span className="btn secondary" style={{ display: 'block', textAlign: 'center', fontSize: '0.78em', padding: '4px 0', cursor: 'pointer' }}>
+                    ⬆ Import JSON
+                  </span>
+                  <input type="file" accept=".json" style={{ display: 'none' }} onChange={handleImportRecipes} />
+                </label>
+              </div>
+
+            </div>
+          </details>
 
           {/* Fine-Tune XY Correction UI disabled — fineTuneX and fineTuneY state removed */}
           <div style={{ marginTop: 14 }}>
@@ -890,10 +1223,10 @@ export default function AutomatedDispensingPanel({
         {applyXf && (
           <div style={{ marginTop: 12, padding: '10px', background: '#ffebee', color: '#b71c1c', borderRadius: 4, fontSize: '0.86rem', display: 'flex', flexDirection: 'column', gap: 6, border: '1px solid #ffcdd2' }}>
             <label style={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-              <input 
-                type="checkbox" 
-                checked={dynamicPanelCorrection} 
-                onChange={e => setDynamicPanelCorrection(e.target.checked)} 
+              <input
+                type="checkbox"
+                checked={dynamicPanelCorrection}
+                onChange={e => setDynamicPanelCorrection(e.target.checked)}
                 style={{ width: 16, height: 16, cursor: 'pointer' }}
               />
               Dynamic Panel Auto-Correction (Recommended)
@@ -1164,8 +1497,92 @@ export default function AutomatedDispensingPanel({
           {jobStage === 'loading' && (
             <div className="stage-box">
               <h4>Load PCB</h4>
-              <p>Secure the PCB on the bed.</p>
-              <button className="btn primary lg full-width" onClick={proceedToRegistration}>Next: Registration</button>
+              <p style={{ color: '#8b949e', fontSize: '0.85em', marginBottom: 10 }}>
+                Place and secure the PCB on the bed, then verify it is present before proceeding.
+              </p>
+
+              {/* Camera board-presence check */}
+              <button
+                className="btn secondary full-width"
+                style={{ marginBottom: 8 }}
+                disabled={boardCheckBusy}
+                onClick={async () => {
+                  setBoardCheckBusy(true);
+                  setBoardCheckResult(null);
+                  try {
+                    const r = await fetch('http://localhost:8000/api/check_board_present');
+                    if (r.ok) {
+                      const d = await r.json();
+                      setBoardCheckResult(d);
+                      if (d.present) setBoardConfirmed(true);
+                    } else {
+                      setBoardCheckResult({ present: null, reason: 'Vision server error — check manually.' });
+                    }
+                  } catch {
+                    setBoardCheckResult({ present: null, reason: 'Vision server offline — confirm manually below.' });
+                  } finally {
+                    setBoardCheckBusy(false);
+                  }
+                }}
+              >
+                {boardCheckBusy ? 'Checking…' : '📷 Check Board Present'}
+              </button>
+
+              {boardCheckResult && (
+                <div style={{
+                  marginBottom: 10, padding: '6px 10px', borderRadius: 5, fontSize: '0.82em',
+                  background: boardCheckResult.present === true ? 'rgba(0,180,100,0.12)' : boardCheckResult.present === false ? 'rgba(220,50,50,0.1)' : 'rgba(227,179,65,0.12)',
+                  border: `1px solid ${boardCheckResult.present === true ? '#2da44e' : boardCheckResult.present === false ? '#f85149' : '#e3b341'}`,
+                  color: boardCheckResult.present === true ? '#3fb950' : boardCheckResult.present === false ? '#f85149' : '#e3b341',
+                }}>
+                  {boardCheckResult.present === true && '✓ '}
+                  {boardCheckResult.present === false && '✗ '}
+                  {boardCheckResult.present === null && '⚠ '}
+                  {boardCheckResult.reason}
+                  {boardCheckResult.confidence != null && ` (${Math.round(boardCheckResult.confidence * 100)}% confidence)`}
+                </div>
+              )}
+
+              {/* Manual override confirmation */}
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: '0.85em', marginBottom: 12 }}>
+                <input
+                  type="checkbox"
+                  checked={boardConfirmed}
+                  onChange={e => setBoardConfirmed(e.target.checked)}
+                  style={{ width: 'auto' }}
+                />
+                PCB is loaded and secured on the bed
+              </label>
+
+              <button
+                className="btn primary lg full-width"
+                disabled={!boardConfirmed}
+                onClick={proceedToRegistration}
+              >
+                {boardConfirmed ? 'Next: Start Job ▶' : 'Confirm board loaded first'}
+              </button>
+            </div>
+          )}
+
+          {/* STAGE: PROBING */}
+          {jobStage === 'probing' && (
+            <div className="stage-box">
+              <h4>Probing PCB Surface...</h4>
+              <p style={{ color: '#8b949e', fontSize: '0.85em' }}>
+                Sending <code>G38.2 Z-30 F50</code> — machine lowers slowly until probe contact, then sets Z=0 at PCB surface.
+              </p>
+              {probeResult === null && <div className="spinner"></div>}
+              {probeResult === 'contact' && (
+                <div style={{ marginTop: 8, padding: '6px 10px', background: 'rgba(0,180,100,0.12)', border: '1px solid #2da44e', borderRadius: 5, color: '#3fb950', fontSize: '0.85em', fontFamily: 'monospace' }}>
+                  ✓ Contact at Z={probedSurfaceZRef.current?.toFixed(3)} mm — G92 Z0 applied
+                </div>
+              )}
+              {probeResult === 'no-contact' && (
+                <div style={{ marginTop: 8, padding: '6px 10px', background: 'rgba(220,50,50,0.1)', border: '1px solid #f85149', borderRadius: 5, color: '#f85149', fontSize: '0.82em' }}>
+                  ⚠ No probe contact detected — continuing with current Z (no G92 Z0 applied). Check probe wiring or disable surface probe in settings.
+                </div>
+              )}
+              <button className="btn danger full-width" style={{ marginTop: 10 }} onClick={cancelJob}>STOP</button>
             </div>
           )}
 
@@ -1221,6 +1638,14 @@ export default function AutomatedDispensingPanel({
                     <tr><td style={{ color: '#8b949e', padding: '2px 6px' }}>Duration</td><td style={{ color: '#e6edf3', textAlign: 'right' }}>{jobReport.jobDurationSec} s</td></tr>
                     <tr><td style={{ color: '#8b949e', padding: '2px 6px' }}>Avg dwell</td><td style={{ color: '#d32f2f', textAlign: 'right' }}>{jobReport.avgDwellMs} ms</td></tr>
                     <tr><td style={{ color: '#8b949e', padding: '2px 6px' }}>Base pressure</td><td style={{ color: '#ffa726', textAlign: 'right' }}>{jobReport.basePressure} PSI</td></tr>
+                    {enableSurfaceProbe && (
+                      <tr>
+                        <td style={{ color: '#8b949e', padding: '2px 6px' }}>PCB surface (Z probe)</td>
+                        <td style={{ textAlign: 'right', fontFamily: 'monospace', color: jobReport.probedSurfaceZ != null ? '#58a6ff' : '#e3b341' }}>
+                          {jobReport.probedSurfaceZ != null ? `${jobReport.probedSurfaceZ.toFixed(3)} mm` : '⚠ no contact'}
+                        </td>
+                      </tr>
+                    )}
                     {jobReport.dotsChecked != null && (
                       <tr>
                         <td style={{ color: '#8b949e', padding: '2px 6px' }}>Dot verification</td>

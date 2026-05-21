@@ -36,3 +36,15 @@ Dot verification data is collected per-pad but discarded after the job (only the
 
 12. Soft axis limits enforcement
 Before any G1 move the app should check that the target coordinate is inside the machine's travel envelope. Currently nothing prevents sending a move that would crash into the frame. This is especially important for the vision-snap micro-jogs.
+
+
+
+
+
+
+FOR RING LIGHT - 
+Option A — Implement software-only camera exposure/gain control (works right now)
+The Python server already owns the camera via OpenCV. We can expose CAP_PROP_EXPOSURE, CAP_PROP_BRIGHTNESS and CAP_PROP_GAIN controls via a new API endpoint + sliders in CameraPanel. This achieves the same practical goal — consistent illumination for fiducial detection — purely in software, no hardware needed.
+
+Option B — Stub the UI now, wire hardware later
+Add the M42 brightness slider to the settings UI but disable it with a "No ring light connected" note. When you add the hardware, just enable it.

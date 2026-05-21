@@ -187,6 +187,7 @@ export default function App() {
   }, [xf, applyXf, selectedOrigin, pcbOriginOffset]);
 
   const [isHomed, setIsHomed] = useState(false);
+  const [isJobRunning, setIsJobRunning] = useState(false);
 
   const handleHomingComplete = useCallback(async () => {
     setIsHomed(true);
@@ -2157,6 +2158,7 @@ export default function App() {
                 onAdvanceArmedFid={onAdvanceArmedFid}
                 panelXf={panelXf}
                 side={side}
+                isJobRunning={isJobRunning}
               />
             </div>
 
@@ -2215,7 +2217,7 @@ export default function App() {
                 isHomed={isHomed}
                 machinePosition={machinePos}
                 onStartJob={(gcode, mode) => {
-                  console.log(`Job started in ${mode} mode`);
+                  setIsJobRunning(true);
                   maintenanceManager.recordDispense();
                 }}
                 onDownloadGCode={(gcode) => {
@@ -2227,8 +2229,7 @@ export default function App() {
                   a.click();
                 }}
                 onJobComplete={() => {
-                  console.log('Automated job finished');
-                  alert('Job Complete!');
+                  setIsJobRunning(false);
                 }}
                 layerData={layerData}
               />
