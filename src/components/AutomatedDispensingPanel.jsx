@@ -23,6 +23,58 @@ function idwCorrect(x, y, vectors, power = 2) {
   return { dx: wdx / wsum, dy: wdy / wsum };
 }
 
+// ── SPC (Statistical Process Control) helpers ────────────────────────────────
+const SPC_KEY     = 'spcDotQuality';
+const SPC_MAX_JOBS = 60; // rolling window — oldest entries drop off
+
+function spcLoad() {
+  try { return JSON.parse(localStorage.getItem(SPC_KEY) || '{"jobs":[]}'); }
+  catch { return { jobs: [] }; }
+}
+
+function spcAppend(dotResults, totalPads) {
+  if (!dotResults || dotResults.length === 0) return;
+  const data  = spcLoad();
+  const passed = dotResults.filter(r => r.passed).length;
+  const diams  = dotResults.filter(r => r.diameter_mm > 0).map(r => r.diameter_mm);
+  data.jobs = [
+    ...data.jobs,
+    {
+      jobId:       new Date().toISOString(),
+      date:        new Date().toLocaleDateString(),
+      totalPads,
+      checked:     dotResults.length,
+      passed,
+      failed:      dotResults.length - passed,
+      passRate:    passed / dotResults.length,
+      avgDiameter: diams.length ? diams.reduce((a, b) => a + b, 0) / diams.length : null,
+      minDiameter: diams.length ? Math.min(...diams) : null,
+    },
+  ].slice(-SPC_MAX_JOBS);
+  localStorage.setItem(SPC_KEY, JSON.stringify(data));
+}
+
+// Minimal SVG sparkline — values[] is an array of numbers
+function Sparkline({ values, color = '#58a6ff', height = 36, width = '100%' }) {
+  if (!values || values.length < 2) return null;
+  const min = Math.min(...values), max = Math.max(...values);
+  const range = max - min || 1;
+  const W = 260, H = height;
+  const pts = values.map((v, i) => {
+    const x = (i / (values.length - 1)) * W;
+    const y = H - ((v - min) / range) * (H - 4) - 2;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const last = values[values.length - 1];
+  const lx   = W, ly = H - ((last - min) / range) * (H - 4) - 2;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width, height, display: 'block', overflow: 'visible' }}>
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.8" strokeLinejoin="round" />
+      <circle cx={lx} cy={ly} r="3" fill={color} />
+    </svg>
+  );
+}
+
 export default function AutomatedDispensingPanel({
   side = 'top',
   dispensingSequencer,
@@ -111,6 +163,9 @@ export default function AutomatedDispensingPanel({
   const [jobReport, setJobReport] = useState(null);
   const jobStartTimeRef = useRef(null);
 
+  // Tracks which sub-board within the panel is currently being dispensed (0-based)
+  const [currentBoardIdx, setCurrentBoardIdx] = useState(0);
+
   // Z-axis surface probing
   const [enableSurfaceProbe, setEnableSurfaceProbe] = useState(false);
   const probedSurfaceZRef = useRef(null);
@@ -136,6 +191,9 @@ export default function AutomatedDispensingPanel({
   // Dot verification
   const [enableDotVerification, setEnableDotVerification] = useState(false);
   const [dotCheckResults, setDotCheckResults] = useState([]); // {padIndex, passed, diameter_mm, confidence}
+
+  // SPC trend data (persisted across jobs in localStorage)
+  const [spcData, setSpcData] = useState(() => spcLoad());
 
   // Per-pad log accumulator (ref so it's readable inside async loop without stale closure)
   const padLogRef = useRef([]);
@@ -196,6 +254,13 @@ export default function AutomatedDispensingPanel({
     }
     return boardOutline;
   }, [fiducials, boardOutline]);
+
+  // Clamp previewPadIdx when the sequence shrinks
+  useEffect(() => {
+    if (activeSequence && activeSequence.length > 0 && previewPadIdx >= activeSequence.length) {
+      setPreviewPadIdx(activeSequence.length - 1);
+    }
+  }, [activeSequence?.length]);
 
   useEffect(() => {
     if (!activeSequence || activeSequence.length === 0) {
@@ -427,6 +492,7 @@ export default function AutomatedDispensingPanel({
     setCurrentPadInfo(null);
     setDotCheckResults([]);
     setProbeResult(null);
+    setCurrentBoardIdx(0);
     padLogRef.current = [];
     correctionVectorsRef.current = [];
     try {
@@ -485,6 +551,7 @@ export default function AutomatedDispensingPanel({
       setJobProgress({ current: 0, total: totalPoints });
 
       for (let bIdx = 0; bIdx < panelBoards.length; bIdx++) {
+        setCurrentBoardIdx(bIdx);
         const board = panelBoards[bIdx];
         let transform = applyXf ? board.xf : null;
 
@@ -718,6 +785,11 @@ export default function AutomatedDispensingPanel({
           dotsChecked: enableDotVerification ? prev.length : null,
           probedSurfaceZ: probedSurfaceZRef.current,
         });
+        // Persist dot quality to SPC store
+        if (enableDotVerification && prev.length > 0) {
+          spcAppend(prev, totalPoints);
+          setSpcData(spcLoad());
+        }
         return prev;
       });
 
@@ -1011,6 +1083,21 @@ export default function AutomatedDispensingPanel({
               Bead Speed (mm/min):
               <input type="number" step="50" min="50" max="3000" value={beadFeedRate} onChange={e => setBeadFeedRate(Number(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
             </label>
+            {purgeEnabled && (
+              <label>
+                Purge Duration (ms):
+                <input
+                  type="number"
+                  step="500"
+                  min="500"
+                  max="10000"
+                  value={purgeDurationMs}
+                  onChange={e => setPurgeDurationMs(Number(e.target.value))}
+                  style={{ width: '100%', marginTop: '4px' }}
+                />
+              </label>
+            )}
+            <br />
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', gridColumn: '1 / -1' }}>
               <input
                 type="checkbox"
@@ -1043,20 +1130,6 @@ export default function AutomatedDispensingPanel({
               />
               <span>Purge nozzle before job</span>
             </label>
-            {purgeEnabled && (
-              <label>
-                Purge Duration (ms):
-                <input
-                  type="number"
-                  step="500"
-                  min="500"
-                  max="10000"
-                  value={purgeDurationMs}
-                  onChange={e => setPurgeDurationMs(Number(e.target.value))}
-                  style={{ width: '100%', marginTop: '4px' }}
-                />
-              </label>
-            )}
           </div>
 
           {/* ── Recipe Manager ──────────────────────────────────────────── */}
@@ -1136,6 +1209,150 @@ export default function AutomatedDispensingPanel({
 
             </div>
           </details>
+
+          {/* ── SPC / Dot Quality Trend  ── */}
+          {(() => {
+            const jobs = spcData.jobs;
+            if (jobs.length === 0 && !enableDotVerification) return null;
+
+            const recent   = jobs.slice(-10);
+            const passRates = recent.map(j => j.passRate * 100);
+            const diameters = recent.filter(j => j.avgDiameter != null).map(j => j.avgDiameter);
+
+            const overallPass  = jobs.length > 0
+              ? jobs.reduce((s, j) => s + j.passed, 0) / jobs.reduce((s, j) => s + j.checked, 0) * 100
+              : null;
+            const recentAvgPass = recent.length > 0
+              ? recent.reduce((s, j) => s + j.passRate, 0) / recent.length * 100
+              : null;
+
+            // Nozzle wear: compare first-half vs second-half avg diameter
+            const half = Math.floor(diameters.length / 2);
+            const diamTrend = half >= 2
+              ? (diameters.slice(half).reduce((a, b) => a + b, 0) / (diameters.length - half)) -
+                (diameters.slice(0, half).reduce((a, b) => a + b, 0) / half)
+              : 0;
+
+            const qualityAlert = recentAvgPass !== null && recentAvgPass < 80;
+            const wearAlert    = diamTrend < -0.05;
+
+            return (
+              <details style={{ marginTop: 14 }} open={qualityAlert || wearAlert}>
+                <summary style={{ cursor: 'pointer', fontWeight: 600, color: qualityAlert || wearAlert ? '#f85149' : '#58a6ff', fontSize: '0.9em', userSelect: 'none' }}>
+                  📊 SPC — Dot Quality Trend {(qualityAlert || wearAlert) && '⚠'}
+                </summary>
+                <div style={{ marginTop: 10, fontSize: '0.82em', display: 'flex', flexDirection: 'column', gap: 8 }}>
+
+                  {/* Alert banners */}
+                  {qualityAlert && (
+                    <div style={{ padding: '6px 10px', background: 'rgba(220,50,50,0.12)', border: '1px solid #f85149', borderRadius: 5, color: '#f85149' }}>
+                      ⚠ Recent pass rate {recentAvgPass.toFixed(0)}% — below 80% threshold. Consider purging or replacing the nozzle.
+                    </div>
+                  )}
+                  {wearAlert && !qualityAlert && (
+                    <div style={{ padding: '6px 10px', background: 'rgba(227,179,65,0.12)', border: '1px solid #e3b341', borderRadius: 5, color: '#e3b341' }}>
+                      ⚠ Dot diameter shrinking ({(diamTrend * 1000).toFixed(0)} µm/job trend) — possible nozzle clogging.
+                    </div>
+                  )}
+
+                  {jobs.length === 0 ? (
+                    <div style={{ color: '#8b949e', fontStyle: 'italic' }}>
+                      No data yet. Enable "Verify glue dot after each pad" and run a job to start tracking.
+                    </div>
+                  ) : (
+                    <>
+                      {/* Summary stats */}
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 }}>
+                        <div style={{ background: '#161b22', borderRadius: 5, padding: '6px 8px', textAlign: 'center' }}>
+                          <div style={{ color: '#8b949e', fontSize: '0.78em' }}>Jobs tracked</div>
+                          <div style={{ color: '#e6edf3', fontWeight: 700, fontSize: '1.1em' }}>{jobs.length}</div>
+                        </div>
+                        <div style={{ background: '#161b22', borderRadius: 5, padding: '6px 8px', textAlign: 'center' }}>
+                          <div style={{ color: '#8b949e', fontSize: '0.78em' }}>Overall pass</div>
+                          <div style={{ color: overallPass >= 90 ? '#3fb950' : overallPass >= 75 ? '#e3b341' : '#f85149', fontWeight: 700, fontSize: '1.1em' }}>
+                            {overallPass != null ? `${overallPass.toFixed(1)}%` : '—'}
+                          </div>
+                        </div>
+                        <div style={{ background: '#161b22', borderRadius: 5, padding: '6px 8px', textAlign: 'center' }}>
+                          <div style={{ color: '#8b949e', fontSize: '0.78em' }}>Avg diameter</div>
+                          <div style={{ color: '#58a6ff', fontWeight: 700, fontSize: '1.1em' }}>
+                            {diameters.length > 0 ? `${(diameters.reduce((a, b) => a + b, 0) / diameters.length).toFixed(2)} mm` : '—'}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Pass rate sparkline */}
+                      {passRates.length >= 2 && (
+                        <div>
+                          <div style={{ color: '#8b949e', marginBottom: 3 }}>Pass rate — last {recent.length} jobs</div>
+                          <div style={{ background: '#161b22', borderRadius: 5, padding: '6px 8px' }}>
+                            <Sparkline values={passRates} color={recentAvgPass >= 80 ? '#3fb950' : '#f85149'} height={40} />
+                            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#8b949e', fontSize: '0.76em', marginTop: 2 }}>
+                              <span>← oldest</span>
+                              <span>{passRates[passRates.length - 1].toFixed(0)}% latest</span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Diameter sparkline */}
+                      {diameters.length >= 2 && (
+                        <div>
+                          <div style={{ color: '#8b949e', marginBottom: 3 }}>Avg dot diameter (mm) — last {diameters.length} jobs</div>
+                          <div style={{ background: '#161b22', borderRadius: 5, padding: '6px 8px' }}>
+                            <Sparkline values={diameters} color={wearAlert ? '#e3b341' : '#58a6ff'} height={40} />
+                            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#8b949e', fontSize: '0.76em', marginTop: 2 }}>
+                              <span>← oldest</span>
+                              <span>{diameters[diameters.length - 1].toFixed(3)} mm latest</span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Per-job history table */}
+                      <details>
+                        <summary style={{ cursor: 'pointer', color: '#8b949e', fontSize: '0.8em' }}>Show job history ({jobs.length} entries)</summary>
+                        <div style={{ maxHeight: 160, overflowY: 'auto', marginTop: 6 }}>
+                          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78em' }}>
+                            <thead>
+                              <tr style={{ color: '#8b949e', textAlign: 'left' }}>
+                                <th style={{ padding: '2px 6px' }}>Date</th>
+                                <th style={{ padding: '2px 6px' }}>Pass</th>
+                                <th style={{ padding: '2px 6px' }}>Fail</th>
+                                <th style={{ padding: '2px 6px' }}>Rate</th>
+                                <th style={{ padding: '2px 6px' }}>Avg ⌀</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {[...jobs].reverse().map((j, i) => (
+                                <tr key={i} style={{ borderTop: '1px solid #21262d' }}>
+                                  <td style={{ padding: '2px 6px', color: '#8b949e' }}>{j.date}</td>
+                                  <td style={{ padding: '2px 6px', color: '#3fb950' }}>{j.passed}</td>
+                                  <td style={{ padding: '2px 6px', color: j.failed > 0 ? '#f85149' : '#8b949e' }}>{j.failed}</td>
+                                  <td style={{ padding: '2px 6px', color: j.passRate >= 0.9 ? '#3fb950' : j.passRate >= 0.75 ? '#e3b341' : '#f85149', fontWeight: 600 }}>
+                                    {(j.passRate * 100).toFixed(0)}%
+                                  </td>
+                                  <td style={{ padding: '2px 6px', color: '#58a6ff' }}>
+                                    {j.avgDiameter != null ? `${j.avgDiameter.toFixed(3)}` : '—'}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </details>
+
+                      <button
+                        className="btn secondary"
+                        style={{ fontSize: '0.78em', padding: '4px 0', marginTop: 2 }}
+                        onClick={() => { if (confirm('Clear all SPC data?')) { localStorage.removeItem(SPC_KEY); setSpcData({ jobs: [] }); } }}
+                      >🗑 Clear SPC Data</button>
+                    </>
+                  )}
+                </div>
+              </details>
+            );
+          })()}
 
           {/* Fine-Tune XY Correction UI disabled — fineTuneX and fineTuneY state removed */}
           <div style={{ marginTop: 14 }}>
@@ -1274,6 +1491,7 @@ export default function AutomatedDispensingPanel({
 
             {(() => {
               const pad = activeSequence[previewPadIdx];
+              if (!pad) return null;
               const previewP = { ...pad };
               const machineCoord = (applyXf && xf) ? applyTransform(xf, previewP) : null;
               // Apply calibration correction to show the corrected target
@@ -1374,6 +1592,11 @@ export default function AutomatedDispensingPanel({
             <div className={`stage-indicator ${jobStage !== 'idle' ? 'active' : 'idle'}`}>
               <strong>Status:</strong> {jobStage.toUpperCase()}
               {machineStatus === 'busy' && ' (Busy)'}
+              {panelBoards && panelBoards.length > 1 && jobStage === 'dispensing' && (
+                <span style={{ marginLeft: 8, color: '#58a6ff', fontSize: '0.82em', fontFamily: 'monospace' }}>
+                  Board {currentBoardIdx + 1}/{panelBoards.length}
+                </span>
+              )}
             </div>
             <div className="pos-readout">
               Pos: {machinePosition.x.toFixed(3)}, {machinePosition.y.toFixed(3)}, {machinePosition.z.toFixed(3)}
@@ -1599,6 +1822,15 @@ export default function AutomatedDispensingPanel({
           {jobStage === 'dispensing' && (
             <div className="stage-box">
               <h4>Dispensing...</h4>
+              {panelBoards && panelBoards.length > 1 && (
+                <div style={{ marginBottom: 6, padding: '4px 10px', background: '#0d1117', border: '1px solid #30363d', borderRadius: 5, fontFamily: 'monospace', fontSize: '0.82em', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ color: '#8b949e' }}>Board</span>
+                  <span style={{ color: '#58a6ff', fontWeight: 700 }}>
+                    {currentBoardIdx + 1} / {panelBoards.length}
+                    {panelBoards[currentBoardIdx]?.name ? ` — ${panelBoards[currentBoardIdx].name}` : ''}
+                  </span>
+                </div>
+              )}
               <progress value={jobProgress.current} max={jobProgress.total}></progress>
               <p>{jobProgress.current} / {jobProgress.total}</p>
               {currentPadInfo && (

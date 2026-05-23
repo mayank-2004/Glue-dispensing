@@ -1578,6 +1578,38 @@ export default function App() {
     setPanelXf(T);
   };
 
+  // ── Auto-solve board transform once ALL detected fiducials have machine coords ──
+  // Fires after each camera snap; only commits when every fiducial with a design
+  // coord has also been detected (machine coord present).
+  // Per user requirement: applyXf is enabled first, then the matrix is evaluated.
+  useEffect(() => {
+    const withDesign = fiducials.filter(f => f.design);
+    if (withDesign.length < 2) return;                       // need at least 2 points
+    if (!withDesign.every(f => f.machine)) return;           // not all detected yet — wait
+    const T = withDesign.length >= 4
+      ? fitHomography(withDesign.map(f => f.design), withDesign.map(f => f.machine))
+      : withDesign.length >= 3
+        ? fitAffine(withDesign.map(f => f.design), withDesign.map(f => f.machine))
+        : fitSimilarity(withDesign.map(f => f.design), withDesign.map(f => f.machine));
+    setApplyXf(true);  // check "Apply transform to output" first
+    setXf(T);
+    console.log(`[AutoSolve] Board transform computed (${withDesign.length} pts, applyXf enabled)`);
+  }, [fiducials]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Auto-solve panel rail transform once ALL rail fiducials have machine coords ──
+  useEffect(() => {
+    const withDesign = panelRailFiducials.filter(f => f.design);
+    if (withDesign.length < 2) return;
+    if (!withDesign.every(f => f.machine)) return;
+    const T = withDesign.length >= 4
+      ? fitHomography(withDesign.map(f => f.design), withDesign.map(f => f.machine))
+      : withDesign.length >= 3
+        ? fitAffine(withDesign.map(f => f.design), withDesign.map(f => f.machine))
+        : fitSimilarity(withDesign.map(f => f.design), withDesign.map(f => f.machine));
+    setPanelXf(T);
+    console.log(`[AutoSolve] Panel rail transform computed (${withDesign.length} pts)`);
+  }, [panelRailFiducials]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const onRedetectFiducials = () => {
     if (layers.length === 0) return;
     reinitSideState(side, layers);

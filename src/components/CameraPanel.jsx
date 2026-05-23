@@ -1778,14 +1778,12 @@ export default function CameraPanel({
       {/* Video Container */}
       <div style={{ position: 'relative', width: '100%', background: '#111', borderRadius: 8, overflow: 'hidden', pointerEvents: 'auto' }}>
         {pythonMode ? (
-          // ── Python MJPEG Stream ─────────────────────────────────────
           streamOn ? (
             <img
               src={`${PYTHON_URL}/video_feed`}
               alt="Python MJPEG Stream"
               style={{ width: '100%', height: 'auto', display: 'block', cursor: 'crosshair' }}
               onError={(e) => {
-                // Stream dropped (ERR_INCOMPLETE_CHUNKED_ENCODING etc.) — auto-reconnect after 2s
                 console.warn('[CameraPanel] MJPEG stream dropped, reconnecting in 2s...');
                 setTimeout(() => {
                   if (e.target) {
@@ -1798,7 +1796,6 @@ export default function CameraPanel({
                 const rect = e.currentTarget.getBoundingClientRect();
                 const u = e.clientX - rect.left;
                 const v = e.clientY - rect.top;
-                // Native frame size from Python matches our restored 720p config
                 const W = 1280;
                 const Hh = 720;
                 // Map DOM click → native frame pixel
