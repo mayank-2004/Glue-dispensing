@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import "./SerialPanel.css";
+import { useToast } from '../Toast.jsx';
 
 export default function SerialPanel({
   onMachinePositionUpdate = null,
@@ -9,6 +10,7 @@ export default function SerialPanel({
   onHomingComplete,
   machinePosition = { x: 0, y: 0, z: 0 } // Default for safety
 }) {
+  const toast = useToast();
   const [ports, setPorts] = useState([]);
   const [path, setPath] = useState('');
   const [baud, setBaud] = useState(115200);
@@ -80,7 +82,7 @@ export default function SerialPanel({
   }, []);
 
   const connect = async () => {
-    if (!path) return alert("Select a serial port first.");
+    if (!path) { toast.warning("Select a serial port first."); return; }
     try {
       hasReceivedPosRef.current = false;
       setIsHoming(false);
@@ -107,7 +109,7 @@ export default function SerialPanel({
         }
       }, 2000);
     } catch (e) {
-      alert(`Failed to open ${path}: ${e.message}`);
+      toast.error(`Failed to open ${path}: ${e.message}`);
     }
   };
 
@@ -135,7 +137,7 @@ export default function SerialPanel({
     try {
       await window.serial.writeLine(cmd);
     } catch (e) {
-      alert(`Send failed: ${e.message || e}`);
+      toast.error(`Send failed: ${e.message || e}`);
     }
   };
 
@@ -153,7 +155,7 @@ export default function SerialPanel({
     try {
       await window.serial.sendGcode(text);
     } catch (err) {
-      alert(`Send file failed: ${err.message || err}`);
+      toast.error(`Send file failed: ${err.message || err}`);
     }
     e.target.value = '';
   };

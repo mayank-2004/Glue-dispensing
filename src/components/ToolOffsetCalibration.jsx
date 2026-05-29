@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useToast } from '../Toast.jsx';
 
 const ToolOffsetCalibration = ({
     toolOffset,
@@ -7,19 +8,20 @@ const ToolOffsetCalibration = ({
     isConnected,
     onAutoDetect
 }) => {
+    const toast = useToast();
     const [isExpanded, setIsExpanded] = useState(false);
     const [step, setStep] = useState(1);
     const [posA, setPosA] = useState(null); // Needle position
     const [posB, setPosB] = useState(null); // Camera position
 
     const handleSetNeedle = () => {
-        if (!machinePosition) return alert("Machine position unknown! Please connect and home.");
+        if (!machinePosition) { toast.warning("Machine position unknown! Please connect and home."); return; }
         setPosA({ ...machinePosition });
         setStep(2);
     };
 
     const handleSetCamera = () => {
-        if (!machinePosition) return alert("Machine position unknown!");
+        if (!machinePosition) { toast.warning("Machine position unknown!"); return; }
         setPosB({ ...machinePosition });
         setStep(3);
     };
@@ -102,7 +104,7 @@ const ToolOffsetCalibration = ({
                                     className="btn sm secondary"
                                     onClick={async () => {
                                         const success = await onAutoDetect();
-                                        if (!success) alert("Could not auto-detect dot! Please jog manually.");
+                                        if (!success) toast.warning("Could not auto-detect dot! Please jog manually.");
                                     }}
                                     disabled={!isConnected || step !== 2}
                                     title="Uses computer vision to find the dot and jog the machine to center it perfectly"

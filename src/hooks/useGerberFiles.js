@@ -81,6 +81,9 @@ export function useGerberFiles() {
       }
     }
 
+    // Strip PnP/CSV files — they are not Gerber layers and are handled separately
+    expanded = expanded.filter(f => !/\.(csv|txt)$/i.test(f.name));
+
     const read = await Promise.all(expanded.map(async f => ({ name: f.name, text: await f.text() })));
     const ls = identifyLayers(read);
     const extractedData = LayerDataExtractor.extractLayerData(ls);

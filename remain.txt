@@ -48,3 +48,32 @@ The Python server already owns the camera via OpenCV. We can expose CAP_PROP_EXP
 
 Option B — Stub the UI now, wire hardware later
 Add the M42 brightness slider to the settings UI but disable it with a "No ring light connected" note. When you add the hardware, just enable it.
+
+
+
+
+
+
+
+
+
+
+Gaps that matter in production — prioritized:
+
+Priority 1 — Functionally critical (will fail without these)
+
+Gap	Why it matters
+Multi-dot pattern for large ICs	QFP/SOP/SOIC with body >5mm needs 2–4 dots to hold. One dot in the center is not enough — component tilts or falls off during reflow
+DNP / component exclude list	CSV always has through-hole parts, connectors, large caps that must NOT get glue. No way to skip them currently
+Nozzle clog auto-pause	If nozzle clogs mid-job, machine keeps moving but no glue dispenses. Currently detected only after-the-fact by SPC
+Priority 2 — Quality/repeatabilityz
+
+Gap	Why it matters
+Z-height auto-calibration per-board	Fixed dispense height assumes perfectly flat PCB. Warped boards cause inconsistent dot size
+Resume by RefDes in PnP mode	Current resume is by pad index. In PnP mode the operator needs to see "resumed from C8" not "pad 14"
+Production batch report	After N boards, show total volume used, pass rate, avg dot diameter, time per board
+Priority 3 — Production workflow
+
+Gap	Why it matters
+Component height profile	Some components already placed before glue pass need Z-clearance. Need per-footprint safe Z
+GCode dry-run preview	Trace the machine path on screen before committing — catches transform errors before wasting glue

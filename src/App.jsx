@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import { useToast } from './Toast.jsx';
 import "./App.css";
 
 import LayerList from "./components/LayerList.jsx";
@@ -59,6 +60,7 @@ function parseLengthToMm(lenStr = "") {
 }
 
 export default function App() {
+  const toast = useToast();
   const {
     isSerialConnected, machinePos,
     isEmergencyStopped,
@@ -152,7 +154,7 @@ export default function App() {
   // Move nozzle to the PCB's Gerber origin point in machine coordinates
   const goToPcbOrigin = useCallback(async () => {
     if (!window.serial?.writeLine) {
-      alert("Machine not connected.");
+      toast.warning("Machine not connected.");
       return;
     }
 
@@ -168,7 +170,7 @@ export default function App() {
       targetX = pcbOriginOffset.x;
       targetY = pcbOriginOffset.y;
     } else {
-      alert("No PCB origin set. Please solve fiducials or set an origin offset first.");
+      toast.warning("No PCB origin set. Please solve fiducials or set an origin offset first.");
       return;
     }
 
@@ -252,7 +254,7 @@ export default function App() {
   const handleAlignmentCapture = useCallback((refIndex) => {
     const currentMPos = livePreview.machinePosition;
     if (!currentMPos) {
-      alert("No machine position available. Connect machine first.");
+      toast.warning("No machine position available. Connect machine first.");
       return;
     }
 
@@ -277,7 +279,7 @@ export default function App() {
         // Guard against degenerate dimensions
         if (width < 1 || height < 1) {
           console.warn("Alignment failed: board dimensions too small or undefined", { width, height });
-          alert("Cannot compute alignment: board dimensions are invalid. Please load a board outline or paste layer first.");
+          toast.warning("Cannot compute alignment: board dimensions are invalid. Please load a board outline or paste layer first.");
           return prev;
         }
         const designPts = [
@@ -1874,8 +1876,8 @@ export default function App() {
                 </div>
               )}
               <button className="btn primary" onClick={() => {
-                if (!selectedOrigin) { alert("Please load a Gerber file first."); return; }
-                if (!livePreview.machinePosition) { alert("Machine position unknown."); return; }
+                if (!selectedOrigin) { toast.warning("Please load a Gerber file first."); return; }
+                if (!livePreview.machinePosition) { toast.warning("Machine position unknown."); return; }
                 const lmp = livePreview.machinePosition;
                 const tOff = maintenanceManager.getToolOffset();
                 setPcbOriginOffset({ x: -(lmp.x + (tOff?.dx || 0)), y: -(lmp.y + (tOff?.dy || 0)) });
@@ -1902,12 +1904,12 @@ export default function App() {
                       if (referenceType === 'origin') {
                         if (applyXf && xf && selectedOrigin) t = applyTransform(xf, { x: selectedOrigin.x, y: selectedOrigin.y });
                         else if (pcbOriginOffset?.x || pcbOriginOffset?.y) t = { x: pcbOriginOffset.x, y: pcbOriginOffset.y };
-                        else { alert("No PCB origin mapped."); return; }
+                        else { toast.warning("No PCB origin mapped."); return; }
                       } else if (referenceType === 'fiducial' && referencePoint) {
                         const fid = fiducials.find(f => f.id === referencePoint.id);
                         if (fid?.machine) t = { x: fid.machine.x, y: fid.machine.y };
                         else if (applyXf && xf && fid?.design) t = applyTransform(xf, { x: fid.design.x, y: fid.design.y });
-                        else { alert(`Fiducial ${referencePoint.id} has no machine coordinate.`); return; }
+                        else { toast.error(`Fiducial ${referencePoint.id} has no machine coordinate.`); return; }
                       }
                       if (t && confirm(`Move to X${t.x.toFixed(3)} Y${t.y.toFixed(3)}?`)) {
                         await window.serial?.writeLine(`G1 X${t.x.toFixed(3)} Y${t.y.toFixed(3)} F${speedSettings?.travelSpeed || 6000}`);
@@ -1917,13 +1919,13 @@ export default function App() {
                     onClick={async () => {
                       if (confirm("Set Work Zero (G92 X0 Y0)?")) {
                         const lmp = livePreview.machinePosition;
-                        if (!lmp) { alert("Machine position unknown."); return; }
+                        if (!lmp) { toast.warning("Machine position unknown."); return; }
                         const shiftX = -lmp.x, shiftY = -lmp.y;
                         await window.serial.writeLine("G92 X0 Y0");
                         setPcbOriginOffset({ x: 0, y: 0 });
                         setFiducials(prev => prev.map(f => f.machine ? { ...f, machine: { x: f.machine.x + shiftX, y: f.machine.y + shiftY } } : f));
                         setXf(null); setApplyXf(false);
-                        alert("Machine Zero Set!");
+                        toast.success("Machine Zero Set!");
                       }
                     }}>Set Zero</button>
                 </div>
@@ -1989,7 +1991,7 @@ export default function App() {
                     }}
                     onJobComplete={() => {
                       console.log('Dispensing job completed');
-                      alert('Dispensing job completed successfully!');
+                      toast.success('Dispensing job completed successfully!');
                     }}
                     onMachinePositionUpdate={handleMachinePositionUpdate}
                     machinePosition={machinePos}
@@ -2243,6 +2245,7 @@ export default function App() {
                 setActiveBoardIndex={setActiveBoardIndex}
                 panelInfo={panelInfo}
                 panelXf={panelXf}
+                panelRailFiducials={panelRailFiducials}
                 xf={xf}
                 applyXf={applyXf}
                 isConnected={isSerialConnected}

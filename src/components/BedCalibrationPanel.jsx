@@ -22,6 +22,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { applyTransform } from '../lib/utils/transform2d.js';
+import { useToast } from '../Toast.jsx';
 
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
@@ -140,6 +141,8 @@ export default function BedCalibrationPanel({
   onSetPcbOrigin,
 }) {
 
+  const toast = useToast();
+
   // ── Mesh ────────────────────────────────────────────────────────────────────
   const [mesh, setMesh] = useState(() => {
     try {
@@ -246,8 +249,8 @@ export default function BedCalibrationPanel({
   // FLOW STEP 1: Start — check preconditions then enter ANCHOR step
   // ─────────────────────────────────────────────────────────────────────────────
   const startLevelingFlow = useCallback(() => {
-    if (!isConnected)  { alert('Connect the machine first.'); return; }
-    if (!boardOutline) { alert('Load a Gerber board outline file first (must include an outline/edge layer).'); return; }
+    if (!isConnected)  { toast.warning('Connect the machine first.'); return; }
+    if (!boardOutline) { toast.warning('Load a Gerber board outline file first (must include an outline/edge layer).'); return; }
 
     abortRef.current = false;
     setProgress(0);
@@ -268,7 +271,7 @@ export default function BedCalibrationPanel({
   // ─────────────────────────────────────────────────────────────────────────────
   const confirmPcbOrigin = useCallback(async () => {
     const pos = mPosRef.current;
-    if (!pos) { alert('Machine position not available — is the machine connected and homed?'); return; }
+    if (!pos) { toast.warning('Machine position not available — is the machine connected and homed?'); return; }
 
     // Capture current machine position as the PCB (0,0) anchor
     const origin = { x: pos.x, y: pos.y, z: pos.z };
@@ -279,7 +282,7 @@ export default function BedCalibrationPanel({
 
     // Build the 5 probe points now that we know the origin
     const pts = buildProbePoints(origin);
-    if (!pts) { alert('Could not compute probe points — check board outline.'); return; }
+    if (!pts) { toast.error('Could not compute probe points — check board outline.'); return; }
 
     // Safety: ensure all points are within bed travel
     const outOfBounds = validatePoints(pts);
@@ -458,7 +461,7 @@ export default function BedCalibrationPanel({
 
   const saveManualZ = useCallback(async () => {
     const pos = mPosRef.current;
-    if (!pos) { alert('Machine position unavailable.'); return; }
+    if (!pos) { toast.warning('Machine position unavailable.'); return; }
     const i = manualIdx;
     const dispZ = parseFloat((pos.z + dispensingGap).toFixed(4));
 

@@ -1,11 +1,13 @@
 import React, { useState } from "react";
 import "./JogPanel.css";
 import { jogRel } from "../lib/motion/gcode.js";
+import { useToast } from '../Toast.jsx';
 
 export default function JogPanel({
     machinePosition,
     isConnected = false
 }) {
+    const toast = useToast();
     const [stepSize, setStepSize] = useState(10); // mm
     const [feedRate, setFeedRate] = useState(2000); // mm/min
     const [safeZ, setSafeZ] = useState(-5); // mm (Machine coordinate usually negative)
@@ -13,7 +15,7 @@ export default function JogPanel({
 
     // Send a jog command
     const jog = async (axis, dir) => {
-        if (!isConnected) return alert("Please connect to machine first!");
+        if (!isConnected) { toast.warning("Please connect to machine first!"); return; }
         if (isBusy) return;
         setIsBusy(true);
         try {
@@ -53,7 +55,7 @@ export default function JogPanel({
     };
 
     const handleHomeClick = async () => {
-        if (!isConnected) return alert("Please connect to machine first!");
+        if (!isConnected) { toast.warning("Please connect to machine first!"); return; }
         if (isBusy) return;
         if (!confirm("Home all axes (G28)? Ensure area is clear.")) return;
 

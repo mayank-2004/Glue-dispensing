@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useToast } from '../Toast.jsx';
 import { fitAffine, fitSimilarity, fitTranslation, applyTransform } from "../lib/utils/transform2d.js";
 import LensCalibration from "./LensCalibration.jsx";
 import { FiducialVisionDetector } from "../lib/vision/fiducialVision.js";
@@ -20,6 +21,7 @@ function predictFidMachinePos(fid, allFiducials, xf, effectiveOrigin) {
 }
 
 function LensDistortionCalibration() {
+  const toast = useToast();
   const [status, setStatus] = useState(null);
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -38,9 +40,9 @@ function LensDistortionCalibration() {
     try {
       const r = await fetch(`${BASE}/capture`, { method: 'POST' });
       const d = await r.json();
-      if (d.ok) { alert(`Frame ${d.captures} captured — pattern found!`); await refreshStatus(); }
-      else alert(`Not captured: ${d.error}`);
-    } catch { alert('Vision server offline'); }
+      if (d.ok) { toast.success(`Frame ${d.captures} captured — pattern found!`); await refreshStatus(); }
+      else toast.error(`Not captured: ${d.error}`);
+    } catch { toast.error('Vision server offline'); }
     finally { setBusy(false); }
   };
 
@@ -49,9 +51,9 @@ function LensDistortionCalibration() {
     try {
       const r = await fetch(`${BASE}/compute`, { method: 'POST' });
       const d = await r.json();
-      if (d.ok) { alert(`Calibration done — RMS=${d.rms_error} using ${d.frames_used} frames`); await refreshStatus(); }
-      else alert(`Compute failed: ${d.error}`);
-    } catch { alert('Vision server offline'); }
+      if (d.ok) { toast.success(`Calibration done — RMS=${d.rms_error} using ${d.frames_used} frames`); await refreshStatus(); }
+      else toast.error(`Compute failed: ${d.error}`);
+    } catch { toast.error('Vision server offline'); }
     finally { setBusy(false); }
   };
 
@@ -59,7 +61,7 @@ function LensDistortionCalibration() {
     if (!confirm('Delete all calibration data?')) return;
     setBusy(true);
     try { await fetch(`${BASE}/reset`, { method: 'POST' }); await refreshStatus(); }
-    catch { alert('Vision server offline'); }
+    catch { toast.error('Vision server offline'); }
     finally { setBusy(false); }
   };
 
@@ -126,6 +128,7 @@ export default function CameraPanel({
   side = 'top',
   isJobRunning = false,
 }) {
+  const toast = useToast();
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const rafRef = useRef(0);
@@ -429,7 +432,7 @@ export default function CameraPanel({
     if (pythonMode) {
       // Python mode: camera is managed by Python server. Just mark as streaming.
       if (!pythonServerOk) {
-        alert('Python Vision Server is not running!\nRun: npm run install:python\nThen restart npm run dev');
+        toast.error('Python Vision Server is not running! Run: npm run install:python then restart npm run dev');
         return;
       }
       setStreamOn(true);
@@ -444,7 +447,7 @@ export default function CameraPanel({
       tick();
     } catch (e) {
       console.error(e);
-      alert('Could not start camera. Check permissions or device.');
+      toast.error('Could not start camera. Check permissions or device.');
     }
   }
   function stopCam() {
@@ -642,7 +645,7 @@ export default function CameraPanel({
     // 3A: Map Fiducial Mathematically FIRST (So UI updates instantly)
     if (pendingPick) {
       if (!machinePositionRef.current) {
-        alert("Machine position unknown. Cannot map physical coordinates.");
+        toast.warning("Machine position unknown. Cannot map physical coordinates.");
         setPendingPick(null);
         return;
       }
@@ -689,7 +692,7 @@ export default function CameraPanel({
     // ✅ FIX: always read from the ref so this picks up the latest fiducials
     const fr = latestPropsRef.current.fiducials.find(f => f.id === fidId);
     if (!fr || !fr.design || !Number.isFinite(fr.design.x) || !Number.isFinite(fr.design.y)) {
-      alert("This fiducial has no Design coordinates mapped yet. Please mark it on the SVG Viewer first.");
+      toast.warning("This fiducial has no Design coordinates mapped yet. Please mark it on the SVG Viewer first.");
       return;
     }
     setPendingPick(fidId);
@@ -1173,7 +1176,7 @@ export default function CameraPanel({
   const startContinuousDetection = () => {
     if (pythonMode) {
       // ── Python Mode ─────────────────────────────────────────────────
-      if (!streamOn) { alert('Start the camera first!'); return; }
+      if (!streamOn) { toast.warning('Start the camera first!'); return; }
       if (detectionInterval) {
         clearInterval(pythonPollRef.current); pythonPollRef.current = null;
         fetch(`${PYTHON_URL}/api/stop_detect`, { method: 'POST' }).catch(() => {});
@@ -1300,7 +1303,7 @@ export default function CameraPanel({
 
     // ── Browser Mode (original OpenCV.js path) ───────────────────────
     if (!videoRef.current || !streamOn) {
-      alert('Please start the camera first');
+      toast.warning('Please start the camera first');
       return;
     }
 
@@ -1586,7 +1589,7 @@ export default function CameraPanel({
     const wp = [], pp = [];
     pairs.forEach(p => { if (p.world && p.pixel) { wp.push(p.world); pp.push(p.pixel); } });
     const Hm = solveHomography(wp, pp);
-    if (!Hm) return alert("Need at least 4 valid pairs to solve.");
+    if (!Hm) { toast.warning("Need at least 4 valid pairs to solve."); return; }
     setH(Hm);
   }
 
