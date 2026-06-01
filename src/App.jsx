@@ -68,6 +68,41 @@ export default function App() {
     triggerEmergencyStop, resetEmergencyStop,
   } = useSerialMachine();
 
+  // Connection toast tracking
+  const hasConnectedRef        = useRef(false);  // true after first-ever connect this session
+  const prevSerialConnectedRef = useRef(false);
+  const intentionalDisconnectRef = useRef(false);
+
+  useEffect(() => {
+    const wasConnected = prevSerialConnectedRef.current;
+    prevSerialConnectedRef.current = isSerialConnected;
+
+    if (!wasConnected && isSerialConnected) {
+      if (!hasConnectedRef.current) {
+        toast.success("Connection established successfully.");
+        hasConnectedRef.current = true;
+      } else {
+        toast.success("Re-connection established.");
+      }
+      intentionalDisconnectRef.current = false;
+    } else if (wasConnected && !isSerialConnected) {
+      if (intentionalDisconnectRef.current) {
+        toast.info("Machine disconnected.");
+      } else {
+        toast.warning("Connection lost — cable may be loose or disconnected.");
+      }
+      intentionalDisconnectRef.current = false;
+    }
+  }, [isSerialConnected]);
+
+  const prevEmergencyStoppedRef = useRef(false);
+  useEffect(() => {
+    if (isEmergencyStopped && !prevEmergencyStoppedRef.current) {
+      toast.error("Emergency stop triggered — machine halted.");
+    }
+    prevEmergencyStoppedRef.current = isEmergencyStopped;
+  }, [isEmergencyStopped]);
+
   const {
     layers, setLayers, side, setSide, svg,
     pads, setPads, pasteIdx, setPasteIdx,
@@ -1969,8 +2004,25 @@ export default function App() {
                 <div style={{ padding: 12 }}>
                   <SerialPanel
                     isConnected={isSerialConnected}
-                    onConnect={() => { handleSerialConnect(true); setIsHomed(false); }}
-                    onDisconnect={() => { handleSerialDisconnect(); setIsHomed(false); }}
+                    skipHome={hasConnectedRef.current}
+                    onConnect={() => {
+                      handleSerialConnect(true);
+                      if (!hasConnectedRef.current) {
+                        setIsHomed(false); // first connect — G28 will establish position
+                      } else {
+                        setIsHomed(true);  // reconnect — machine is at known position
+                      }
+                    }}
+                    onDisconnect={() => {
+                      intentionalDisconnectRef.current = true;
+                      handleSerialDisconnect();
+                      setIsHomed(false);
+                    }}
+                    onUnexpectedDisconnect={() => {
+                      // intentionalDisconnectRef stays false → "cable lost" toast fires
+                      handleSerialDisconnect();
+                      setIsHomed(false);
+                    }}
                     onHomingComplete={handleHomingComplete}
                     dispensingSequence={dispensingSequence}
                     jobStatistics={jobStatistics}

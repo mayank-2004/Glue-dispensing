@@ -7,20 +7,29 @@ export default function SerialPanel({
   isConnected = false,
   onConnect,
   onDisconnect,
+  onUnexpectedDisconnect,  // called when cable is pulled / port closes unexpectedly
   onHomingComplete,
+  skipHome = false,         // true on reconnect — skip G28, preserve current position
   machinePosition = { x: 0, y: 0, z: 0 } // Default for safety
 }) {
   const toast = useToast();
   const [ports, setPorts] = useState([]);
   const [path, setPath] = useState('');
   const [baud, setBaud] = useState(115200);
-  // const [connected, setConnected] = useState(false); // Removed local state
   const [consoleLines, setConsoleLines] = useState([]);
   const [isHoming, setIsHoming] = useState(false);
 
   const inputRef = useRef(null);
   const mPosRef = useRef(machinePosition);
   const hasReceivedPosRef = useRef(false);
+  const statusQueryRef = useRef(null); // interval handle for M114 polling
+  const watchdogRef = useRef(null);   // interval handle for data-update watchdog
+  const lastDataRef = useRef(0);      // timestamp of last received serial data
+  // Always-current refs for callbacks so native disconnect handler never goes stale
+  const onUnexpectedDisconnectRef = useRef(onUnexpectedDisconnect);
+  const onDisconnectRef = useRef(onDisconnect);
+  useEffect(() => { onUnexpectedDisconnectRef.current = onUnexpectedDisconnect; });
+  useEffect(() => { onDisconnectRef.current = onDisconnect; });
 
   useEffect(() => {
     mPosRef.current = machinePosition;
@@ -38,9 +47,24 @@ export default function SerialPanel({
     }
   };
 
+  // Native cable-pull detection — fires the moment SerialPort emits 'close' in main process
+  useEffect(() => {
+    if (!window.serial?.onDisconnect) return;
+    const remove = window.serial.onDisconnect(() => {
+      stopWatchdog();
+      if (statusQueryRef.current) { clearInterval(statusQueryRef.current); statusQueryRef.current = null; }
+      setIsHoming(false);
+      hasReceivedPosRef.current = false;
+      const handler = onUnexpectedDisconnectRef.current || onDisconnectRef.current;
+      if (handler) handler();
+    });
+    return remove;
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => { refresh(); }, []);
   useEffect(() => {
     window.serial.onData((line) => {
+      lastDataRef.current = Date.now();
       const ts = new Date().toISOString();
       const isStatusPos = line.match(/X\s*:\s*([-\d.]+)/i) || line.match(/MPos:([-\d.]+)/);
       // Optional: hide M114 responses if they spam too much, but for now we'll format them all
@@ -91,42 +115,106 @@ export default function SerialPanel({
       if (onConnect) onConnect(); // Notify Parent
 
       startStatusQuery();
+      startWatchdog();
 
-      // Auto-Home
-      setTimeout(async () => {
-        try {
-          console.log("Sending G28 auto-home...");
-          setIsHoming(true);
-          await window.serial.writeLine('G28');
-          // Clear homing status after a reasonable time since we are no longer tracking reach
-          setTimeout(() => {
+      if (skipHome) {
+        // Reconnect — machine is already at a known position, just query it
+        setTimeout(async () => {
+          try { await window.serial.writeLine('M114'); } catch {}
+        }, 500);
+      } else {
+        // First connect — run full auto-home sequence
+        setTimeout(async () => {
+          try {
+            console.log("Sending G28 auto-home...");
+            setIsHoming(true);
+            await window.serial.writeLine('G28');
+            setTimeout(() => {
+              setIsHoming(false);
+              if (onHomingComplete) onHomingComplete();
+            }, 5000);
+          } catch (e) {
+            console.error(e);
             setIsHoming(false);
-            if (onHomingComplete) onHomingComplete();
-          }, 5000);
-        } catch (e) {
-          console.error(e);
-          setIsHoming(false);
-        }
-      }, 2000);
+            toast.warning("Auto-home failed — check machine connection and retry.");
+          }
+        }, 2000);
+      }
     } catch (e) {
       toast.error(`Failed to open ${path}: ${e.message}`);
     }
   };
 
+  const stopWatchdog = () => {
+    if (watchdogRef.current) {
+      clearInterval(watchdogRef.current);
+      watchdogRef.current = null;
+    }
+  };
+
+  const startWatchdog = () => {
+    stopWatchdog();
+    lastDataRef.current = Date.now(); // seed so watchdog doesn't fire immediately
+    watchdogRef.current = setInterval(() => {
+      if (window.pauseSerialPolling) {
+        // A job is actively running — G-code write failures will catch cable pulls.
+        // Reset the timer so we don't accumulate stale time during long moves/dwells.
+        lastDataRef.current = Date.now();
+        return;
+      }
+      if (Date.now() - lastDataRef.current > 5000) {
+        // No incoming data for 5 s while idle → cable pulled or port closed
+        stopWatchdog();
+        if (statusQueryRef.current) { clearInterval(statusQueryRef.current); statusQueryRef.current = null; }
+        try { window.serial.close(); } catch {}
+        setIsHoming(false);
+        hasReceivedPosRef.current = false;
+        const handler = onUnexpectedDisconnect || onDisconnect;
+        if (handler) handler();
+      }
+    }, 1000);
+  };
+
+  // Called by the dispense loop on every successful G-code write so the watchdog
+  // knows the connection is alive even when M114 polling is paused.
+  useEffect(() => {
+    window.serialHeartbeat = () => { lastDataRef.current = Date.now(); };
+    return () => { delete window.serialHeartbeat; };
+  }, []);
+
   const startStatusQuery = () => {
-    const interval = setInterval(async () => {
-      if (window.pauseSerialPolling) return; // Prevent background M114s causing 'ok' spam
+    if (statusQueryRef.current) clearInterval(statusQueryRef.current);
+    let failCount = 0;
+    statusQueryRef.current = setInterval(async () => {
+      if (window.pauseSerialPolling) { failCount = 0; return; } // job running — skip
       try {
         await window.serial.writeLine('M114');
-      } catch { /* ignore */ }
+        failCount = 0;
+      } catch {
+        failCount++;
+        if (failCount >= 3) {
+          // 3 consecutive write failures (~1.5 s) → port closed unexpectedly
+          clearInterval(statusQueryRef.current);
+          statusQueryRef.current = null;
+          stopWatchdog();
+          try { await window.serial.close(); } catch {}
+          setIsHoming(false);
+          hasReceivedPosRef.current = false;
+          const handler = onUnexpectedDisconnect || onDisconnect;
+          if (handler) handler();
+        }
+      }
     }, 500);
-    return interval;
   };
 
   const disconnect = async () => {
+    stopWatchdog();
+    if (statusQueryRef.current) {
+      clearInterval(statusQueryRef.current);
+      statusQueryRef.current = null;
+    }
     try { await window.serial.close(); } catch { }
     setIsHoming(false);
-    // setConnected(false); // Removed
     if (onDisconnect) onDisconnect();
   };
 

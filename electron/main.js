@@ -6,6 +6,7 @@ const { SerialPort, ReadlineParser } = require('serialport');
 
 let win;
 let serial = { port: null, parser: null };
+let intentionalClose = false; // flag to distinguish programmatic close from cable pull
 
 function createWindow() {
   win = new BrowserWindow({
@@ -67,6 +68,14 @@ ipcMain.handle('serial:open', async (e, { path: portPath, baudRate = 115200 }) =
       serial.parser.on('data', (line) => {
         win.webContents.send('serial:data', line.toString());
       });
+      // Native disconnect detection: fires immediately when USB cable is pulled
+      port.on('close', () => {
+        if (!intentionalClose && serial.port) {
+          serial.port = null;
+          serial.parser = null;
+          if (win && !win.isDestroyed()) win.webContents.send('serial:disconnected');
+        }
+      });
       resolve();
     });
   });
@@ -75,10 +84,12 @@ ipcMain.handle('serial:open', async (e, { path: portPath, baudRate = 115200 }) =
 
 ipcMain.handle('serial:close', async () => {
   if (!serial.port) return true;
+  intentionalClose = true;
   await new Promise((resolve) => {
     serial.port.close(() => {
       serial.port = null;
       serial.parser = null;
+      intentionalClose = false;
       resolve();
     });
   });

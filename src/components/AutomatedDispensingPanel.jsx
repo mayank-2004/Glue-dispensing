@@ -582,15 +582,23 @@ export default function AutomatedDispensingPanel({
       ackQueue.current.push(resolve);
     });
 
+    let writeOk = false;
     try {
       console.log('SEND:', cmd);
       await window.serial.writeLine(cmd);
+      writeOk = true;
+      if (window.serialHeartbeat) window.serialHeartbeat();
       await ackPromise;
       return true;
     } catch (e) {
       console.error("Send failed:", e);
-      // If write failed, remove the waiter
       ackQueue.current.pop();
+      if (!writeOk) {
+        // writeLine itself failed — port is gone (cable pulled)
+        const connErr = new Error(e.message || "Write failed");
+        connErr.isConnectionLoss = true;
+        throw connErr;
+      }
       throw e;
     }
   };
@@ -733,6 +741,7 @@ export default function AutomatedDispensingPanel({
       await sendGcodeWait('M400');
       setJobStage('loading');
     } catch (e) {
+      window.pauseSerialPolling = false;
       toast.error("Connection failed: " + e.message);
       setJobStage('idle');
       setMachineStatus('idle');
@@ -774,6 +783,7 @@ export default function AutomatedDispensingPanel({
       setJobStage('dispensing');
       runDispenseLoop(resumeFromPad);
     } catch (e) {
+      window.pauseSerialPolling = false;
       toast.error("Connection failed: " + e.message);
       setJobStage('idle');
       setMachineStatus('idle');
@@ -788,7 +798,7 @@ export default function AutomatedDispensingPanel({
     globalPointCountRef.current = 0;
     setJobReport(null);
     setCurrentPadInfo(null);
-    setDotCheckResults([]);
+    if (startFromPad === 0) setDotCheckResults([]);
     setProbeResult(null);
     setCurrentBoardIdx(0);
     padLogRef.current = [];
@@ -1271,7 +1281,19 @@ export default function AutomatedDispensingPanel({
 
     } catch (e) {
       console.error(e);
-      if (e.message !== "Job Aborted") toast.error("Error: " + e.message);
+      if (e.message === "Job Aborted") {
+        // operator clicked Stop — cancelJob() already showed the toast
+      } else if (e.isConnectionLoss) {
+        // cable pulled mid-job — save resume point so operator can reconnect and continue.
+        // The "Connection lost" toast will fire from M114 failure detection; no extra toast here.
+        const padsDone = globalPointCountRef.current;
+        if (padsDone > 0) {
+          localStorage.setItem('resumeFromPad', String(padsDone));
+          setResumeFromPad(padsDone);
+        }
+      } else {
+        toast.error("Job halted — " + e.message);
+      }
       setJobStage('idle');
       setMachineStatus('idle');
       isJobRunningRef.current = false;
@@ -1315,6 +1337,11 @@ export default function AutomatedDispensingPanel({
     isJobRunningRef.current = false;
     setIsJobRunning(false);
     ackQueue.current = []; // Unblock any pending sendGcodeWait
+    toast.warning(
+      padsDone > 0
+        ? `Job stopped by operator — ${padsDone} component${padsDone !== 1 ? 's' : ''} dispensed.`
+        : 'Job cancelled by operator.'
+    );
     if (padsDone > 0) {
       localStorage.setItem('resumeFromPad', String(padsDone));
       setResumeFromPad(padsDone);
@@ -2718,8 +2745,8 @@ export default function AutomatedDispensingPanel({
                         <td style={{ color: '#8b949e', padding: '2px 6px' }}>Dot verification</td>
                         <td style={{ textAlign: 'right', color: jobReport.dotsFailed === 0 ? '#3fb950' : '#f85149', fontWeight: 600 }}>
                           {jobReport.dotsFailed === 0
-                            ? `✓ All ${jobReport.dotsChecked} passed`
-                            : `✗ ${jobReport.dotsFailed} / ${jobReport.dotsChecked} failed`}
+                            ? `✓ All ${jobReport.totalPads} passed`
+                            : `✗ ${jobReport.dotsFailed} / ${jobReport.totalPads} failed`}
                         </td>
                       </tr>
                     )}

@@ -8,21 +8,21 @@ export function useSerialMachine() {
 
   const handleSerialConnect = (status) => {
     setIsSerialConnected(status);
-    if (status) {
-      if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
-      statusIntervalRef.current = setInterval(async () => {
-        try {
-          if (window.serial?.writeLine) await window.serial.writeLine('M114');
-        } catch (e) { console.error('Status poll failed:', e); }
-      }, 500);
-    } else {
-      if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
+    // M114 polling is handled exclusively by SerialPanel's startStatusQuery,
+    // which also detects cable-pull via consecutive write failures.
+    // Do not start a second competing interval here.
+    if (!status && statusIntervalRef.current) {
+      clearInterval(statusIntervalRef.current);
+      statusIntervalRef.current = null;
     }
   };
 
   const handleSerialDisconnect = () => {
     setIsSerialConnected(false);
-    if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
+    if (statusIntervalRef.current) {
+      clearInterval(statusIntervalRef.current);
+      statusIntervalRef.current = null;
+    }
   };
 
   const triggerEmergencyStop = async () => {

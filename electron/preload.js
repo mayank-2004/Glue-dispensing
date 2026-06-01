@@ -16,5 +16,11 @@ contextBridge.exposeInMainWorld('serial', {
         const subscription = (_evt, line) => handler(line);
         ipcRenderer.on('serial:data', subscription);
         return () => ipcRenderer.removeListener('serial:data', subscription);
+    },
+    onDisconnect: (handler) => {
+        // Fires when USB cable is pulled (native SerialPort 'close' event)
+        const subscription = () => handler();
+        ipcRenderer.on('serial:disconnected', subscription);
+        return () => ipcRenderer.removeListener('serial:disconnected', subscription);
     }
 });

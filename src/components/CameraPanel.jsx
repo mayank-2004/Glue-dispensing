@@ -108,7 +108,7 @@ export default function CameraPanel({
   toolOffset,
   setToolOffset,
   qualityController,
-  onCaptureAlignment,
+  onCaptureAlignment, 
   alignmentInfo,
   machinePosition,
   onUpdateFiducials,
