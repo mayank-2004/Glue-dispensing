@@ -13,8 +13,8 @@
 
 /* ── Top Header Bar ─────────────────────────────────────── */
 .app-header {
-  height: 48px;
-  min-height: 48px;
+  height: 56px;
+  min-height: 56px;
   background: var(--bg-header);
   border-bottom: 1px solid var(--border-primary);
   display: flex;
@@ -248,7 +248,7 @@
   flex-direction: column;
   min-height: 0;
   height: 100%;
-  max-height: calc(100vh - 106px); /* Header(48) + Breadcrumb(34) + Padding(24) */
+  max-height: calc(100vh - 120px); /* Header(56) + Breadcrumb(40) + Padding(24) */
 }
 
 /* Content Panel Area */
@@ -263,8 +263,8 @@
 
 /* ── Breadcrumb Strip ───────────────────────────────────── */
 .breadcrumb-bar {
-  height: 34px;
-  min-height: 34px;
+  height: 40px;
+  min-height: 40px;
   background: rgba(0,0,0,0.3);
   border-bottom: 1px solid var(--border-primary);
   display: flex;

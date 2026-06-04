@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 
-export default function MaintenanceManager({ manager, onPurge, isPurging = false }) {
+export default function MaintenanceManager({ manager, onPurge, isPurging = false, spcJobs = [] }) {
   const [status, setStatus] = useState(() => manager?.getMaintenanceStatus() ?? null);
+  const [health, setHealth] = useState(() => manager?.getNozzleHealthScore(spcJobs) ?? null);
   const [showAlert, setShowAlert] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const wasCleaningNeeded = useRef(false);
@@ -9,9 +10,11 @@ export default function MaintenanceManager({ manager, onPurge, isPurging = false
   useEffect(() => {
     if (!manager) return;
     setStatus(manager.getMaintenanceStatus());
+    setHealth(manager.getNozzleHealthScore(spcJobs));
     const interval = setInterval(() => {
       const s = manager.getMaintenanceStatus();
       setStatus(s);
+      setHealth(manager.getNozzleHealthScore(spcJobs));
       if (s.needsCleaning && !wasCleaningNeeded.current) {
         wasCleaningNeeded.current = true;
         setShowAlert(true);
@@ -20,7 +23,7 @@ export default function MaintenanceManager({ manager, onPurge, isPurging = false
       }
     }, 5000);
     return () => clearInterval(interval);
-  }, [manager]);
+  }, [manager, spcJobs]);
 
   if (!status) return null;
 
@@ -30,6 +33,7 @@ export default function MaintenanceManager({ manager, onPurge, isPurging = false
   const markCleaned = () => {
     manager.markCleaned();
     setStatus(manager.getMaintenanceStatus());
+    setHealth(manager.getNozzleHealthScore(spcJobs));
     wasCleaningNeeded.current = false;
     setShowAlert(false);
   };
@@ -72,13 +76,44 @@ export default function MaintenanceManager({ manager, onPurge, isPurging = false
       {/* Inline widget */}
       <div style={{
         marginTop: 12, padding: '10px 12px',
-        background: status.needsCleaning ? 'rgba(220,50,50,0.08)' : 'rgba(255,255,255,0.03)',
-        border: `1px solid ${status.needsCleaning ? '#f85149' : '#30363d'}`,
+        background: health?.level === 'critical' ? 'rgba(220,50,50,0.08)' : health?.level === 'warn' ? 'rgba(227,179,65,0.06)' : 'rgba(255,255,255,0.03)',
+        border: `1px solid ${health?.level === 'critical' ? '#f85149' : health?.level === 'warn' ? '#e3b341' : '#30363d'}`,
         borderRadius: 8,
       }}>
+        {/* Health score row */}
+        {health && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+            {/* Score ring */}
+            <div style={{
+              width: 42, height: 42, borderRadius: '50%', flexShrink: 0,
+              background: `conic-gradient(${health.level === 'good' ? '#3fb950' : health.level === 'warn' ? '#e3b341' : '#f85149'} ${health.score * 3.6}deg, #21262d 0deg)`,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <div style={{
+                width: 30, height: 30, borderRadius: '50%', background: '#0d1117',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: '0.68em', fontWeight: 800,
+                color: health.level === 'good' ? '#3fb950' : health.level === 'warn' ? '#e3b341' : '#f85149',
+              }}>
+                {health.score}
+              </div>
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 700, fontSize: '0.82em', color: health.level === 'good' ? '#3fb950' : health.level === 'warn' ? '#e3b341' : '#f85149' }}>
+                🔧 Nozzle Health
+              </div>
+              <div style={{ fontSize: '0.72em', color: '#8b949e', marginTop: 1 }}>
+                {health.recommendation}
+              </div>
+              <div style={{ fontSize: '0.66em', color: '#6e7681', marginTop: 1 }}>
+                Wear: {health.wearScore}/50 · Quality: {health.qualityScore}/50
+              </div>
+            </div>
+          </div>
+        )}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-          <span style={{ fontWeight: 600, fontSize: '0.85em', color: status.needsCleaning ? '#f85149' : '#e6edf3' }}>
-            {status.needsCleaning ? '⚠ Nozzle Cleaning Required' : '🔧 Nozzle Maintenance'}
+          <span style={{ fontWeight: 600, fontSize: '0.78em', color: '#8b949e' }}>
+            Dispense counter
           </span>
           <div style={{ display: 'flex', gap: 4 }}>
             <button

@@ -30,6 +30,10 @@ export default function SerialPanel({
   const onDisconnectRef = useRef(onDisconnect);
   useEffect(() => { onUnexpectedDisconnectRef.current = onUnexpectedDisconnect; });
   useEffect(() => { onDisconnectRef.current = onDisconnect; });
+  // Keep a live ref to connect() so auto-reconnect never calls a stale closure
+  const connectRef = useRef(null);
+  const isConnectedRef = useRef(isConnected);
+  useEffect(() => { isConnectedRef.current = isConnected; }, [isConnected]);
 
   useEffect(() => {
     mPosRef.current = machinePosition;
@@ -57,6 +61,20 @@ export default function SerialPanel({
       hasReceivedPosRef.current = false;
       const handler = onUnexpectedDisconnectRef.current || onDisconnectRef.current;
       if (handler) handler();
+    });
+    return remove;
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-reconnect — when the port reappears after a cable pull, reconnect without operator click
+  useEffect(() => {
+    if (!window.serial?.onPortAppeared) return;
+    const remove = window.serial.onPortAppeared(({ path: portPath, baudRate }) => {
+      if (isConnectedRef.current) return; // already connected, ignore
+      setPath(portPath);
+      setBaud(baudRate);
+      toast.info("Machine detected — reconnecting automatically…");
+      // Brief delay so the USB device finishes initialising before we open it
+      setTimeout(() => { connectRef.current?.(); }, 1500);
     });
     return remove;
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -144,6 +162,8 @@ export default function SerialPanel({
       toast.error(`Failed to open ${path}: ${e.message}`);
     }
   };
+
+  connectRef.current = connect; // always points to the latest connect closure
 
   const stopWatchdog = () => {
     if (watchdogRef.current) {

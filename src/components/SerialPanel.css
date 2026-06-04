@@ -6,10 +6,11 @@
 }
 
 .control-pane {
-  flex: 0 0 320px;
-  background-color: #d1d5db; /* Light grey */
-  padding: 16px;
-  border-radius: 8px;
+  flex: 0 0 280px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-primary);
+  padding: 14px;
+  border-radius: 10px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -17,8 +18,10 @@
 
 .control-pane h3 {
   margin: 0 0 8px 0;
-  color: #333;
-  font-size: 1.4em;
+  color: var(--text-bright);
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
 }
 
 .control-grid-3 {
@@ -35,55 +38,60 @@
 }
 
 .btn-dark {
-  background-color: #262626;
-  color: #ffffff;
-  border: none;
+  background: var(--bg-input);
+  color: var(--text-bright);
+  border: 1px solid var(--border-highlight);
   border-radius: 8px;
-  padding: 16px 8px;
-  font-size: 0.85em;
-  font-weight: bold;
+  padding: 14px 8px;
+  min-height: 52px;
+  font-size: 0.82em;
+  font-weight: 600;
   cursor: pointer;
-  transition: background-color 0.1s;
+  transition: background 0.15s, border-color 0.15s;
   display: flex;
   align-items: center;
   justify-content: center;
   text-align: center;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .btn-dark:hover {
-  background-color: #404040;
+  background: var(--bg-hover);
+  border-color: var(--border-accent);
 }
 
 .btn-dark:active {
-  background-color: #171717;
+  background: rgba(0,200,215,0.12);
 }
 
 .btn-dark.small {
   padding: 10px 4px;
   font-size: 0.75em;
+  min-height: 44px;
 }
 
 .console-pane {
   flex: 1;
-  background-color: #9ca3af; /* Medium grey behind console */
+  background: var(--bg-card);
+  border: 1px solid var(--border-primary);
   padding: 8px;
-  border-radius: 8px;
+  border-radius: 10px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  height: 400px; /* Force rigid height so it scrolls instead of expanding */
+  height: 380px;
 }
 
 .console-window {
-  background: #ffffff;
-  color: #333;
+  background: var(--bg-input);
+  color: var(--text-primary);
   font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
   font-size: 13px;
-  padding: 4px;
-  border-radius: 4px;
+  padding: 6px;
+  border-radius: 6px;
   flex: 1;
   overflow-y: auto;
-  border: 1px solid #6b7280;
+  border: 1px solid var(--border-primary);
   line-height: 1.6;
 }
 
@@ -91,7 +99,7 @@
   margin: 0;
   padding: 2px 4px;
   word-break: break-all;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
 }
 
 .console-window div:last-child {
@@ -99,20 +107,10 @@
 }
 
 /* Custom scrollbar for console */
-.console-window::-webkit-scrollbar {
-  width: 12px;
-}
-.console-window::-webkit-scrollbar-track {
-  background: #f3f4f6;
-  border-left: 1px solid #d1d5db;
-}
-.console-window::-webkit-scrollbar-thumb {
-  background: #6b7280;
-  border-radius: 0px; /* blocky scrollbar like image */
-}
-.console-window::-webkit-scrollbar-thumb:hover {
-  background: #4b5563;
-}
+.console-window::-webkit-scrollbar { width: 6px; }
+.console-window::-webkit-scrollbar-track { background: var(--bg-app); }
+.console-window::-webkit-scrollbar-thumb { background: var(--border-highlight); border-radius: 3px; }
+.console-window::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
 
 .console-input-row {
   display: flex;
@@ -121,29 +119,41 @@
 
 .console-input-row input {
   flex: 1;
-  background-color: #374151;
-  color: #f3f4f6;
-  border: 2px solid #a855f7; /* Purple tinted border shown in image */
-  border-radius: 4px;
-  padding: 8px 12px;
-  font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  background: var(--bg-input);
+  color: var(--accent-primary);
+  border: 1px solid var(--border-highlight);
+  border-radius: 6px;
+  padding: 10px 12px;
+  min-height: 44px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.88rem;
 }
 
 .console-input-row input:focus {
   outline: none;
-  border-color: #d8b4fe;
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px rgba(0,200,215,0.15);
 }
 
 .btn-send {
-  background-color: #1f2937;
-  color: white;
-  border: none;
-  border-radius: 4px;
-  padding: 0 24px;
-  font-weight: bold;
+  background: var(--bg-input);
+  color: var(--accent-primary);
+  border: 1px solid var(--accent-primary);
+  border-radius: 6px;
+  padding: 0 20px;
+  min-height: 44px;
+  font-weight: 700;
+  font-size: 0.82rem;
   cursor: pointer;
+  transition: background 0.15s;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .btn-send:hover {
-  background-color: #374151;
+  background: rgba(0,200,215,0.12);
+}
+
+.btn-send:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
 }

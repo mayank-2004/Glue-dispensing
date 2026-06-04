@@ -118,6 +118,53 @@ export class NozzleMaintenanceManager {
     };
   }
 
+  // Combined health score: 0–100 (higher = healthier)
+  // wearScore:    0–50 — based on dispense count vs cleaning threshold
+  // qualityScore: 0–50 — based on recent SPC pass rates (last 5 jobs)
+  getNozzleHealthScore(spcJobs = []) {
+    const status = this.getMaintenanceStatus();
+
+    const wearRatio = Math.min(1, status.dispenseCount / Math.max(1, status.settings.maxDispensesBeforeCleaning));
+    const wearScore = (1 - wearRatio) * 50;
+
+    const recentJobs = spcJobs.slice(-5).filter(j => j.checked > 0);
+    let qualityScore;
+    if (recentJobs.length === 0) {
+      qualityScore = 25; // no SPC data: assume neutral
+    } else {
+      const avgPassRate = recentJobs.reduce((s, j) => s + j.passRate, 0) / recentJobs.length;
+      qualityScore = avgPassRate * 50;
+      // Monotonically declining pass-rate trend in last 3 jobs → extra -5 penalty
+      if (recentJobs.length >= 3) {
+        const last3 = recentJobs.slice(-3);
+        if (last3[2].passRate < last3[1].passRate && last3[1].passRate < last3[0].passRate) {
+          qualityScore = Math.max(0, qualityScore - 5);
+        }
+      }
+    }
+
+    const score = Math.round(wearScore + qualityScore);
+    const level = score >= 75 ? 'good' : score >= 50 ? 'warn' : 'critical';
+
+    let recommendation;
+    if (level === 'good') {
+      recommendation = 'Nozzle healthy';
+    } else if (level === 'warn') {
+      recommendation = status.needsCleaning ? 'Clean nozzle now' : 'Clean nozzle soon';
+    } else {
+      const qualityDriven = recentJobs.length > 0 && recentJobs[recentJobs.length - 1].passRate < 0.5;
+      recommendation = qualityDriven ? 'Poor dot quality — consider replacement' : 'Clean nozzle now';
+    }
+
+    return {
+      score,
+      level,
+      recommendation,
+      wearScore: Math.round(wearScore),
+      qualityScore: Math.round(qualityScore),
+    };
+  }
+
   // Update maintenance settings
   updateSettings(newSettings) {
     this.settings = { ...this.settings, ...newSettings };

@@ -10,19 +10,23 @@
     "dev:python": "cd python-vision && python server.py",
     "install:python": "cd python-vision && pip install -r requirements.txt",
     "build": "vite build && node scripts/copy-vendor.mjs && electron-builder",
+    "build:pi": "vite build && node scripts/copy-vendor.mjs && electron-builder --linux --arm64 --publish never",
     "postinstall": "node scripts/copy-vendor.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },
   "build": {
-    "appId": "com.example.pcboffline",
+    "appId": "com.swaja.glue-dispenser",
+    "productName": "Glue Dispenser",
     "files": [
       "dist/**/*",
       "electron/**/*",
       "public/vendor/**/*",
       "package.json"
     ],
-    "extraResources": [],
+    "extraResources": [
+      { "from": "resources/", "to": "resources/", "filter": ["**/*"] }
+    ],
     "mac": {
       "category": "public.app-category.developer-tools"
     },
@@ -30,7 +34,13 @@
       "target": "nsis"
     },
     "linux": {
-      "target": "AppImage"
+      "target": [
+        { "target": "deb",      "arch": ["arm64"] },
+        { "target": "AppImage", "arch": ["arm64"] }
+      ],
+      "category": "Utility",
+      "description": "Autonomous PCB glue dispensing system",
+      "maintainer": "Swaja"
     }
   },
   "dependencies": {

@@ -22,5 +22,11 @@ contextBridge.exposeInMainWorld('serial', {
         const subscription = () => handler();
         ipcRenderer.on('serial:disconnected', subscription);
         return () => ipcRenderer.removeListener('serial:disconnected', subscription);
+    },
+    onPortAppeared: (handler) => {
+        // Fires when the last-used port reappears after a cable pull
+        const subscription = (_evt, info) => handler(info);
+        ipcRenderer.on('serial:port-appeared', subscription);
+        return () => ipcRenderer.removeListener('serial:port-appeared', subscription);
     }
 });

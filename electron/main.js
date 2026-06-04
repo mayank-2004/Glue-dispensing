@@ -6,17 +6,47 @@ const { SerialPort, ReadlineParser } = require('serialport');
 
 let win;
 let serial = { port: null, parser: null };
-let intentionalClose = false; // flag to distinguish programmatic close from cable pull
+let intentionalClose = false;   // flag to distinguish programmatic close from cable pull
+let lastConnectedPath = null;   // path of the most recently opened port
+let lastConnectedBaud = 115200; // baud rate used when last opened
+let portWatcherTimer = null;    // setInterval handle for reappearance polling
+
+function stopPortWatcher() {
+  if (portWatcherTimer) { clearInterval(portWatcherTimer); portWatcherTimer = null; }
+}
+
+function startPortWatcher() {
+  stopPortWatcher();
+  portWatcherTimer = setInterval(async () => {
+    if (!lastConnectedPath) { stopPortWatcher(); return; }
+    try {
+      const ports = await SerialPort.list();
+      if (ports.some(p => p.path === lastConnectedPath)) {
+        stopPortWatcher();
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('serial:port-appeared', { path: lastConnectedPath, baudRate: lastConnectedBaud });
+        }
+      }
+    } catch { /* ignore list errors during polling */ }
+  }, 2000);
+}
 
 function createWindow() {
   win = new BrowserWindow({
     width: 1400,
     height: 900,
+    show: false,  // hidden until ready-to-show to avoid flash
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       preload: path.join(__dirname, 'preload.js')
     }
+  });
+
+  // Maximize on every platform; fills the touchscreen on Pi
+  win.once('ready-to-show', () => {
+    win.maximize();
+    win.show();
   });
 
   if (isDev) {
@@ -56,6 +86,9 @@ ipcMain.handle('serial:open', async (e, { path: portPath, baudRate = 115200 }) =
   if (!portPath || typeof portPath !== 'string') {
     throw new Error('No serial "path" provided. Pick a port before connecting.');
   }
+  stopPortWatcher(); // stop watching — we're actively connecting now
+  lastConnectedPath = portPath;
+  lastConnectedBaud = baudRate;
   // close previous if open
   if (serial.port?.isOpen) {
     await new Promise(r => serial.port.close(() => r()));
@@ -74,6 +107,7 @@ ipcMain.handle('serial:open', async (e, { path: portPath, baudRate = 115200 }) =
           serial.port = null;
           serial.parser = null;
           if (win && !win.isDestroyed()) win.webContents.send('serial:disconnected');
+          startPortWatcher(); // begin polling for port to reappear
         }
       });
       resolve();
@@ -84,6 +118,7 @@ ipcMain.handle('serial:open', async (e, { path: portPath, baudRate = 115200 }) =
 
 ipcMain.handle('serial:close', async () => {
   if (!serial.port) return true;
+  stopPortWatcher(); // operator disconnected intentionally — don't auto-reconnect
   intentionalClose = true;
   await new Promise((resolve) => {
     serial.port.close(() => {

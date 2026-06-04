@@ -1,0 +1,27 @@
+[Unit]
+Description=Glue Dispenser – Autonomous PCB glue dispensing system
+After=graphical.target
+Wants=graphical.target
+
+[Service]
+Type=simple
+User=pi
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/pi/.Xauthority
+
+# Change this path to wherever you installed the .deb package
+ExecStart=/opt/Glue Dispenser/glue-dispenser
+
+# Restart automatically if the app crashes (not on clean exit)
+Restart=on-failure
+RestartSec=5
+
+# Allow serial port access (user must also be in 'dialout' group)
+SupplementaryGroups=dialout
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=glue-dispenser
+
+[Install]
+WantedBy=graphical.target

@@ -289,6 +289,9 @@ export default function AutomatedDispensingPanel({
   const isJobRunningRef = useRef(false);
   const [resumeFromPad, setResumeFromPad] = useState(() => parseInt(localStorage.getItem('resumeFromPad') || '0'));
   const globalPointCountRef = useRef(0);
+  const prevConnectedRef = useRef(isConnected);
+  const [autoResumeCountdown, setAutoResumeCountdown] = useState(null); // null | { padIndex, secondsLeft }
+  const autoResumeCancelRef = useRef(null);
   const [jobMode, setJobMode] = useState('single'); // 'single' or 'batch'
   const [dynamicPanelCorrection, setDynamicPanelCorrection] = useState(true); // Default to ON if panelized
 
@@ -511,6 +514,17 @@ export default function AutomatedDispensingPanel({
   // useEffect(() => { localStorage.setItem('fineTuneX', String(fineTuneX)); }, [fineTuneX]);
   // useEffect(() => { localStorage.setItem('fineTuneY', String(fineTuneY)); }, [fineTuneY]);
   useEffect(() => { localStorage.setItem('calibCaptures', JSON.stringify(calibCaptures)); }, [calibCaptures]);
+
+  // Auto-resume after reconnect — delegates to startResumeCountdown (defined after resumeJobDirectly)
+  useEffect(() => {
+    const wasConnected = prevConnectedRef.current;
+    prevConnectedRef.current = isConnected;
+
+    if (!wasConnected && isConnected && isHomed && resumeFromPad > 0 && !isJobRunningRef.current) {
+      startResumeCountdown(); // eslint-disable-line no-use-before-define
+      return () => { autoResumeCancelRef.current?.(); };
+    }
+  }, [isConnected, isHomed]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Stabilize board dimension calculation
   const currentBoardSize = useMemo(() => {
@@ -790,6 +804,33 @@ export default function AutomatedDispensingPanel({
       isJobRunningRef.current = false;
       setIsJobRunning(false);
     }
+  };
+
+  // Shared countdown used by both auto-reconnect and the manual Resume button.
+  // Shows the cancellable card for 3 s, then fires resumeJobDirectly().
+  const startResumeCountdown = () => {
+    if (autoResumeCancelRef.current) autoResumeCancelRef.current(); // clear any existing
+    let secondsLeft = 3;
+    setAutoResumeCountdown({ padIndex: resumeFromPad, secondsLeft });
+
+    const tickInterval = setInterval(() => {
+      secondsLeft--;
+      setAutoResumeCountdown(prev => prev ? { ...prev, secondsLeft } : null);
+    }, 1000);
+
+    const resumeTimeout = setTimeout(() => {
+      clearInterval(tickInterval);
+      setAutoResumeCountdown(null);
+      autoResumeCancelRef.current = null;
+      if (!isJobRunningRef.current) resumeJobDirectly();
+    }, 3000);
+
+    autoResumeCancelRef.current = () => {
+      clearTimeout(resumeTimeout);
+      clearInterval(tickInterval);
+      setAutoResumeCountdown(null);
+      autoResumeCancelRef.current = null;
+    };
   };
 
   const runDispenseLoop = async (startFromPad = 0) => {
@@ -1273,6 +1314,17 @@ export default function AutomatedDispensingPanel({
       setResumeFromPad(0);
       globalPointCountRef.current = 0;
       setCurrentPadInfo(null);
+      toast.success("Job completed successfully!");
+
+      // Nozzle health alert at job completion
+      const freshSpc = spcLoad();
+      const nozzleHealth = nozzleMaintenance.getNozzleHealthScore(freshSpc.jobs);
+      if (nozzleHealth.level === 'critical') {
+        setTimeout(() => toast.error(`Nozzle health ${nozzleHealth.score}/100 — ${nozzleHealth.recommendation}`), 1200);
+      } else if (nozzleHealth.level === 'warn') {
+        setTimeout(() => toast.warning(`Nozzle health ${nozzleHealth.score}/100 — ${nozzleHealth.recommendation}`), 1200);
+      }
+
       if (onJobComplete) onJobComplete();
       setJobStage('finished');
       setMachineStatus('idle');
@@ -1354,7 +1406,6 @@ export default function AutomatedDispensingPanel({
     setJobStage('idle');
     setMachineStatus('idle');
     setCurrentPadInfo(null);
-    if (onJobComplete) onJobComplete();
   };
 
   const jog = async (axis, dir) => {
@@ -1459,11 +1510,11 @@ export default function AutomatedDispensingPanel({
   };
 
   const handleDeleteRecipe = (name) => {
-    if (!confirm(`Delete recipe "${name}"?`)) return;
     const updated = { ...savedRecipes };
     delete updated[name];
     persistRecipes(updated);
     if (activeRecipe === name) { setActiveRecipe(''); setRecipeName(''); }
+    toast.info(`Recipe "${name}" deleted.`);
   };
 
   const handleExportRecipes = () => {
@@ -1541,6 +1592,35 @@ export default function AutomatedDispensingPanel({
               Abort Job
             </button>
           </div>
+        </div>,
+        document.body
+      )}
+
+      {/* ── Auto-resume countdown — always visible so operator can cancel ── */}
+      {autoResumeCountdown && createPortal(
+        <div style={{
+          position: 'fixed', bottom: 24, right: 24, zIndex: 9999,
+          background: '#0d1117', border: '2px solid #388bfd', borderRadius: 12,
+          padding: '18px 20px', width: 300,
+          boxShadow: '0 8px 32px rgba(0,0,0,0.75)',
+        }}>
+          <div style={{ color: '#79c0ff', fontWeight: 700, fontSize: '0.9em', marginBottom: 8 }}>
+            ↩ Auto-resuming job
+          </div>
+          <div style={{ color: '#e6edf3', fontSize: '0.83em', lineHeight: 1.6, marginBottom: 14 }}>
+            Resuming from pad <span style={{ color: '#fff', fontWeight: 700 }}>{autoResumeCountdown.padIndex}</span> in{' '}
+            <span style={{
+              color: '#58a6ff', fontWeight: 900, fontSize: '1.6em',
+              display: 'inline-block', minWidth: 28, textAlign: 'center',
+            }}>{autoResumeCountdown.secondsLeft}</span>
+          </div>
+          <button
+            className="btn danger full-width"
+            style={{ fontSize: '0.88em', minHeight: 48 }}
+            onClick={() => autoResumeCancelRef.current?.()}
+          >
+            Cancel Resume
+          </button>
         </div>,
         document.body
       )}
@@ -1702,9 +1782,14 @@ export default function AutomatedDispensingPanel({
           </div>
 
           {/* ── Recipe Manager ──────────────────────────────────────────── */}
-          <details style={{ marginTop: 14 }}>
+          <details open style={{ marginTop: 14 }}>
             <summary style={{ cursor: 'pointer', fontWeight: 600, color: '#58a6ff', fontSize: '0.9em', userSelect: 'none' }}>
-              🗂 Recipe Manager
+              Recipe Manager
+              {activeRecipe && (
+                <span style={{ marginLeft: 8, fontSize: '0.82em', color: '#3fb950', fontWeight: 400 }}>
+                  — {activeRecipe}
+                </span>
+              )}
             </summary>
             <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
               {/* Save current settings */}
@@ -2107,6 +2192,7 @@ export default function AutomatedDispensingPanel({
             manager={nozzleMaintenance}
             onPurge={purgeNozzle}
             isPurging={isPurging}
+            spcJobs={spcData.jobs}
           />
         </div>
 
@@ -2476,7 +2562,7 @@ export default function AutomatedDispensingPanel({
                         className="btn primary"
                         style={{ flex: 1, fontSize: '0.85em' }}
                         disabled={!isConnected}
-                        onClick={resumeJobDirectly}
+                        onClick={startResumeCountdown}
                       >
                         Resume from {resumeName}
                       </button>

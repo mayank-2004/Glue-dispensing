@@ -77,3 +77,95 @@ Priority 3 — Production workflow
 Gap	Why it matters
 Component height profile	Some components already placed before glue pass need Z-clearance. Need per-footprint safe Z
 GCode dry-run preview	Trace the machine path on screen before committing — catches transform errors before wasting glue
+
+
+
+
+
+
+
+
+
+
+
+To build the Pi installer from your Windows machine:
+
+npm run build:pi
+Output lands in dist/ — you'll get a .deb and an .AppImage, both for arm64.
+
+To deploy on the Pi (once you have one):
+
+
+# 1. Copy the .deb over (USB or SSH)
+scp "Glue Dispenser_0.0.0_arm64.deb" pi@raspberrypi.local:~
+
+# 2. Install it
+sudo dpkg -i "Glue Dispenser_0.0.0_arm64.deb"
+
+# 3. Allow serial port access (one-time)
+sudo usermod -aG dialout pi
+
+# 4. Install the systemd service for auto-start on boot
+sudo cp /opt/Glue\ Dispenser/resources/glue-dispenser.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable glue-dispenser
+sudo systemctl start glue-dispenser
+
+Ans- No, those commands are Linux terminal commands to be run on the Raspberry Pi itself (via SSH or directly on the Pi's terminal), not on your Windows machine.
+
+Here's the split clearly:
+
+On your Windows machine (now):
+
+
+npm run build:pi
+This creates the .deb and .AppImage files in your dist/ folder.
+
+On the Raspberry Pi (later, when you have it):
+
+Everything else — scp, dpkg, usermod, systemctl — all of that runs on the Pi's Linux terminal. You can either:
+
+Connect a keyboard + monitor directly to the Pi, or
+SSH into it from Windows: ssh pi@raspberrypi.local
+So your workflow when you get a Pi will be:
+
+Run npm run build:pi on Windows → produces the installer
+Copy the .deb file to a USB stick or transfer via network
+On the Pi, install it with dpkg and set up the service
+
+
+
+
+
+
+/* ------------LOCK TRANSFORM METHOD --------------*/
+
+Normal flow every job:
+
+Load PCB → machine moves camera to each fiducial marker → detects them → solves the transform → starts dispensing
+That fiducial detection step takes 30–60 seconds per board.
+
+When Lock Transform is useful:
+If the operator uses a precision fixture (a jig with pins/alignment stops that holds every PCB in exactly the same position every time), the board never moves between jobs. The transform from job 1 is still perfectly valid for job 2, 3, 4…
+
+So without Lock Transform: detecting fiducials 100 times/day × 45 seconds = 75 minutes wasted.
+
+With Lock Transform: detect once, lock it, skip detection for all subsequent boards → machine goes straight to dispensing.
+
+The risk: if someone bumps the fixture or places the board slightly off-center, the machine dispenses at wrong positions with no warning — because it trusts the old transform blindly.
+
+Bottom line for your app: if your operator is using a fixture (most production setups do), Lock Transform is a real time-saver. If they're just placing boards by hand each time, it's useless and potentially dangerous.
+
+
+
+
+
+
+
+
+/*--------- BOARD QUEUE -------------*/
+Next up is the board queue — the operator loads N boards upfront and the app runs them one-by-one automatically, prompting between boards instead of going back to idle each time.
+
+Current flow: job finishes → "Job Complete" → operator clicks "Run Next Board" → goes back through preflight → loads PCB → starts again. Every board requires manual navigation.
+
+Queue flow: operator sets "run 10 boards" → job finishes → app automatically advances to "Load PCB for board 2/10" → operator places board, confirms → job starts immediately. No preflight re-run, no navigation.
