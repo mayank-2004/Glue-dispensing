@@ -142,7 +142,7 @@ export function detectFiducials(gerberText) {
     candidates.sort((a, b) => (b.fiducialScore || 1) - (a.fiducialScore || 1));
 
     if (candidates.length > 0) {
-      console.log(`[FiducialParser] Flash candidates (SMD, no hole, 0.4–2.5mm): ${candidates.length}`);
+      // console.log(`[FiducialParser] Flash candidates (SMD, no hole, 0.4–2.5mm): ${candidates.length}`);
       // console.table(candidates.map(c => ({
       //   x_mm: parseFloat(c.x.toFixed(3)),
       //   y_mm: parseFloat(c.y.toFixed(3)),
@@ -151,7 +151,7 @@ export function detectFiducials(gerberText) {
       //   score: c.fiducialScore,
       // })));
     } else {
-      console.warn('[FiducialParser] No SMD D03 flash operations (0.4–2.5mm, no hole) found in this layer');
+      // console.warn('[FiducialParser] No SMD D03 flash operations (0.4–2.5mm, no hole) found in this layer');
     }
 
     return filterFiducialCandidates(candidates);
@@ -185,7 +185,7 @@ function filterFiducialCandidates(candidates) {
   );
   const filtered = isolated.length >= 2 ? isolated : deduped; // fallback if over-filtered
   if (isolated.length !== deduped.length) {
-    console.log(`[FiducialFilter] Isolation filter (${ISOLATION_RADIUS} mm): ${deduped.length} → ${isolated.length} (removed ${deduped.length - isolated.length} clustered pads)`);
+    // console.log(`[FiducialFilter] Isolation filter (${ISOLATION_RADIUS} mm): ${deduped.length} → ${isolated.length} (removed ${deduped.length - isolated.length} clustered pads)`);
   }
 
   // Group candidates by diameter (fiducials usually have same size)
@@ -229,11 +229,11 @@ function filterFiducialCandidates(candidates) {
 
     const totalScore = sizeScore + countScore + distributionScore;
     const pass = group.length >= 2 && totalScore > 15;
-    console.log(
-      `[FiducialFilter] ⌀${diameter.toFixed(2)}mm × ${group.length} pads → ` +
-      `sizeScore=${sizeScore} countScore=${countScore} distScore=${distributionScore} ` +
-      `TOTAL=${totalScore} → ${pass ? '✅ candidate' : '❌ below threshold (need >15 with ≥2 pads)'}`
-    );
+    // console.log(
+    //   `[FiducialFilter] ⌀${diameter.toFixed(2)}mm × ${group.length} pads → ` +
+    //   `sizeScore=${sizeScore} countScore=${countScore} distScore=${distributionScore} ` +
+    //   `TOTAL=${totalScore} → ${pass ? '✅ candidate' : '❌ below threshold (need >15 with ≥2 pads)'}`
+    // );
 
     if (totalScore > bestScore) {
       bestScore = totalScore;
@@ -258,7 +258,7 @@ function filterFiducialCandidates(candidates) {
         !bestGroup.some(other => other !== c && Math.abs(other.x - c.x) < X_TOLERANCE)
       );
       if (local.length >= 4) {
-        console.log(`[FiducialFilter] Panel-rail separation: ${local.length} local + ${rail.length} rail fiducials`);
+        // console.log(`[FiducialFilter] Panel-rail separation: ${local.length} local + ${rail.length} rail fiducials`);
         localGroup = local;
         railGroup = rail;
       }

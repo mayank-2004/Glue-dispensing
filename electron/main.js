@@ -1,6 +1,8 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const http = require('http');
+const { spawn } = require('child_process');
 const isDev = !app.isPackaged;
 const { SerialPort, ReadlineParser } = require('serialport');
 
@@ -31,6 +33,118 @@ function startPortWatcher() {
   }, 2000);
 }
 
+// -------- Python Vision Server --------
+let visionProcess = null;
+let visionReady = false;
+let visionStartupError = null; // persisted so renderer can read it after mounting late
+let visionErrorHandled = false; // Node fires error then close for the same failure — only report once
+let visionHealthPoller = null;  // setInterval for HTTP readiness polling
+
+function markVisionReady() {
+  if (visionReady) return;
+  visionReady = true;
+  visionStartupError = null;
+  stopVisionHealthPoller();
+  if (win && !win.isDestroyed()) win.webContents.send('vision:ready');
+}
+
+function stopVisionHealthPoller() {
+  if (visionHealthPoller) { clearInterval(visionHealthPoller); visionHealthPoller = null; }
+}
+
+function startVisionHealthPoller() {
+  stopVisionHealthPoller();
+  let attempts = 0;
+  visionHealthPoller = setInterval(() => {
+    if (visionReady) { stopVisionHealthPoller(); return; }
+    if (++attempts > 20) { // 40 s max
+      stopVisionHealthPoller();
+      if (!visionReady) {
+        visionStartupError = 'Vision server did not respond after 40 s — check Python packages';
+        if (win && !win.isDestroyed()) win.webContents.send('vision:stopped', { code: -1, error: visionStartupError });
+      }
+      return;
+    }
+    http.get('http://localhost:8000/', (res) => {
+      res.resume(); // discard body
+      if (res.statusCode < 500) markVisionReady();
+    }).on('error', () => { /* not up yet — keep polling */ });
+  }, 2000);
+}
+
+function startVisionServer() {
+  const serverScript = isDev
+    ? path.join(__dirname, '..', 'python-vision', 'server.py')
+    : path.join(process.resourcesPath, 'python-vision', 'server.py');
+
+  if (!fs.existsSync(serverScript)) {
+    console.warn('[Vision] server.py not found at', serverScript);
+    visionStartupError = 'server.py not found — check python-vision folder';
+    return;
+  }
+
+  const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
+  visionErrorHandled = false;
+  visionStartupError = null;
+
+  // -u = force unbuffered stdout/stderr so print() output arrives immediately
+  visionProcess = spawn(pythonCmd, ['-u', serverScript], {
+    cwd: path.dirname(serverScript),
+  });
+
+  // Start HTTP polling — most reliable way to detect readiness regardless of buffering
+  startVisionHealthPoller();
+
+  visionProcess.stdout.on('data', (data) => {
+    const text = data.toString().trim();
+    console.log('[Vision]', text);
+    if (text.includes('Server ready')) markVisionReady();
+  });
+
+  visionProcess.stderr.on('data', (data) => {
+    const text = data.toString().trim();
+    console.log('[Vision stderr]', text);
+    if (text.includes('Application startup complete') || text.includes('Uvicorn running')) markVisionReady();
+  });
+
+  // 'error' fires when the executable isn't found (ENOENT) or can't be spawned
+  visionProcess.on('error', (err) => {
+    console.error('[Vision] Failed to start:', err.message);
+    stopVisionHealthPoller();
+    visionErrorHandled = true;
+    visionReady = false;
+    visionProcess = null;
+    visionStartupError = err.message;
+    if (win && !win.isDestroyed()) win.webContents.send('vision:stopped', { code: -1, error: err.message });
+  });
+
+  // 'close' fires after every exit — including after 'error', so guard against double-reporting
+  visionProcess.on('close', (code) => {
+    console.log(`[Vision] Server exited — code ${code}`);
+    stopVisionHealthPoller();
+    if (visionErrorHandled) { visionErrorHandled = false; return; }
+    const wasReady = visionReady;
+    visionReady = false;
+    visionProcess = null;
+    if (!wasReady && code !== 0 && code !== null) {
+      visionStartupError = `Python exited with code ${code} — run: pip install -r requirements.txt`;
+    }
+    const errMsg = !wasReady ? visionStartupError : null;
+    if (win && !win.isDestroyed()) win.webContents.send('vision:stopped', { code, error: errMsg });
+  });
+}
+
+function stopVisionServer() {
+  stopVisionHealthPoller();
+  if (visionProcess) {
+    visionProcess.kill();
+    visionProcess = null;
+    visionReady = false;
+  }
+}
+
+ipcMain.handle('vision:status', () => ({ ready: visionReady, startupError: visionStartupError }));
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1400,
@@ -57,9 +171,20 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  createWindow();
+  if (isDev) {
+    // In dev, 'npm run dev' (concurrently) already starts Python separately.
+    // Just poll until the server is up — no need to spawn a second instance.
+    startVisionHealthPoller();
+  } else {
+    // In production (Pi packaged build), Electron owns the Python process.
+    startVisionServer();
+  }
+});
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+app.on('will-quit', stopVisionServer);
 
 // -------- Serial IPC --------
 ipcMain.handle('serial:list', async () => {

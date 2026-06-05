@@ -4,6 +4,12 @@ contextBridge.exposeInMainWorld('fs', {
   saveJobLog: (opts) => ipcRenderer.invoke('fs:saveJobLog', opts),
 });
 
+contextBridge.exposeInMainWorld('vision', {
+  status: () => ipcRenderer.invoke('vision:status'),
+  onReady:   (handler) => { const s = () => handler();         ipcRenderer.on('vision:ready',   s); return () => ipcRenderer.removeListener('vision:ready',   s); },
+  onStopped: (handler) => { const s = (_e, d) => handler(d);  ipcRenderer.on('vision:stopped', s); return () => ipcRenderer.removeListener('vision:stopped', s); },
+});
+
 contextBridge.exposeInMainWorld('serial', {
     list: () => ipcRenderer.invoke('serial:list'),
     open: (opts) => ipcRenderer.invoke('serial:open', opts),

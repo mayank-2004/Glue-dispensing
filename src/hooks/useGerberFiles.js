@@ -108,7 +108,7 @@ export function useGerberFiles() {
     const unrecognized = read.filter(r => !ls.some(l => l.filename === r.name));
     if (unrecognized.length > 0) console.warn('Unrecognized files (skipped):', unrecognized.map(r => r.name));
     if (detectedFiducials.length > 0) {
-      console.log(`%c✅ FIDUCIALS FOUND: ${detectedFiducials.length}`, 'color:#4ade80;font-weight:bold');
+      // console.log(`%c✅ FIDUCIALS FOUND: ${detectedFiducials.length}`, 'color:#4ade80;font-weight:bold');
     } else {
       console.warn('❌ NO FIDUCIALS DETECTED');
     }

@@ -103,6 +103,23 @@ export default function App() {
     prevEmergencyStoppedRef.current = isEmergencyStopped;
   }, [isEmergencyStopped]);
 
+  // Vision server lifecycle toasts
+  useEffect(() => {
+    if (!window.vision) return;
+    // Register listeners for future events
+    const offReady   = window.vision.onReady(() => toast.success("Vision server ready — camera online."));
+    const offStopped = window.vision.onStopped(({ code, error } = {}) => {
+      if (error) toast.error(`Vision server failed to start: ${error}`);
+      else toast.warning("Vision server stopped — camera offline.");
+    });
+    // Query current state — handles the race where server started/failed before React mounted
+    window.vision.status().then(({ ready, startupError }) => {
+      if (ready) toast.success("Vision server ready — camera online.");
+      else if (startupError) toast.error(`Vision server failed to start: ${startupError}`);
+    });
+    return () => { offReady(); offStopped(); };
+  }, []);
+
   const {
     layers, setLayers, side, setSide, svg,
     pads, setPads, pasteIdx, setPasteIdx,
@@ -253,7 +270,6 @@ export default function App() {
       console.log(`[AutoMove] Homing done — moving to PCB origin X${targetX.toFixed(3)} Y${targetY.toFixed(3)}`);
       await window.serial.writeLine(`G90`);
       await window.serial.writeLine(`G0 X${targetX.toFixed(3)} Y${targetY.toFixed(3)} F3000`);
-
     }
   }, []);
 
@@ -752,7 +768,7 @@ export default function App() {
       const hasChanged = !prev || prev.id !== activeRef.id || Math.abs(prev.x - activeRef.x) > 0.001 || Math.abs(prev.y - activeRef.y) > 0.001;
 
       if (hasChanged) {
-        console.log('Drawing activeRef:', activeRef, 'coordinates:', { x: activeRef.x, y: activeRef.y });
+        // console.log('Drawing activeRef:', activeRef, 'coordinates:', { x: activeRef.x, y: activeRef.y });
         prevActiveRefLogRef.current = { ...activeRef };
       }
       const uh = mmToCurrentUnits({ x: activeRef.x, y: activeRef.y });
@@ -1441,7 +1457,7 @@ export default function App() {
       const hasChanged = !prev || Math.abs(prev.x - selectedOrigin.x) > 0.001 || Math.abs(prev.y - selectedOrigin.y) > 0.001;
 
       if (hasChanged) {
-        console.log('Origin changed, updating overlay:', selectedOrigin);
+        // console.log('Origin changed, updating overlay:', selectedOrigin);
         prevOriginLogRef.current = { ...selectedOrigin };
         setTimeout(() => updateOverlay(), 300);
       }

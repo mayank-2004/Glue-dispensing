@@ -197,6 +197,52 @@ function getComponentDotOffsets(comp, spacingMm, customPatterns = {}) {
   return [{ dx: 0, dy: 0 }];
 }
 
+// Detect panel layout (rows, stepY) from repeated fiducial positions in a flat-panelized Gerber.
+// For a 3-board panel the fiducial detector finds all 6 fiducials (2 per board × 3 boards).
+// Grouping by X isolates each "column" of repeated fiducials; the Y spacing within a column = stepY.
+function detectPanelFromFiducials(fiducials) {
+  const valid = fiducials.filter(f => f.design && typeof f.design.x === 'number' && typeof f.design.y === 'number');
+  if (valid.length < 4) return null; // need ≥ 2 fids × 2 boards
+
+  // Group by X position (same fiducial repeats at the same X across boards; tol = 2 mm)
+  const X_TOL = 2;
+  const xGroups = [];
+  for (const fid of valid) {
+    const g = xGroups.find(g => Math.abs(g.cx - fid.design.x) < X_TOL);
+    if (g) g.ys.push(fid.design.y);
+    else xGroups.push({ cx: fid.design.x, ys: [fid.design.y] });
+  }
+
+  // Only use groups where Y count (= number of boards) is ≥ 2
+  const boardCounts = xGroups.map(g => g.ys.length);
+  const rows = Math.max(...boardCounts);
+  if (rows < 2) return null;
+
+  // Compute stepY: average Y spacing across all X groups that have the full board count
+  let totalStep = 0, n = 0;
+  for (const g of xGroups) {
+    if (g.ys.length !== rows) continue;
+    const sortedYs = [...g.ys].sort((a, b) => a - b);
+    for (let i = 1; i < sortedYs.length; i++) {
+      totalStep += sortedYs[i] - sortedYs[i - 1];
+      n++;
+    }
+  }
+  if (n === 0) return null;
+  const stepY = parseFloat((totalStep / n).toFixed(2));
+
+  // Validate: all Y spacings must be within 5 mm of stepY (rules out random fiducial noise)
+  for (const g of xGroups) {
+    if (g.ys.length !== rows) continue;
+    const sortedYs = [...g.ys].sort((a, b) => a - b);
+    for (let i = 1; i < sortedYs.length; i++) {
+      if (Math.abs(sortedYs[i] - sortedYs[i - 1] - stepY) > 5) return null;
+    }
+  }
+
+  return { rows, stepY };
+}
+
 // Nearest-neighbor TSP sort — greedy path starting from (startX, startY).
 // Returns a new array in visit order; original array is not mutated.
 function nearestNeighborSort(components, startX = 0, startY = 0) {
@@ -355,6 +401,10 @@ export default function AutomatedDispensingPanel({
   const [dotSpacingMm, setDotSpacingMm] = useState(2.0);           // gap between dots in dual/quad pattern
   const [customDotPatterns, setCustomDotPatterns] = useState({});   // { compId: 'single'|'dual'|'quad' }
   const [optimizePath, setOptimizePath] = useState(true);           // nearest-neighbor reorder
+  const [pnpPanelRows, setPnpPanelRows] = useState(1);
+  const [pnpPanelCols, setPnpPanelCols] = useState(1);
+  const [pnpPanelStepX, setPnpPanelStepX] = useState(0);
+  const [pnpPanelStepY, setPnpPanelStepY] = useState(0);
 
   // Tracks which sub-board within the panel is currently being dispensed (0-based)
   const [currentBoardIdx, setCurrentBoardIdx] = useState(0);
@@ -423,6 +473,8 @@ export default function AutomatedDispensingPanel({
 
   // PnP mode: use component centroids from CSV instead of Gerber pads
   const isPnpMode = pnpComponents.length > 0;
+  const isPnpPanel = isPnpMode && (pnpPanelRows > 1 || pnpPanelCols > 1);
+  const effectiveBoardCount = isPnpPanel ? pnpPanelRows * pnpPanelCols : (panelBoards?.length || 1);
   // All components matching the side filter — shown in table (includes excluded rows)
   const sideFilteredComponents = isPnpMode
     ? (pnpSideFilter === 'all' ? pnpComponents : pnpComponents.filter(c => c.side === pnpSideFilter))
@@ -514,6 +566,47 @@ export default function AutomatedDispensingPanel({
   // useEffect(() => { localStorage.setItem('fineTuneX', String(fineTuneX)); }, [fineTuneX]);
   // useEffect(() => { localStorage.setItem('fineTuneY', String(fineTuneY)); }, [fineTuneY]);
   useEffect(() => { localStorage.setItem('calibCaptures', JSON.stringify(calibCaptures)); }, [calibCaptures]);
+
+  // Auto-detect PnP panel layout — three strategies in priority order
+  useEffect(() => {
+    if (!isPnpMode) return;
+
+    // Priority 1: Gerber SR (Step and Repeat) command — most precise
+    if (panelInfo && (panelInfo.dimX > 1 || panelInfo.dimY > 1)) {
+      setPnpPanelRows(panelInfo.dimY);
+      setPnpPanelCols(panelInfo.dimX);
+      setPnpPanelStepX(panelInfo.stepX);
+      setPnpPanelStepY(panelInfo.stepY);
+      toast.success(`Panel auto-detected from Gerber SR: ${panelInfo.dimY}×${panelInfo.dimX}, step X=${panelInfo.stepX} mm, Y=${panelInfo.stepY} mm`);
+      return;
+    }
+
+    // Priority 2: panelBoards already has multiple boards (SR-built by App)
+    if (panelBoards && panelBoards.length > 1) {
+      const xOff = [...new Set(panelBoards.map(b => b.offsetX || 0))].sort((a, b) => a - b);
+      const yOff = [...new Set(panelBoards.map(b => b.offsetY || 0))].sort((a, b) => a - b);
+      const cols = xOff.length, rows = yOff.length;
+      const stepX = cols > 1 ? parseFloat((xOff[1] - xOff[0]).toFixed(4)) : 0;
+      const stepY = rows > 1 ? parseFloat((yOff[1] - yOff[0]).toFixed(4)) : 0;
+      setPnpPanelRows(rows); setPnpPanelCols(cols);
+      setPnpPanelStepX(stepX); setPnpPanelStepY(stepY);
+      toast.success(`Panel auto-detected: ${rows}×${cols} grid, step X=${stepX} mm, Y=${stepY} mm`);
+      return;
+    }
+
+    // Priority 3: Flat-panelized Gerber (no SR) — detect from repeated fiducial positions.
+    // The fiducial detector places ALL sub-board fiducials in panelBoards[0].fiducials.
+    // Grouping them by X reveals how many times each fiducial repeats in Y → rows & stepY.
+    const fids = panelBoards?.[0]?.fiducials || [];
+    const detected = detectPanelFromFiducials(fids);
+    if (detected) {
+      setPnpPanelRows(detected.rows);
+      setPnpPanelCols(1);
+      setPnpPanelStepX(0);
+      setPnpPanelStepY(detected.stepY);
+      toast.success(`Panel auto-detected from fiducials: ${detected.rows} rows, step Y=${detected.stepY} mm`);
+    }
+  }, [panelInfo, panelBoards, isPnpMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-resume after reconnect — delegates to startResumeCountdown (defined after resumeJobDirectly)
   useEffect(() => {
@@ -866,19 +959,41 @@ export default function AutomatedDispensingPanel({
 
       const seq = effectiveSequence;
 
+      // PnP Panel override: synthesize virtual boards for each sub-board in the panel grid
+      let loopBoards, loopPanelXf;
+      if (isPnpPanel) {
+        loopBoards = [];
+        for (let row = 0; row < pnpPanelRows; row++) {
+          for (let col = 0; col < pnpPanelCols; col++) {
+            loopBoards.push({
+              id: row * pnpPanelCols + col + 1,
+              name: `Sub-board R${row + 1}C${col + 1}`,
+              offsetX: col * pnpPanelStepX,
+              offsetY: row * pnpPanelStepY,
+              xf: null,
+              fiducials: [],
+            });
+          }
+        }
+        loopPanelXf = applyXf ? xf : null;
+      } else {
+        loopBoards = panelBoards;
+        loopPanelXf = panelXf;
+      }
+
       // ── Z-axis surface probe ─────────────────────────────────────────
       if (enableSurfaceProbe) {
         setJobStage('probing');
         // Move to first pad's machine position for a representative surface reading
-        if (seq.length > 0 && panelBoards.length > 0) {
-          const firstBoard = panelBoards[0];
+        if (seq.length > 0 && loopBoards.length > 0) {
+          const firstBoard = loopBoards[0];
           const firstXf = applyXf ? firstBoard.xf : null;
           const fp = seq[0];
           let probeTarget = null;
-          if (panelXf && firstBoard.offsetX != null) {
+          if (loopPanelXf && firstBoard.offsetX != null) {
             const ps = { x: fp.x + firstBoard.offsetX, y: fp.y + firstBoard.offsetY };
-            probeTarget = applyTransform(panelXf, ps);
-            if (firstXf && firstXf !== panelXf) probeTarget = applyTransform(firstXf, probeTarget);
+            probeTarget = applyTransform(loopPanelXf, ps);
+            if (firstXf && firstXf !== loopPanelXf) probeTarget = applyTransform(firstXf, probeTarget);
           } else if (firstXf) {
             probeTarget = applyTransform(firstXf, fp);
           }
@@ -901,11 +1016,11 @@ export default function AutomatedDispensingPanel({
       // ── Phase 1: Validate + dynamic-correct ALL boards upfront ──────────────
       // Storing corrected transforms in a Map so path planning uses final coords.
       const transformMap = new Map(); // bIdx → transform
-      for (let bIdx = 0; bIdx < panelBoards.length; bIdx++) {
-        const board = panelBoards[bIdx];
+      for (let bIdx = 0; bIdx < loopBoards.length; bIdx++) {
+        const board = loopBoards[bIdx];
         let transform = applyXf ? board.xf : null;
 
-        if (applyXf && !transform) {
+        if (applyXf && !transform && !isPnpPanel) {
           throw new Error(`Board "${board.name}" has no alignment transform (xf) calculated! Please solve its fiducials first.`);
         }
 
@@ -987,18 +1102,18 @@ export default function AutomatedDispensingPanel({
       // pairs in machine space so the nozzle takes the globally shortest path.
       // When single-board or optimization off: standard board-by-board order.
       let jobPlan; // [{ bIdx, seqIdx }]
-      if (optimizePath && panelBoards.length > 1) {
+      if (optimizePath && loopBoards.length > 1) {
         const flatPts = [];
-        for (let bIdx = 0; bIdx < panelBoards.length; bIdx++) {
-          const board = panelBoards[bIdx];
+        for (let bIdx = 0; bIdx < loopBoards.length; bIdx++) {
+          const board = loopBoards[bIdx];
           const xfm = transformMap.get(bIdx);
           for (let seqIdx = 0; seqIdx < seq.length; seqIdx++) {
             const comp = seq[seqIdx];
             let mx = comp.x, my = comp.y;
-            if (panelXf && board.offsetX != null) {
-              const r = applyTransform(panelXf, { x: comp.x + board.offsetX, y: comp.y + board.offsetY });
+            if (loopPanelXf && board.offsetX != null) {
+              const r = applyTransform(loopPanelXf, { x: comp.x + board.offsetX, y: comp.y + board.offsetY });
               mx = r.x; my = r.y;
-              if (xfm && xfm !== panelXf) { const r2 = applyTransform(xfm, { x: mx, y: my }); mx = r2.x; my = r2.y; }
+              if (xfm && xfm !== loopPanelXf) { const r2 = applyTransform(xfm, { x: mx, y: my }); mx = r2.x; my = r2.y; }
             } else if (xfm) {
               const r = applyTransform(xfm, comp);
               mx = r.x; my = r.y;
@@ -1009,7 +1124,7 @@ export default function AutomatedDispensingPanel({
         jobPlan = nearestNeighborSort(flatPts);
       } else {
         jobPlan = [];
-        for (let bIdx = 0; bIdx < panelBoards.length; bIdx++) {
+        for (let bIdx = 0; bIdx < loopBoards.length; bIdx++) {
           for (let seqIdx = 0; seqIdx < seq.length; seqIdx++) {
             jobPlan.push({ bIdx, seqIdx });
           }
@@ -1031,7 +1146,7 @@ export default function AutomatedDispensingPanel({
         if (globalPointCount <= startFromPad) continue;
 
         const { bIdx, seqIdx } = jobPlan[fi];
-        const board = panelBoards[bIdx];
+        const board = loopBoards[bIdx];
         const transform = transformMap.get(bIdx);
         setCurrentBoardIdx(bIdx);
 
@@ -1040,12 +1155,12 @@ export default function AutomatedDispensingPanel({
         const origDesignY = p.y;
 
           let tp = null;
-          if (panelXf && board.offsetX != null) {
+          if (loopPanelXf && board.offsetX != null) {
             // Global panel transform: shift pad into panel space first, then apply T_panel
             const panelSpacePt = { x: p.x + board.offsetX, y: p.y + board.offsetY };
-            tp = applyTransform(panelXf, panelSpacePt);
-            // Optional per-board local correction on top (if transform != panelXf)
-            if (transform && transform !== panelXf) tp = applyTransform(transform, tp);
+            tp = applyTransform(loopPanelXf, panelSpacePt);
+            // Optional per-board local correction on top (if transform != loopPanelXf)
+            if (transform && transform !== loopPanelXf) tp = applyTransform(transform, tp);
             const camX = tp.x - (toolOffset?.dx || 0) + calibCorrection.x;
             const camY = tp.y - (toolOffset?.dy || 0) + calibCorrection.y;
             await sendGcodeWait(`G1 X${camX.toFixed(3)} Y${camY.toFixed(3)} F${speedSettings.travelSpeed || 6000}`);
@@ -1057,10 +1172,12 @@ export default function AutomatedDispensingPanel({
             await sendGcodeWait(`G1 X${camX.toFixed(3)} Y${camY.toFixed(3)} F${speedSettings.travelSpeed || 6000}`);
             p = { ...p, x: tp.x, y: tp.y };
           } else {
-            // No transform: align manually using the effective origin
+            // No transform: align manually using the effective origin + board offset if panel
             const ox = selectedOrigin ? selectedOrigin.x : (boardOutline ? boardOutline.minX : 0);
             const oy = selectedOrigin ? selectedOrigin.y : (boardOutline ? boardOutline.minY : 0);
-            p = { ...p, x: p.x - ox, y: p.y - oy };
+            const boardOffX = isPnpPanel && board.offsetX != null ? board.offsetX : 0;
+            const boardOffY = isPnpPanel && board.offsetY != null ? board.offsetY : 0;
+            p = { ...p, x: p.x - ox + boardOffX, y: p.y - oy + boardOffY };
           }
 
           // ─── APPLY CALIBRATION CORRECTION (same as "Move Camera Here") ──────
@@ -1076,10 +1193,10 @@ export default function AutomatedDispensingPanel({
           const designToFinalXY = (dx, dy) => {
             const dp = { x: origDesignX + dx, y: origDesignY + dy };
             let mx, my;
-            if (panelXf && board.offsetX != null) {
+            if (loopPanelXf && board.offsetX != null) {
               const ps = { x: dp.x + board.offsetX, y: dp.y + board.offsetY };
-              let r = applyTransform(panelXf, ps);
-              if (transform && transform !== panelXf) r = applyTransform(transform, r);
+              let r = applyTransform(loopPanelXf, ps);
+              if (transform && transform !== loopPanelXf) r = applyTransform(transform, r);
               mx = r.x; my = r.y;
             } else if (transform) {
               const r = applyTransform(transform, dp);
@@ -1087,7 +1204,9 @@ export default function AutomatedDispensingPanel({
             } else {
               const ox = selectedOrigin ? selectedOrigin.x : (boardOutline ? boardOutline.minX : 0);
               const oy = selectedOrigin ? selectedOrigin.y : (boardOutline ? boardOutline.minY : 0);
-              mx = dp.x - ox; my = dp.y - oy;
+              const boardOffX = isPnpPanel && board.offsetX != null ? board.offsetX : 0;
+              const boardOffY = isPnpPanel && board.offsetY != null ? board.offsetY : 0;
+              mx = dp.x - ox + boardOffX; my = dp.y - oy + boardOffY;
             }
             return { finalX: mx + calibCorrection.x, finalY: my + calibCorrection.y };
           };
@@ -1230,10 +1349,10 @@ export default function AutomatedDispensingPanel({
 
       // Charge glue stock once for the entire job (all boards)
       if (isPnpMode) {
-        GlueStore.addUsed(totalPnpDots * glueDotVolUl * panelBoards.length);
+        GlueStore.addUsed(totalPnpDots * glueDotVolUl * loopBoards.length);
         setGlueStock(GlueStore.getStock());
       } else if (glueSummary) {
-        GlueStore.addUsed(glueSummary.totalVolUl * panelBoards.length);
+        GlueStore.addUsed(glueSummary.totalVolUl * loopBoards.length);
         setGlueStock(GlueStore.getStock());
       }
 
@@ -1251,7 +1370,7 @@ export default function AutomatedDispensingPanel({
         const deduped = Array.from(latestByPad.values());
         const failed = deduped.filter(r => !r.passed).length;
         const volUlStr = isPnpMode
-          ? (totalPnpDots * glueDotVolUl * panelBoards.length).toFixed(2)
+          ? (totalPnpDots * glueDotVolUl * loopBoards.length).toFixed(2)
           : glueSummary?.totalVolUl != null ? glueSummary.totalVolUl.toFixed(2) : '—';
         const durationStr = (jobDurationMs / 1000).toFixed(1);
         setJobReport({
@@ -1358,10 +1477,25 @@ export default function AutomatedDispensingPanel({
   const purgeNozzle = async (durationMs = purgeDurationMs, pressure = localPressure) => {
     setIsPurging(true);
     try {
+      const station = nozzleMaintenance.getPurgeStation();
+      if (station.configured) {
+        toast.info(`Moving to purge station (${station.x.toFixed(1)}, ${station.y.toFixed(1)}, ${station.z.toFixed(1)})…`);
+        const liftZ = Math.max(station.z + 5, safeTravelHeight);
+        await sendGcodeWait(`G0 Z${liftZ.toFixed(3)}`);
+        await sendGcodeWait(`G0 X${station.x.toFixed(3)} Y${station.y.toFixed(3)} F6000`);
+        await sendGcodeWait(`G0 Z${station.z.toFixed(3)}`);
+      } else {
+        toast.warning('Purge station not set — purging in place. Configure it in Nozzle Maintenance ⚙ settings.');
+      }
+      toast.info(`Purging nozzle… (${durationMs} ms @ ${pressure} PSI)`);
       await sendGcodeWait(`M42 P4 S${Math.round(pressure)}`);
       await sendGcodeWait(`G4 P${Math.round(durationMs)}`);
       await sendGcodeWait('M42 P4 S0');
       await sendGcodeWait('M400');
+      if (station.configured) {
+        await sendGcodeWait(`G0 Z${safeTravelHeight.toFixed(3)}`);
+      }
+      toast.success('Nozzle purge complete.');
     } finally {
       setIsPurging(false);
     }
@@ -2016,10 +2150,73 @@ export default function AutomatedDispensingPanel({
                       Auto-computed from FID rows in CSV matched to Gerber fiducials. Edit manually if needed.
                     </small>
                   </div>
+                  {/* PnP Panel Layout */}
+                  <div style={{ fontSize: '0.85em', marginTop: 4 }}>
+                    <div style={{ marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ color: '#e6edf3', fontWeight: 600 }}>Panel layout (multiple identical sub-boards)</span>
+                      {(panelInfo && (panelInfo.dimX > 1 || panelInfo.dimY > 1)) || (panelBoards?.length > 1) ? (
+                        <span style={{ fontSize: '0.76em', color: '#3fb950', background: 'rgba(63,185,80,0.1)', border: '1px solid #3fb95044', borderRadius: 3, padding: '1px 6px' }}>
+                          ✓ Auto-detected from Gerber
+                        </span>
+                      ) : null}
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                      <label style={{ fontSize: '0.9em' }}>
+                        Rows
+                        <input
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={pnpPanelRows}
+                          onChange={e => setPnpPanelRows(Math.max(1, parseInt(e.target.value) || 1))}
+                          style={{ width: '100%', marginTop: 3 }}
+                        />
+                      </label>
+                      <label style={{ fontSize: '0.9em' }}>
+                        Columns
+                        <input
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={pnpPanelCols}
+                          onChange={e => setPnpPanelCols(Math.max(1, parseInt(e.target.value) || 1))}
+                          style={{ width: '100%', marginTop: 3 }}
+                        />
+                      </label>
+                      <label style={{ fontSize: '0.9em' }}>
+                        Step X (mm)
+                        <input
+                          type="number"
+                          step="0.1"
+                          value={pnpPanelStepX}
+                          onChange={e => setPnpPanelStepX(Number(e.target.value))}
+                          style={{ width: '100%', marginTop: 3 }}
+                        />
+                      </label>
+                      <label style={{ fontSize: '0.9em' }}>
+                        Step Y (mm)
+                        <input
+                          type="number"
+                          step="0.1"
+                          value={pnpPanelStepY}
+                          onChange={e => setPnpPanelStepY(Number(e.target.value))}
+                          style={{ width: '100%', marginTop: 3 }}
+                        />
+                      </label>
+                    </div>
+                    {(pnpPanelRows > 1 || pnpPanelCols > 1) && (
+                      <div style={{ marginTop: 5, padding: '4px 8px', background: 'rgba(63,185,80,0.08)', border: '1px solid #3fb95044', borderRadius: 4, color: '#3fb950', fontSize: '0.82em' }}>
+                        ✓ Panel mode — {pnpPanelRows * pnpPanelCols} sub-boards ({pnpPanelRows}×{pnpPanelCols}), step X={pnpPanelStepX} mm, Y={pnpPanelStepY} mm
+                      </div>
+                    )}
+                    <small style={{ color: '#8b949e', fontSize: '0.78em', display: 'block', marginTop: 4 }}>
+                      Set rows/columns to match your panel. Step = center-to-center distance between identical sub-boards.
+                    </small>
+                  </div>
                   <button
                     className="btn secondary"
                     style={{ fontSize: '0.82em' }}
-                    onClick={() => { setPnpComponents([]); setPnpFile(''); setPnpFlipY(false); setPnpOffsetX(0); setPnpOffsetY(0); setPnpExcluded(new Set()); }}
+                    onClick={() => { setPnpComponents([]); setPnpFile(''); setPnpFlipY(false); setPnpOffsetX(0); setPnpOffsetY(0); setPnpExcluded(new Set()); setPnpPanelRows(1); setPnpPanelCols(1); setPnpPanelStepX(0); setPnpPanelStepY(0); }}
                   >
                     ✕ Clear PnP Import (revert to Gerber pads)
                   </button>
@@ -2193,6 +2390,7 @@ export default function AutomatedDispensingPanel({
             onPurge={purgeNozzle}
             isPurging={isPurging}
             spcJobs={spcData.jobs}
+            machinePosition={machinePosition}
           />
         </div>
 
@@ -2528,9 +2726,9 @@ export default function AutomatedDispensingPanel({
             <div className={`stage-indicator ${jobStage !== 'idle' ? 'active' : 'idle'}`}>
               <strong>Status:</strong> {jobStage.toUpperCase()}
               {machineStatus === 'busy' && ' (Busy)'}
-              {panelBoards && panelBoards.length > 1 && jobStage === 'dispensing' && (
+              {effectiveBoardCount > 1 && jobStage === 'dispensing' && (
                 <span style={{ marginLeft: 8, color: '#58a6ff', fontSize: '0.82em', fontFamily: 'monospace' }}>
-                  Board {currentBoardIdx + 1}/{panelBoards.length}
+                  Board {currentBoardIdx + 1}/{effectiveBoardCount}
                 </span>
               )}
             </div>
@@ -2549,7 +2747,7 @@ export default function AutomatedDispensingPanel({
                 const resumeComp = seqLen > 0 ? effectiveSequence[resumeFromPad % seqLen] : null;
                 const resumeName = resumeComp?.id || `P${resumeFromPad + 1}`;
                 const boardIdx = seqLen > 0 ? Math.floor(resumeFromPad / seqLen) : 0;
-                const totalBoards = panelBoards?.length || 1;
+                const totalBoards = effectiveBoardCount;
                 return (
                   <div style={{ marginBottom: 10, padding: '8px 12px', background: 'rgba(56,139,253,0.1)', border: '1px solid #388bfd', borderRadius: 6, fontSize: '0.83em' }}>
                     <div style={{ color: '#79c0ff', fontWeight: 600, marginBottom: 6 }}>
@@ -2767,12 +2965,14 @@ export default function AutomatedDispensingPanel({
           {jobStage === 'dispensing' && (
             <div className="stage-box">
               <h4>Dispensing...</h4>
-              {panelBoards && panelBoards.length > 1 && (
+              {effectiveBoardCount > 1 && (
                 <div style={{ marginBottom: 6, padding: '4px 10px', background: '#0d1117', border: '1px solid #30363d', borderRadius: 5, fontFamily: 'monospace', fontSize: '0.82em', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ color: '#8b949e' }}>Board</span>
                   <span style={{ color: '#58a6ff', fontWeight: 700 }}>
-                    {currentBoardIdx + 1} / {panelBoards.length}
-                    {panelBoards[currentBoardIdx]?.name ? ` — ${panelBoards[currentBoardIdx].name}` : ''}
+                    {currentBoardIdx + 1} / {effectiveBoardCount}
+                    {isPnpPanel
+                      ? ` — R${Math.floor(currentBoardIdx / pnpPanelCols) + 1}C${(currentBoardIdx % pnpPanelCols) + 1}`
+                      : (panelBoards[currentBoardIdx]?.name ? ` — ${panelBoards[currentBoardIdx].name}` : '')}
                   </span>
                 </div>
               )}

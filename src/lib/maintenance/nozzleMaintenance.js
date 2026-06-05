@@ -12,6 +12,16 @@ export class NozzleMaintenanceManager {
     this.reminderCallback = null;
     this.toolOffset = this.loadFromStorage('toolOffset', { dx: 0, dy: 0 });
     this.pixelsPerMm = this.loadFromStorage('pixelsPerMm', 20);
+    this.purgeStation = this.loadFromStorage('purgeStation', { x: 0, y: 0, z: 5, configured: false });
+  }
+
+  getPurgeStation() {
+    return this.purgeStation;
+  }
+
+  setPurgeStation(pos) {
+    this.purgeStation = { ...this.purgeStation, ...pos, configured: true };
+    this.saveToStorage('purgeStation', this.purgeStation);
   }
 
   getToolOffset() {

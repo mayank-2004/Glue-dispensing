@@ -1,11 +1,18 @@
 import { useState, useEffect, useRef } from 'react';
 
-export default function MaintenanceManager({ manager, onPurge, isPurging = false, spcJobs = [] }) {
+export default function MaintenanceManager({ manager, onPurge, isPurging = false, spcJobs = [], machinePosition = null }) {
   const [status, setStatus] = useState(() => manager?.getMaintenanceStatus() ?? null);
   const [health, setHealth] = useState(() => manager?.getNozzleHealthScore(spcJobs) ?? null);
+  const [purgeStation, setPurgeStationState] = useState(() => manager?.getPurgeStation() ?? { x: 0, y: 0, z: 5, configured: false });
   const [showAlert, setShowAlert] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const wasCleaningNeeded = useRef(false);
+
+  const savePurgeStation = (updates) => {
+    const next = { ...purgeStation, ...updates };
+    setPurgeStationState(next);
+    manager?.setPurgeStation(next);
+  };
 
   useEffect(() => {
     if (!manager) return;
@@ -160,6 +167,37 @@ export default function MaintenanceManager({ manager, onPurge, isPurging = false
                   }}
                 />
               </label>
+            </div>
+
+            {/* Purge station position */}
+            <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid #21262d' }}>
+              <div style={{ fontSize: '0.76em', color: '#8b949e', marginBottom: 6, fontWeight: 600, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>Purge Station Position (mm)</span>
+                {!purgeStation.configured && (
+                  <span style={{ color: '#e3b341', fontSize: '0.88em' }}>⚠ Not set</span>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {['x', 'y', 'z'].map(axis => (
+                  <label key={axis} style={{ flex: 1, minWidth: 54, fontSize: '0.76em', color: '#8b949e' }}>
+                    {axis.toUpperCase()}
+                    <input
+                      type="number" step="0.1"
+                      value={purgeStation[axis]}
+                      style={{ display: 'block', width: '100%', marginTop: 3, padding: '2px 6px', background: '#161b22', border: '1px solid #30363d', borderRadius: 4, color: '#e6edf3', fontSize: '0.95em' }}
+                      onChange={e => savePurgeStation({ [axis]: parseFloat(e.target.value) || 0 })}
+                    />
+                  </label>
+                ))}
+              </div>
+              {machinePosition && (
+                <button
+                  style={{ marginTop: 6, width: '100%', padding: '4px 8px', fontSize: '0.74em', background: '#161b22', border: '1px solid #388bfd', borderRadius: 4, color: '#79c0ff', cursor: 'pointer' }}
+                  onClick={() => savePurgeStation({ x: parseFloat(machinePosition.x.toFixed(3)), y: parseFloat(machinePosition.y.toFixed(3)), z: parseFloat(machinePosition.z.toFixed(3)) })}
+                >
+                  📍 Set to current position ({machinePosition.x.toFixed(1)}, {machinePosition.y.toFixed(1)}, {machinePosition.z.toFixed(1)})
+                </button>
+              )}
             </div>
           </div>
         )}

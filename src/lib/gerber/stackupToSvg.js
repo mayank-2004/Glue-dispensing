@@ -42,11 +42,11 @@ export async function stackupToSvg(layers, side = 'top') {
 
   try {
     const res = await window.pcbStackup(enabled, options);
-    console.log('pcbStackup Result:', {
-      hasTop: !!res.top,
-      hasBottom: !!res.bottom,
-      sideRequested: side
-    });
+    // console.log('pcbStackup Result:', {
+    //   hasTop: !!res.top,
+    //   hasBottom: !!res.bottom,
+    //   sideRequested: side
+    // });
     return side === 'bottom' ? res.bottom.svg : res.top.svg;
   } catch (err) {
     console.error("Error in pcbStackup:", err);
