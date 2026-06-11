@@ -178,8 +178,10 @@ function classifyDotPattern(pkg) {
   // IC packages — quad corners
   if (/^(qfp|qfn|soic|sop|ssop|tssop|lqfp|plcc|bga|lga|qsop|tso)/.test(p)) return 'quad';
   // Large passives / connectors — dual
-  const m = p.match(/(\d{4})/);
-  if (m && parseInt(m[1]) >= 1206) return 'dual';
+  // Only match standard EIA package codes (word-bounded), NOT arbitrary 4-digit numbers
+  // embedded in part names like NTC_B3950, NTC_10K_3950, C_3216_Metric, etc.
+  const EIA_LARGE = /(?:^|[_\-\s])(1206|1210|1812|2010|2512)(?:[_\-\s]|$)/;
+  if (EIA_LARGE.test(p)) return 'dual';
   if (/conn|hdr|jst|molex|usb|hdmi|sma/.test(p)) return 'dual';
   return 'single';
 }
@@ -383,9 +385,11 @@ export default function AutomatedDispensingPanel({
   const [beadAreaThreshold, setBeadAreaThreshold] = useState(2.0); // mm² — pads above this use bead mode
   const [beadFeedRate, setBeadFeedRate] = useState(500);           // mm/min while sweeping the bead
   const [localPressure, setLocalPressure] = useState(() => pressureSettings?.customPressure || 25);
+  const [pwmDuty, setPwmDuty] = useState(255);
   const [currentPadInfo, setCurrentPadInfo] = useState(null);
   const [jobReport, setJobReport] = useState(null);
   const jobStartTimeRef = useRef(null);
+  const pwmDisplayRef = useRef(null);
   const [batchHistory, setBatchHistory] = useState([]);
   const [showBatchReport, setShowBatchReport] = useState(false);
 
@@ -561,6 +565,14 @@ export default function AutomatedDispensingPanel({
 
   useEffect(() => { xfRef.current = xf; }, [xf]);
   useEffect(() => { fiducialsRef.current = fiducials; }, [fiducials]);
+
+  // When fiducial transform is solved, the camera already saw the board — auto-confirm board presence.
+  useEffect(() => {
+    if (xf) {
+      setBoardConfirmed(true);
+      setBoardCheckResult({ present: true, reason: 'Board confirmed automatically — fiducial transform solved by camera.' });
+    }
+  }, [xf]);
   useEffect(() => { localStorage.setItem('nozzleDia', String(nozzleDia)); }, [nozzleDia]);
   useEffect(() => { localStorage.setItem('axisLimits', JSON.stringify(axisLimits)); }, [axisLimits]);
   // useEffect(() => { localStorage.setItem('fineTuneX', String(fineTuneX)); }, [fineTuneX]);
@@ -1161,15 +1173,9 @@ export default function AutomatedDispensingPanel({
             tp = applyTransform(loopPanelXf, panelSpacePt);
             // Optional per-board local correction on top (if transform != loopPanelXf)
             if (transform && transform !== loopPanelXf) tp = applyTransform(transform, tp);
-            const camX = tp.x - (toolOffset?.dx || 0) + calibCorrection.x;
-            const camY = tp.y - (toolOffset?.dy || 0) + calibCorrection.y;
-            await sendGcodeWait(`G1 X${camX.toFixed(3)} Y${camY.toFixed(3)} F${speedSettings.travelSpeed || 6000}`);
             p = { ...p, x: tp.x, y: tp.y };
           } else if (transform) {
             tp = applyTransform(transform, p);
-            const camX = tp.x - (toolOffset?.dx || 0) + calibCorrection.x;
-            const camY = tp.y - (toolOffset?.dy || 0) + calibCorrection.y;
-            await sendGcodeWait(`G1 X${camX.toFixed(3)} Y${camY.toFixed(3)} F${speedSettings.travelSpeed || 6000}`);
             p = { ...p, x: tp.x, y: tp.y };
           } else {
             // No transform: align manually using the effective origin + board offset if panel
@@ -1265,6 +1271,7 @@ export default function AutomatedDispensingPanel({
                 feedZ: speedSettings.dispenseSpeed || 300,
                 feedBead: beadFeedRate,
                 pressure,
+                pwmDuty,
               });
             } else {
               cmds = dispensePoint({
@@ -1275,6 +1282,7 @@ export default function AutomatedDispensingPanel({
                 feedZ: speedSettings.dispenseSpeed || 300,
                 pressure,
                 dwellMs: dwell,
+                pwmDuty,
               });
             }
             for (const c of cmds) await sendGcodeWait(c);
@@ -1293,6 +1301,7 @@ export default function AutomatedDispensingPanel({
                 feedZ: speedSettings.dispenseSpeed || 300,
                 pressure,
                 dwellMs: dwell,
+                pwmDuty,
               });
               for (const c of dotCmds) await sendGcodeWait(c);
               nozzleMaintenance.recordDispense();
@@ -1301,12 +1310,6 @@ export default function AutomatedDispensingPanel({
 
           // ── Post-dispense dot verification ─────────────────────────────
           if (enableDotVerification && tp) {
-            // Move camera back over the just-dispensed pad (tp = transformed machine coord)
-            const camX = tp.x - (toolOffset?.dx || 0) + calibCorrection.x;
-            const camY = tp.y - (toolOffset?.dy || 0) + calibCorrection.y;
-            await sendGcodeWait(`G1 X${camX.toFixed(3)} Y${camY.toFixed(3)} F${speedSettings.travelSpeed || 6000}`);
-            await sendGcodeWait('M400');
-            await new Promise(r => setTimeout(r, 400)); // settle
             try {
               const res = await fetch('http://localhost:8000/api/check_glue_dot');
               if (res.ok) {
@@ -1825,6 +1828,39 @@ export default function AutomatedDispensingPanel({
             <label>
               Dispense Pressure (PSI):
               <input type="number" step="1" min="5" max="100" value={localPressure} onChange={e => setLocalPressure(Number(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
+              <small style={{ color: '#888' }}>Match to your 983A regulator reading</small>
+            </label>
+            <label>
+              MOSFET PWM Duty (0–255):
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: '4px' }}>
+                <input
+                  type="range" min="0" max="255" step="1"
+                  defaultValue={pwmDuty}
+                  onInput={e => {
+                    const v = Number(e.target.value);
+                    const pct = (v / 255) * 100;
+                    const color = v === 255 ? '#00c49a' : v >= 128 ? '#ffa726' : '#ef5350';
+                    e.target.style.background = `linear-gradient(to right, ${color} ${pct}%, #30363d ${pct}%)`;
+                    if (pwmDisplayRef.current) {
+                      pwmDisplayRef.current.textContent = v;
+                      pwmDisplayRef.current.style.color = color;
+                    }
+                  }}
+                  onMouseUp={e => setPwmDuty(Number(e.target.value))}
+                  onTouchEnd={e => setPwmDuty(Number(e.target.value))}
+                  style={{
+                    flex: 1, height: 6, borderRadius: 3, outline: 'none', cursor: 'pointer',
+                    WebkitAppearance: 'none', appearance: 'none',
+                    background: `linear-gradient(to right, ${pwmDuty === 255 ? '#00c49a' : pwmDuty >= 128 ? '#ffa726' : '#ef5350'} ${(pwmDuty / 255) * 100}%, #30363d ${(pwmDuty / 255) * 100}%)`,
+                  }}
+                />
+                <span ref={pwmDisplayRef} style={{ minWidth: 36, textAlign: 'right', fontWeight: 600, color: pwmDuty === 255 ? '#00c49a' : pwmDuty >= 128 ? '#ffa726' : '#ef5350' }}>
+                  {pwmDuty}
+                </span>
+              </div>
+              <small style={{ color: '#888' }}>
+                255 = fully ON &nbsp;|&nbsp; 128 = 50% pulse &nbsp;|&nbsp; 0 = OFF &nbsp;—&nbsp; {Math.round(pwmDuty / 255 * 100)}% duty
+              </small>
             </label>
             <label>
               Bead Threshold (mm²):

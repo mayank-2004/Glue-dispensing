@@ -22,7 +22,7 @@ from pydantic import BaseModel
 # ──────────────────────────────────────────────
 # Configuration
 # ──────────────────────────────────────────────
-CAMERA_INDEX = 1          # Change to 0 if the dispensing camera is the only webcam
+CAMERA_INDEX = 1          # Change to 0 if the dispensing camera is the only webcam/Pi
 FRAME_WIDTH  = 1280
 FRAME_HEIGHT = 720
 MJPEG_QUALITY = 85        # JPEG quality 0-100 (higher = better quality, more bandwidth)
@@ -104,7 +104,9 @@ def camera_loop():
     vision analysis thread.
     """
     global latest_frame, camera_cap
-    cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)  # CAP_DSHOW for Windows USB cameras
+    # Use DirectShow on Windows, V4L2 on Linux/Pi — backend must match the OS
+    _backend = cv2.CAP_DSHOW if os.name == 'nt' else cv2.CAP_V4L2
+    cap = cv2.VideoCapture(CAMERA_INDEX, _backend)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  FRAME_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
     cap.set(cv2.CAP_PROP_FPS, 30)
@@ -117,6 +119,8 @@ def camera_loop():
         return
 
     camera_cap = cap  # Expose to API endpoints for live property changes
+    with state_lock:
+        shared_state["camera_ok"] = True
     print(f"[Vision] Camera opened on index {CAMERA_INDEX} ({FRAME_WIDTH}x{FRAME_HEIGHT})")
 
     while camera_thread_running:
@@ -464,20 +468,22 @@ def generate_mjpeg():
 
 
 # ──────────────────────────────────────────────
+# Camera thread management helpers
+# ──────────────────────────────────────────────
+
+# ──────────────────────────────────────────────
 # FastAPI App
 # ──────────────────────────────────────────────
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app):
-    # Launch camera and vision background threads on startup
     cam_thread    = threading.Thread(target=camera_loop,  daemon=True)
     vision_thread = threading.Thread(target=vision_loop,  daemon=True)
     cam_thread.start()
     vision_thread.start()
     print("[Vision] Server ready — stream at http://localhost:8000/video_feed")
     yield
-    # Shutdown: signal threads to stop
     global camera_thread_running
     camera_thread_running = False
 
@@ -1003,8 +1009,10 @@ def api_get_camera_settings():
 
 
 # ──────────────────────────────────────────────
-# Startup: launch background threads
+# Camera device selection (index + resolution)
 # ──────────────────────────────────────────────
+
+
 
 # ──────────────────────────────────────────────
 # Entry point

@@ -903,9 +903,16 @@ export default function CameraPanel({
     const fid = allFids.find(f => f.id === fidActiveId);
     if (!fid || !fid.design) { setAutoSearchStatus(''); return; }
 
-    // Rail fiducials use panelXf; board fiducials use xf
-    const transform = isRail ? cProps.panelXf : cProps.xf;
-    const machPos = predictFidMachinePos(fid, cProps.fiducials, transform, cProps.effectiveOrigin);
+    // Rail fiducials: use panelXf; board fiducials: use board xf, falling back to
+    // panelXf when the board transform isn't solved yet (panelXf can map any design
+    // coord to machine space once the rail is aligned).
+    // Pass the matching fiducial list so predictFidMachinePos can derive translation
+    // from already-solved points of the same group (R1→R2, F1→F2).
+    const transform = isRail
+      ? cProps.panelXf
+      : (cProps.xf || cProps.panelXf);
+    const refFids = isRail ? (cProps.panelRailFiducials || []) : cProps.fiducials;
+    const machPos = predictFidMachinePos(fid, refFids, transform, cProps.effectiveOrigin);
     if (!machPos) { setAutoSearchStatus('No transform — jog manually'); return; }
 
     // Camera target = machine position minus camera-to-nozzle offset
@@ -933,7 +940,7 @@ export default function CameraPanel({
     setAutoSearchStatus(`Moving to ${fidActiveId}…`);
     setTimeout(() => setAutoSearchStatus(''), 2500);
     console.log(`[AutoSearch] ${fidActiveId} → camera (${camX.toFixed(3)}, ${camY.toFixed(3)})`);
-  }, [fidActiveId, detectionInterval]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [fidActiveId, detectionInterval, panelXf]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- OVERWRITE HELPER: update a specific slot by ID without advancing the arm dropdown ---
   const overwriteFiducialById = (id, coord) => {

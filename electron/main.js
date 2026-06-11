@@ -9,9 +9,26 @@ const { SerialPort, ReadlineParser } = require('serialport');
 let win;
 let serial = { port: null, parser: null };
 let intentionalClose = false;   // flag to distinguish programmatic close from cable pull
+let intentionalAppQuit = false; // set to true before app.quit() so the kiosk close-guard lets it through
 let lastConnectedPath = null;   // path of the most recently opened port
 let lastConnectedBaud = 115200; // baud rate used when last opened
 let portWatcherTimer = null;    // setInterval handle for reappearance polling
+let keepAliveTimer = null;      // setInterval handle for USB keepalive pings
+
+function stopKeepAlive() {
+  if (keepAliveTimer) { clearInterval(keepAliveTimer); keepAliveTimer = null; }
+}
+
+function startKeepAlive() {
+  stopKeepAlive();
+  keepAliveTimer = setInterval(() => {
+    if (serial.port?.isOpen) {
+      serial.port.write('?\n', () => {});
+    } else {
+      stopKeepAlive();
+    }
+  }, 30000);       // every 30 s — keeps Windows from USB-suspending the port
+}
 
 function stopPortWatcher() {
   if (portWatcherTimer) { clearInterval(portWatcherTimer); portWatcherTimer = null; }
@@ -149,19 +166,37 @@ function createWindow() {
   win = new BrowserWindow({
     width: 1400,
     height: 900,
-    show: false,  // hidden until ready-to-show to avoid flash
+    show: false,           // hidden until ready-to-show to avoid flash
+    // Production kiosk: full-screen, no frame, no title bar
+    fullscreen: !isDev,    // true on Pi; false in dev so you keep a normal window
+    frame: isDev,          // hide OS window chrome (title bar, close/min/max) on Pi
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      devTools: isDev,     // block DevTools access in production
       preload: path.join(__dirname, 'preload.js')
     }
   });
 
-  // Maximize on every platform; fills the touchscreen on Pi
   win.once('ready-to-show', () => {
-    win.maximize();
     win.show();
+    // In dev keep normal window; on Pi force full-screen and hide cursor
+    if (!isDev) {
+      win.setAlwaysOnTop(true, 'screen-saver'); // stay above OS overlays
+      win.webContents.insertCSS('* { cursor: none !important; }'); // hide mouse cursor for touchscreen
+    } else {
+      win.maximize();
+    }
   });
+
+  // Prevent accidental close on Pi (Alt+F4, OS signals, etc.)
+  // Only allow close when intentionalAppQuit is set by the IPC quit handler.
+  if (!isDev) {
+    app.on('before-quit', () => { intentionalAppQuit = true; });
+    win.on('close', (e) => {
+      if (!intentionalAppQuit) e.preventDefault();
+    });
+  }
 
   if (isDev) {
     win.loadURL('http://localhost:5173');
@@ -185,6 +220,9 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 app.on('will-quit', stopVisionServer);
+
+// Deliberate quit from the in-app Exit button
+ipcMain.handle('app:quit', () => { intentionalAppQuit = true; app.quit(); });
 
 // -------- Serial IPC --------
 ipcMain.handle('serial:list', async () => {
@@ -228,6 +266,7 @@ ipcMain.handle('serial:open', async (e, { path: portPath, baudRate = 115200 }) =
       });
       // Native disconnect detection: fires immediately when USB cable is pulled
       port.on('close', () => {
+        stopKeepAlive();
         if (!intentionalClose && serial.port) {
           serial.port = null;
           serial.parser = null;
@@ -235,6 +274,7 @@ ipcMain.handle('serial:open', async (e, { path: portPath, baudRate = 115200 }) =
           startPortWatcher(); // begin polling for port to reappear
         }
       });
+      startKeepAlive();
       resolve();
     });
   });
@@ -244,6 +284,7 @@ ipcMain.handle('serial:open', async (e, { path: portPath, baudRate = 115200 }) =
 ipcMain.handle('serial:close', async () => {
   if (!serial.port) return true;
   stopPortWatcher(); // operator disconnected intentionally — don't auto-reconnect
+  stopKeepAlive();
   intentionalClose = true;
   await new Promise((resolve) => {
     serial.port.close(() => {

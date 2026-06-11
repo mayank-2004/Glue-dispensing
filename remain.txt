@@ -169,3 +169,153 @@ Next up is the board queue — the operator loads N boards upfront and the app r
 Current flow: job finishes → "Job Complete" → operator clicks "Run Next Board" → goes back through preflight → loads PCB → starts again. Every board requires manual navigation.
 
 Queue flow: operator sets "run 10 boards" → job finishes → app automatically advances to "Load PCB for board 2/10" → operator places board, confirms → job starts immediately. No preflight re-run, no navigation.
+
+
+
+
+
+
+
+
+
+How MOSFET-Based Glue Dispensing Works
+Concept
+Pressurized glue sits in a syringe/cartridge. A solenoid valve between the cartridge and needle opens/closes to release glue. The MOSFET is the electronic switch that drives the solenoid — the motion controller can't drive a solenoid directly (too much current).
+
+
+[Air pressure regulator]
+        ↓
+[Pressurized glue cartridge]
+        ↓
+[Solenoid valve] ←── MOSFET ←── Motion controller output pin
+        ↓
+[Dispensing needle]
+        ↓
+[PCB pad]
+Hardware Required
+Part	Purpose
+N-channel MOSFET (e.g. IRLZ44N, IRF540N)	Switches solenoid on/off
+Flyback diode (e.g. 1N4007)	Protects MOSFET from solenoid kickback
+10kΩ resistor (gate-to-ground)	Prevents floating gate
+100Ω resistor (gate series)	Limits gate current
+12V or 24V solenoid valve	Controls glue flow
+12V/24V power supply	Powers the solenoid
+Pressurized glue cartridge + regulator	Stores and pressures the glue
+Wiring Circuit
+
+Motion controller pin ──[100Ω]──┬── MOSFET Gate
+                                │
+                               [10kΩ]
+                                │
+                               GND
+
+MOSFET Drain ──── Solenoid (−)
+MOSFET Source ─── GND
+
+Solenoid (+) ──── 12V/24V supply (+)
+
+[1N4007 diode across solenoid: Anode to Drain, Cathode to 12V supply]
+Which Pin on the Motion Controller
+On GRBL-based boards:
+
+Fan pin → M106 (ON) / M107 (OFF) — easiest, no config needed
+Spindle pin → M3 S255 (ON) / M5 (OFF)
+Any aux pin → M42 P[n] S255 (ON) / M42 P[n] S0 (OFF)
+Fan pin is recommended — it's already broken out on most GRBL boards and needs no firmware changes.
+
+G-code Dispense Sequence Per Pad
+
+G0 X10.5 Y23.2        ; Move to pad position
+G0 Z1.0               ; Lower to dispense height
+M106                  ; Solenoid ON → glue starts flowing
+G4 P150               ; Dwell 150ms → this is your "dwell time"
+M107                  ; Solenoid OFF → glue stops
+G0 Z5.0               ; Raise Z (safe travel)
+; repeat for next pad
+The dwell time (ms) = glue volume. Longer pulse = more glue.
+
+Air Pressure Role
+Air pressure is set mechanically on the regulator (e.g. 2–5 PSI for thin glue, 10–30 PSI for thick)
+Higher pressure = more glue per ms → you compensate by reducing dwell time
+The app's "pressure PSI" value is currently used for per-pad dwell calculation (larger pads get longer dwell automatically). The actual air pressure is a physical knob on the regulator.
+App Operation (Current State)
+The app already has:
+
+Dispense Pressure (PSI) — set this to match your regulator reading; the sequencer uses it to scale dwell times per pad size
+Base Dwell Time (ms) — starting point; tune this for your glue viscosity + air pressure combination
+Live pad card — shows PSI / dwell / µL for each pad as it dispenses
+Post-job summary — total glue used, duration
+What the app currently sends for dispense depends on what dispensePoint() in gcode.js generates. I need to check whether it already sends M106/M107 or just a G4 dwell without solenoid control — that's the key question before we change anything.
+
+Calibration Procedure
+Set regulator to target pressure (e.g. 20 PSI)
+Place paper/PCB under needle
+Run a single-pad test with dwell = 100ms
+Measure dot size → adjust dwell up/down
+Repeat until dot matches pad size
+Save that dwell as Base Dwell Time in the app
+What Needs Checking Before We Implement
+The critical question: does dispensePoint() in gcode.js currently send M106/M107 around the G4 dwell, or does it only send G4? If solenoid control G-code isn't there yet, that's the one thing to add. Want me to check and show you what it currently does?
+
+
+
+
+
+
+
+
+
+
+
+
+1. manually set pressure, time/mode, vaccuum on 983A machine.
+2. manual set base dwell, z work height, z safe height, pressure on the app.
+
+To Get Live PSI (Optional Hardware Add-On) :-
+               If you want live pressure in the app, add a 0–10 bar analog pressure transducer (INR 300–800) to the air line between compressor and 983A. Wire its 0–5V output to an analog input pin on the CNC board. Marlin reads it via M105 or a custom query. I can implement this if you get the sensor.
+
+
+
+
+
+The setup becomes:
+
+3D Printer Controller
+        |
+        |
+   GPIO Output
+        |
+     MOSFET
+        |
+        |
+983A Foot Switch Input
+
+When the GPIO turns ON:
+
+MOSFET ON
+   ↓
+Foot switch shorted
+   ↓
+983A starts dispensing
+
+When the GPIO turns OFF:
+
+MOSFET OFF
+   ↓
+Foot switch open
+   ↓
+983A stops dispensing
+
+
+
+
+
+
+
+
+Your Immediate Action
+Before writing any more code: check your CNC board to find which physical pin corresponds to the M42 command. You need to know:
+
+What board is it (RAMPS 1.4, SKR, MKS, etc.)?
+What is the physical connector for "Fan 0", "Servo", or "AUX" pins?
+That pin is what you wire to the 983A trigger input. The code is already correct — the missing piece is just the physical wire.

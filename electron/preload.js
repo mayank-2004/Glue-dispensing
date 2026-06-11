@@ -1,5 +1,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+contextBridge.exposeInMainWorld('appControl', {
+  quit: () => ipcRenderer.invoke('app:quit'),
+});
+
 contextBridge.exposeInMainWorld('fs', {
   saveJobLog: (opts) => ipcRenderer.invoke('fs:saveJobLog', opts),
 });

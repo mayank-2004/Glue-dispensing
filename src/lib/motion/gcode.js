@@ -80,7 +80,7 @@ export function dispensePoint({
   feedZ = 500,
   pressure = 0,
   dwellMs = 0,
-  valvePin = 4,
+  pwmDuty = 255,
   axisMap = defaultAxisMap
 }) {
   const cmds = [];
@@ -90,20 +90,20 @@ export function dispensePoint({
   // Move down to work height
   cmds.push(...moveAbs({ z: zWork, feed: feedZ }, axisMap));
 
-  // Pressure ON
-  if (pressure > 0) cmds.push(`M42 P${valvePin} S${Math.round(pressure)}`);
+  // Trigger ON — M106 controls fan/relay output (0-255 PWM duty)
+  if (pressure > 0) cmds.push(`M106 S${Math.min(255, Math.max(0, Math.round(pwmDuty)))}`);
 
   // Dwell
   if (dwellMs > 0) cmds.push(...dwell(dwellMs));
 
-  // Pressure OFF
-  if (pressure > 0) cmds.push(`M42 P${valvePin} S0`);
+  // Trigger OFF
+  if (pressure > 0) cmds.push('M107');
 
   // Retract to safe height
   cmds.push(...moveAbs({ z: zSafe, feed: feedZ }, axisMap));
 
   return cmds;
-}
+} 
 
 /**
  * Dispense a continuous glue bead along the pad's longer axis.
@@ -123,7 +123,7 @@ export function dispenseBead({
   feedZ = 500,
   feedBead = 500,
   pressure = 0,
-  valvePin = 4,
+  pwmDuty = 255,
   axisMap = defaultAxisMap
 }) {
   const cmds = [];
@@ -138,12 +138,12 @@ export function dispenseBead({
   cmds.push(...moveAbs({ x: startX, y: startY, z: zSafe, feed: feedXY }, axisMap));
   // Lower to work height
   cmds.push(...moveAbs({ z: zWork, feed: feedZ }, axisMap));
-  // Valve ON
-  if (pressure > 0) cmds.push(`M42 P${valvePin} S${Math.round(pressure)}`);
+  // Trigger ON — M106 controls fan/relay output (0-255 PWM duty)
+  if (pressure > 0) cmds.push(`M106 S${Math.min(255, Math.max(0, Math.round(pwmDuty)))}`);
   // Sweep to bead end with valve open
   cmds.push(...moveAbs({ x: endX, y: endY, feed: feedBead }, axisMap));
-  // Valve OFF
-  if (pressure > 0) cmds.push(`M42 P${valvePin} S0`);
+  // Trigger OFF
+  if (pressure > 0) cmds.push('M107');
   // Retract to safe height
   cmds.push(...moveAbs({ z: zSafe, feed: feedZ }, axisMap));
 

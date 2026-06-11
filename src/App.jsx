@@ -1449,7 +1449,6 @@ export default function App() {
     return () => obs.disconnect();
   }, [svg, updateOverlay]);
 
-
   // Update overlay when origin changes
   useEffect(() => {
     if (selectedOrigin) {
@@ -1457,7 +1456,6 @@ export default function App() {
       const hasChanged = !prev || Math.abs(prev.x - selectedOrigin.x) > 0.001 || Math.abs(prev.y - selectedOrigin.y) > 0.001;
 
       if (hasChanged) {
-        // console.log('Origin changed, updating overlay:', selectedOrigin);
         prevOriginLogRef.current = { ...selectedOrigin };
         setTimeout(() => updateOverlay(), 300);
       }
@@ -1795,6 +1793,7 @@ export default function App() {
         isEmergencyStopped={isEmergencyStopped}
         onStop={triggerEmergencyStop}
         onReset={resetEmergencyStop}
+        onQuit={window.appControl ? () => window.appControl.quit() : null}
       />
 
       {/* ── BODY: Sidebar + Content ─────────────────────────── */}
@@ -2099,11 +2098,19 @@ export default function App() {
                     if (selectedPadIndices.length < 2) return;
                     const refPoint = referencePoint || effectiveOrigin || { x: 0, y: 0 };
                     const currentPads = selectedPadIndices.map(i => pads[i]);
+                    // enableMultiDot:false — sub-dot expansion is for job execution only;
+                    // here we reorder the selected pads themselves (1-in → 1-out per pad)
                     const sortedPads = dispensingSequencer.calculateOptimalSequence(refPoint, currentPads, {
                       nozzleDia: parseFloat(nozzleDia) || 0.8,
-                      enableMultiDot: true
+                      enableMultiDot: false
                     });
-                    const sortedIndices = sortedPads.map(p => pads.findIndex(orig => orig === p || (orig.x === p.x && orig.y === p.y)));
+                    // Map each sorted pad back to its original index in the full pads array
+                    const sortedIndices = sortedPads.map(p => {
+                      const idx = pads.findIndex(orig => orig === p);
+                      if (idx !== -1) return idx;
+                      // fallback: match by position
+                      return pads.findIndex(orig => Math.abs(orig.x - p.x) < 0.001 && Math.abs(orig.y - p.y) < 0.001);
+                    }).filter(i => i !== -1);
                     setSelectedPadIndices(sortedIndices);
                   }}
                   onClearPath={() => {
