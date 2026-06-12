@@ -1,3 +1,7 @@
+/* ═══════════════════════════════════════════════════════════
+   VIEWER — PCB Canvas & Toolbar
+═══════════════════════════════════════════════════════════ */
+
 .viewer {
   position: relative;
   flex: 1;
@@ -8,16 +12,19 @@
   border-radius: var(--radius-md);
   overflow: hidden;
   min-height: 0;
+  box-shadow: var(--shadow-md);
 }
 
+/* ── PCB Canvas ──────────────────────────────────────────── */
 .viewer .canvas {
   flex: 1;
   background-color: #000;
   background-image:
-    linear-gradient(rgba(0,200,215,0.07) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0,200,215,0.07) 1px, transparent 1px),
-    linear-gradient(rgba(0,200,215,0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0,200,215,0.03) 1px, transparent 1px);
+    linear-gradient(rgba(0,200,215,0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,200,215,0.06) 1px, transparent 1px),
+    linear-gradient(rgba(0,200,215,0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,200,215,0.025) 1px, transparent 1px);
+  background-size: 80px 80px, 80px 80px, 16px 16px, 16px 16px;
   overflow-x: hidden;
   overflow-y: auto;
   display: flex;
@@ -28,129 +35,153 @@
 }
 
 .viewer .canvas svg {
-  /* Dimensions are controlled by Viewer.jsx inline styles (100% for 1x, 200% for 2x, etc.) */
-  flex-shrink: 0; /* Crucial so flex column doesn't squish height back to 100% */
+  flex-shrink: 0;
   transition: width 0.2s ease, height 0.2s ease;
-  filter: drop-shadow(0 2px 8px rgba(0,0,0,0.6));
+  filter: drop-shadow(0 2px 10px rgba(0,0,0,0.65));
   display: block;
 }
 
-.viewer .canvas.zoom-mode {
-  cursor: zoom-in;
+.viewer .canvas.zoom-mode { cursor: zoom-in; }
+
+/* ── Toolbar (floating top-right) ────────────────────────── */
+.viewer .viewer-toolbar {
+  position: absolute;
+  top: 10px; right: 10px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  background: rgba(6,7,12,0.90);
+  padding: 6px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-highlight);
+  backdrop-filter: blur(8px);
+  box-shadow: var(--shadow-md);
+  min-width: 220px;
 }
 
-.viewer .canvas.zoom-mode:hover {
-  background: radial-gradient(circle at center, #1e293b 0%, #0f172a 100%);
-  border-radius: 4px;
-}
-
+/* ── Zoom wrapper — stacks btn-groups vertically ─────────── */
 .viewer-zoom {
   display: flex;
-  justify-content: space-evenly;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.viewer .viewer-toolbar {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  z-index: 10;
-  display: flex;
-  gap: 8px;
-}
-
-.viewer .viewer-toolbar {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  z-index: 10;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: rgba(15, 23, 42, 0.6);
-  padding: 4px;
-  border-radius: 8px;
-  border: 1px solid var(--border-primary);
-  backdrop-filter: blur(4px);
-}
-
+/* ── Button Group ────────────────────────────────────────── */
 .viewer-btn-group {
   display: flex;
   align-items: center;
-  gap: 1px; /* Gap for separation between buttons */
-  background: var(--border-secondary); /* Border color as background for gaps */
+  gap: 1px;
+  background: var(--border-primary);
   border: 1px solid var(--border-secondary);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
+  width: 100%;
 }
 
+/* ── Toolbar Buttons ─────────────────────────────────────── */
 .viewer-btn {
-  background: var(--bg-button); /* Solid background */
-  color: var(--text-secondary);
+  background: #0e111a;
+  color: #9aa0b2;
   border: none;
-  padding: 0 12px; /* Increased horizontal padding */
+  padding: 0 10px;
   cursor: pointer;
-  font-weight: 500;
-  font-size: 13px;
-  transition: all 0.2s ease;
+  font-weight: 700;
+  font-size: 0.72rem;
+  font-family: var(--font-main);
+  transition: all var(--transition);
   display: flex;
   align-items: center;
-  gap: 6px;
-  height: 36px; /* slightly taller */
+  justify-content: center;
+  gap: 5px;
+  height: 30px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  flex: 1;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
 }
-
-/* Remove border-right as we use gap + background for separation now */
-.viewer-btn {
-  border-right: none;
-}
-
 .viewer-btn:hover:not(:disabled) {
-  background: var(--bg-button-hover);
-  color: var(--text-primary);
+  background: #161b28;
+  color: #e0e6f0;
 }
-
+.viewer-btn:active:not(:disabled) {
+  background: rgba(0,200,215,0.12);
+  color: var(--accent-primary);
+}
 .viewer-btn:disabled {
-  background: var(--bg-secondary);
-  opacity: 0.5;
+  opacity: 0.32;
   cursor: not-allowed;
 }
-
+/* Select mode active — amber highlight */
 .viewer-btn.active {
-  background: rgba(234, 179, 8, 0.2);
-  color: #facc15;
-  box-shadow: inset 0 0 8px rgba(234, 179, 8, 0.1);
+  background: rgba(245,166,35,0.13);
+  color: var(--accent-warning);
+}
+.viewer-btn.active:hover:not(:disabled) {
+  background: rgba(245,166,35,0.22);
 }
 
-.viewer-btn.active:hover {
-  background: rgba(234, 179, 8, 0.3);
-}
-
-.viewer-readout {
-  padding: 0 12px;
-  font-family: var(--font-mono);
-  font-size: 13px;
-  color: var(--text-primary);
-  background: var(--bg-secondary);
-  height: 36px;
+/* ── Zoom label inside btn-group ─────────────────────────── */
+.viewer-zoom-label {
+  font-weight: 800;
+  font-size: 0.72rem;
+  color: #e0e6f0;
+  padding: 0 10px;
+  height: 30px;
   display: flex;
   align-items: center;
-  min-width: 48px;
+  border-right: 1px solid var(--border-secondary);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+  background: #0a0d14;
+  white-space: nowrap;
+}
+
+/* ── Readout (shows "Fit" or zoom level) ─────────────────── */
+.viewer-readout {
+  padding: 0 10px;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: #e0e6f0;
+  background: #0a0d14;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  min-width: 42px;
   justify-content: center;
-  font-weight: 600;
+  font-weight: 800;
+  border-left: 1px solid var(--border-secondary);
+  border-right: 1px solid var(--border-secondary);
+  flex-shrink: 0;
+  letter-spacing: 0.04em;
 }
 
+/* Reset button — cyan when not at fit level */
+.viewer-btn.zoom-reset-active { color: var(--accent-primary); }
+.viewer-btn.zoom-reset-active:hover:not(:disabled) {
+  background: rgba(0,200,215,0.12);
+  color: var(--accent-primary);
+}
+
+/* ── Zoom-enabled state ──────────────────────────────────── */
 .viewer.zoom-enabled {
-  border-color: var(--border-accent);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+  border-color: rgba(0,200,215,0.35);
+  box-shadow: 0 0 0 1px rgba(0,200,215,0.2);
 }
-
 .viewer.zoomed {
-  border-color: rgba(239, 68, 68, 0.5);
-  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.2);
+  border-color: rgba(255,51,85,0.4);
+  box-shadow: 0 0 0 1px rgba(255,51,85,0.18);
 }
 
+/* ── Empty state ─────────────────────────────────────────── */
 .viewer .canvas:empty::before {
   content: "Drop Gerber files here or click 'Open Gerbers / ZIP' to start";
   color: var(--text-secondary);
+  font-size: 0.82rem;
   font-style: italic;
   text-align: center;
   display: flex;
@@ -158,6 +189,7 @@
   justify-content: center;
   height: 100%;
   border: 2px dashed var(--border-secondary);
-  border-radius: 8px;
-  background: rgba(15, 23, 42, 0.4);
+  border-radius: var(--radius-md);
+  background: rgba(0,0,0,0.2);
+  padding: 24px;
 }

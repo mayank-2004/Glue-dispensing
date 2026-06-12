@@ -1,90 +1,264 @@
+/* ═══════════════════════════════════════════════════════════
+   AUTOMATED DISPENSING PANEL
+═══════════════════════════════════════════════════════════ */
+
 .automated-panel {
-    margin-top: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
 }
 
 .panel-data {
-    margin-left: 10px;
+  margin-left: 10px;
 }
 
+/* ── Flow Container ──────────────────────────────────────── */
 .automated-panel .flow-container {
-    margin-top: 20px;
+  margin-top: 12px;
 }
 
 .automated-panel .flow-header {
-    margin-bottom: 16px;
+  margin-bottom: 14px;
 }
 
+/* ── Stage Indicator Bar ─────────────────────────────────── */
 .automated-panel .stage-indicator {
-    padding: 10px 14px;
-    border-radius: 8px;
-    border: 1px solid var(--border-primary);
-    font-size: 0.84rem;
+  padding: 9px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-primary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
-
 .automated-panel .stage-indicator.idle {
-    background: rgba(255, 255, 255, 0.05);
-    color: var(--text-secondary);
+  background: rgba(255,255,255,0.03);
+  color: var(--text-secondary);
 }
-
 .automated-panel .stage-indicator.active {
-    background: rgba(0, 200, 215, 0.1);
-    color: var(--accent-primary);
+  background: rgba(0,200,215,0.08);
+  border-color: rgba(0,200,215,0.3);
+  color: var(--accent-primary);
+  box-shadow: 0 0 12px rgba(0,200,215,0.1);
 }
 
+/* ── Position Readout ────────────────────────────────────── */
 .automated-panel .pos-readout {
-    font-size: 13px;
-    margin-top: 4px;
-    font-family: 'JetBrains Mono', monospace;
-    color: var(--text-secondary);
+  font-size: 0.78rem;
+  margin-top: 5px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  letter-spacing: 0.04em;
 }
 
+/* ── Mini Jog Controls ───────────────────────────────────── */
 .automated-panel .jog-controls-mini {
-    display: grid;
-    justify-items: center;
-    gap: 5px;
-    margin: 10px 0;
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+  margin: 10px 0;
 }
 
 .automated-panel .flex-row {
-    display: flex;
-    gap: 8px;
+  display: flex;
+  gap: 8px;
 }
 
 .automated-panel .step-sel {
-    margin-top: 10px;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 0.9em;
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.85em;
 }
 
 .automated-panel .step-sel .btn {
-    margin: 2px;
+  margin: 2px;
 }
 
+/* ═══════════════════════════════════════════════════════════
+   STAGE BOXES  (preflight, loading, dispensing, finished…)
+═══════════════════════════════════════════════════════════ */
 .automated-panel .stage-box {
-    margin-bottom: 16px;
-    padding: 4px 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  margin-bottom: 12px;
+  animation: slide-up 0.22s ease;
+  position: relative;
+  overflow: hidden;
+}
+/* Top accent line */
+.automated-panel .stage-box::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent-primary), transparent);
+  opacity: 0.5;
 }
 
+/* Dispensing stage — cyan tint */
+.automated-panel .stage-box.dispensing {
+  border-color: rgba(0,200,215,0.25);
+  background: rgba(0,200,215,0.04);
+}
+
+/* Finished stage — green tint */
+.automated-panel .stage-box.finished {
+  border-color: rgba(0,232,122,0.25);
+  background: rgba(0,232,122,0.03);
+}
+.automated-panel .stage-box.finished::before {
+  background: linear-gradient(90deg, transparent, var(--accent-success), transparent);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   PROGRESS BAR
+═══════════════════════════════════════════════════════════ */
 .automated-panel progress {
-    appearance: none;
-    width: 100%;
-    height: 16px;
-    border-radius: 8px;
-    overflow: hidden;
-    display: block;
-    margin: 10px 0;
+  appearance: none;
+  width: 100%;
+  height: 12px;
+  border-radius: 6px;
+  overflow: hidden;
+  display: block;
+  margin: 10px 0 6px;
+  border: none;
 }
-
 .automated-panel progress::-webkit-progress-bar {
-    background: var(--bg-input);
-    border-radius: 8px;
+  background: var(--bg-input);
+  border-radius: 6px;
+  border: 1px solid var(--border-primary);
+}
+.automated-panel progress::-webkit-progress-value {
+  background: linear-gradient(90deg, #009fb5, var(--accent-primary));
+  border-radius: 6px;
+  box-shadow: 0 0 10px rgba(0,200,215,0.45);
+  transition: width 0.35s ease;
 }
 
-.automated-panel progress::-webkit-progress-value {
-    background: var(--accent-primary);
-    border-radius: 8px;
-    box-shadow: 0 0 8px rgba(0,200,215,0.4);
-    transition: width 0.3s ease;
+/* ── Progress Label ─────────────────────────────────────── */
+.automated-panel .progress-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+.automated-panel .progress-count {
+  color: var(--accent-primary);
+  font-weight: 700;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   LIVE PAD FEEDBACK CARD (during dispensing)
+═══════════════════════════════════════════════════════════ */
+.pad-feedback-card {
+  margin-top: 10px;
+  padding: 10px 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-highlight);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  align-items: center;
+  animation: fade-in 0.2s ease;
+}
+.pad-feedback-card .pf-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   JOB REPORT TABLE (finished stage)
+═══════════════════════════════════════════════════════════ */
+.job-report-table {
+  width: 100%;
+  font-size: 0.82rem;
+  margin-bottom: 12px;
+  border-collapse: collapse;
+}
+.job-report-table td {
+  padding: 5px 6px;
+  vertical-align: middle;
+}
+.job-report-table td:first-child {
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  width: 55%;
+}
+.job-report-table td:last-child {
+  color: var(--text-bright);
+  font-family: var(--font-mono);
+  font-weight: 700;
+  text-align: right;
+}
+.job-report-table tr + tr td {
+  border-top: 1px solid var(--border-primary);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   PREFLIGHT CHECKLIST ITEMS
+═══════════════════════════════════════════════════════════ */
+.preflight-item {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 7px 10px;
+  background: rgba(255,255,255,0.02);
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  transition: background var(--transition);
+}
+.preflight-item:hover { background: rgba(255,255,255,0.04); }
+.preflight-item .pi-icon {
+  font-size: 1em;
+  min-width: 18px;
+  margin-top: 1px;
+  flex-shrink: 0;
+}
+.preflight-item .pi-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+.preflight-item .pi-detail {
+  font-size: 0.73rem;
+  color: var(--text-secondary);
+  margin-top: 2px;
+  line-height: 1.4;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   SETTINGS GRID (inside panel)
+═══════════════════════════════════════════════════════════ */
+.settings-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.settings-grid-2 label,
+.settings-field-wrap label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
 }

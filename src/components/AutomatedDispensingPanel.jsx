@@ -26,7 +26,7 @@ function idwCorrect(x, y, vectors, power = 2) {
 }
 
 // ── SPC (Statistical Process Control) helpers ────────────────────────────────
-const SPC_KEY     = 'spcDotQuality';
+const SPC_KEY = 'spcDotQuality';
 const SPC_MAX_JOBS = 60; // rolling window — oldest entries drop off
 
 function spcLoad() {
@@ -36,19 +36,19 @@ function spcLoad() {
 
 function spcAppend(dotResults, totalPads) {
   if (!dotResults || dotResults.length === 0) return;
-  const data  = spcLoad();
+  const data = spcLoad();
   const passed = dotResults.filter(r => r.passed).length;
-  const diams  = dotResults.filter(r => r.diameter_mm > 0).map(r => r.diameter_mm);
+  const diams = dotResults.filter(r => r.diameter_mm > 0).map(r => r.diameter_mm);
   data.jobs = [
     ...data.jobs,
     {
-      jobId:       new Date().toISOString(),
-      date:        new Date().toLocaleDateString(),
+      jobId: new Date().toISOString(),
+      date: new Date().toLocaleDateString(),
       totalPads,
-      checked:     dotResults.length,
+      checked: dotResults.length,
       passed,
-      failed:      dotResults.length - passed,
-      passRate:    passed / dotResults.length,
+      failed: dotResults.length - passed,
+      passRate: passed / dotResults.length,
       avgDiameter: diams.length ? diams.reduce((a, b) => a + b, 0) / diams.length : null,
       minDiameter: diams.length ? Math.min(...diams) : null,
     },
@@ -69,12 +69,12 @@ function parsePnpCsv(text, filename = '') {
     }
     return -1;
   };
-  const colRef  = findCol('ref', 'designator', 'reference');
-  const colX    = findCol('pos x', 'mid x', 'posx', 'x');
-  const colY    = findCol('pos y', 'mid y', 'posy', 'y');
-  const colPkg  = findCol('package', 'footprint', 'value', 'val');
+  const colRef = findCol('ref', 'designator', 'reference');
+  const colX = findCol('pos x', 'mid x', 'posx', 'x');
+  const colY = findCol('pos y', 'mid y', 'posy', 'y');
+  const colPkg = findCol('package', 'footprint', 'value', 'val');
   const colSide = findCol('side', 'layer');
-  const colRot  = findCol('rot', 'rotation', 'angle');
+  const colRot = findCol('rot', 'rotation', 'angle');
   if (colX < 0 || colY < 0) return [];
 
   // When no Side/Layer column exists, infer default side from filename
@@ -194,8 +194,8 @@ function getComponentDotOffsets(comp, spacingMm, customPatterns = {}) {
   const cos = Math.cos(angleRad);
   const sin = Math.sin(angleRad);
   const rot = (dx, dy) => ({ dx: dx * cos - dy * sin, dy: dx * sin + dy * cos });
-  if (pattern === 'dual')  return [rot(-half, 0), rot(half, 0)];
-  if (pattern === 'quad')  return [rot(-half, -half), rot(half, -half), rot(half, half), rot(-half, half)];
+  if (pattern === 'dual') return [rot(-half, 0), rot(half, 0)];
+  if (pattern === 'quad') return [rot(-half, -half), rot(half, -half), rot(half, half), rot(-half, half)];
   return [{ dx: 0, dy: 0 }];
 }
 
@@ -287,7 +287,7 @@ function Sparkline({ values, color = '#58a6ff', height = 36, width = '100%' }) {
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(' ');
   const last = values[values.length - 1];
-  const lx   = W, ly = H - ((last - min) / range) * (H - 4) - 2;
+  const lx = W, ly = H - ((last - min) / range) * (H - 4) - 2;
   return (
     <svg viewBox={`0 0 ${W} ${H}`} style={{ width, height, display: 'block', overflow: 'visible' }}>
       <polyline points={pts} fill="none" stroke={color} strokeWidth="1.8" strokeLinejoin="round" />
@@ -515,8 +515,8 @@ export default function AutomatedDispensingPanel({
 
     if (nBoards === 1 || !panelBoards?.length) {
       const orig = totalTravelMm(filteredPnpComponents);
-      const opt  = totalTravelMm(optimizedPnpComponents);
-      const pct  = orig > 0 ? Math.round((orig - opt) / orig * 100) : 0;
+      const opt = totalTravelMm(optimizedPnpComponents);
+      const pct = orig > 0 ? Math.round((orig - opt) / orig * 100) : 0;
       return { orig: Math.round(orig), opt: Math.round(opt), pct, boards: 1 };
     }
 
@@ -530,8 +530,8 @@ export default function AutomatedDispensingPanel({
       )
     );
     const orig = totalTravelMm(origFlat);
-    const opt  = totalTravelMm(optFlat);
-    const pct  = orig > 0 ? Math.round((orig - opt) / orig * 100) : 0;
+    const opt = totalTravelMm(optFlat);
+    const pct = orig > 0 ? Math.round((orig - opt) / orig * 100) : 0;
     return { orig: Math.round(orig), opt: Math.round(opt), pct, boards: nBoards };
   }, [filteredPnpComponents, optimizedPnpComponents, optimizePath, isPnpMode, panelBoards, panelXf, applyXf]);
 
@@ -546,8 +546,8 @@ export default function AutomatedDispensingPanel({
   // Total individual glue dots across all active PnP components (accounts for dual/quad patterns)
   const totalPnpDots = isPnpMode
     ? filteredPnpComponents.reduce(
-        (sum, c) => sum + getComponentDotOffsets(c, dotSpacingMm, customDotPatterns).length, 0
-      )
+      (sum, c) => sum + getComponentDotOffsets(c, dotSpacingMm, customDotPatterns).length, 0
+    )
     : 0;
 
   // Refs for async access
@@ -1166,189 +1166,189 @@ export default function AutomatedDispensingPanel({
         const origDesignX = p.x;
         const origDesignY = p.y;
 
-          let tp = null;
+        let tp = null;
+        if (loopPanelXf && board.offsetX != null) {
+          // Global panel transform: shift pad into panel space first, then apply T_panel
+          const panelSpacePt = { x: p.x + board.offsetX, y: p.y + board.offsetY };
+          tp = applyTransform(loopPanelXf, panelSpacePt);
+          // Optional per-board local correction on top (if transform != loopPanelXf)
+          if (transform && transform !== loopPanelXf) tp = applyTransform(transform, tp);
+          p = { ...p, x: tp.x, y: tp.y };
+        } else if (transform) {
+          tp = applyTransform(transform, p);
+          p = { ...p, x: tp.x, y: tp.y };
+        } else {
+          // No transform: align manually using the effective origin + board offset if panel
+          const ox = selectedOrigin ? selectedOrigin.x : (boardOutline ? boardOutline.minX : 0);
+          const oy = selectedOrigin ? selectedOrigin.y : (boardOutline ? boardOutline.minY : 0);
+          const boardOffX = isPnpPanel && board.offsetX != null ? board.offsetX : 0;
+          const boardOffY = isPnpPanel && board.offsetY != null ? board.offsetY : 0;
+          p = { ...p, x: p.x - ox + boardOffX, y: p.y - oy + boardOffY };
+        }
+
+        // ─── APPLY CALIBRATION CORRECTION (same as "Move Camera Here") ──────
+        const finalX = p.x + calibCorrection.x;
+        const finalY = p.y + calibCorrection.y;
+
+        // Soft axis limits guard — abort job if this pad is outside travel envelope
+        const zWork = dispenseHeight + getZOffsetForPoint(finalX, finalY);
+        assertInBounds(finalX, finalY, zWork, `pad ${globalPointCount}`);
+
+        // Helper: transform a design-space offset from the component centroid to machine finalXY.
+        // Replicates the board/panel transform so multi-dot offsets are properly registered.
+        const designToFinalXY = (dx, dy) => {
+          const dp = { x: origDesignX + dx, y: origDesignY + dy };
+          let mx, my;
           if (loopPanelXf && board.offsetX != null) {
-            // Global panel transform: shift pad into panel space first, then apply T_panel
-            const panelSpacePt = { x: p.x + board.offsetX, y: p.y + board.offsetY };
-            tp = applyTransform(loopPanelXf, panelSpacePt);
-            // Optional per-board local correction on top (if transform != loopPanelXf)
-            if (transform && transform !== loopPanelXf) tp = applyTransform(transform, tp);
-            p = { ...p, x: tp.x, y: tp.y };
+            const ps = { x: dp.x + board.offsetX, y: dp.y + board.offsetY };
+            let r = applyTransform(loopPanelXf, ps);
+            if (transform && transform !== loopPanelXf) r = applyTransform(transform, r);
+            mx = r.x; my = r.y;
           } else if (transform) {
-            tp = applyTransform(transform, p);
-            p = { ...p, x: tp.x, y: tp.y };
+            const r = applyTransform(transform, dp);
+            mx = r.x; my = r.y;
           } else {
-            // No transform: align manually using the effective origin + board offset if panel
             const ox = selectedOrigin ? selectedOrigin.x : (boardOutline ? boardOutline.minX : 0);
             const oy = selectedOrigin ? selectedOrigin.y : (boardOutline ? boardOutline.minY : 0);
             const boardOffX = isPnpPanel && board.offsetX != null ? board.offsetX : 0;
             const boardOffY = isPnpPanel && board.offsetY != null ? board.offsetY : 0;
-            p = { ...p, x: p.x - ox + boardOffX, y: p.y - oy + boardOffY };
+            mx = dp.x - ox + boardOffX; my = dp.y - oy + boardOffY;
           }
+          return { finalX: mx + calibCorrection.x, finalY: my + calibCorrection.y };
+        };
 
-          // ─── APPLY CALIBRATION CORRECTION (same as "Move Camera Here") ──────
-          const finalX = p.x + calibCorrection.x;
-          const finalY = p.y + calibCorrection.y;
+        // Dot offsets in design space — [{dx, dy}].  Single-dot = [{0,0}] (Gerber + 1-dot PnP).
+        const dotOffsets = isPnpMode
+          ? getComponentDotOffsets(seq[seqIdx], dotSpacingMm, customDotPatterns)
+          : [{ dx: 0, dy: 0 }];
 
-          // Soft axis limits guard — abort job if this pad is outside travel envelope
-          const zWork = dispenseHeight + getZOffsetForPoint(finalX, finalY);
-          assertInBounds(finalX, finalY, zWork, `pad ${globalPointCount}`);
+        let pressure, dwell, dispenseMode;
+        if (isPnpMode) {
+          pressure = localPressure;
+          dwell = baseDwellTime;
+          dispenseMode = { mode: 'dot' };
+        } else {
+          const configDwell = pressureSettings.customDwellTime || baseDwellTime;
+          pressure = dispensingSequencer.calculatePadPressure(p, { customPressure: localPressure });
+          dwell = dispensingSequencer.calculateDwellTime(p, { customDwellTime: configDwell });
+          dispenseMode = dispensingSequencer.selectDispenseMode(p, { beadAreaThreshold });
+        }
 
-          // Helper: transform a design-space offset from the component centroid to machine finalXY.
-          // Replicates the board/panel transform so multi-dot offsets are properly registered.
-          const designToFinalXY = (dx, dy) => {
-            const dp = { x: origDesignX + dx, y: origDesignY + dy };
-            let mx, my;
-            if (loopPanelXf && board.offsetX != null) {
-              const ps = { x: dp.x + board.offsetX, y: dp.y + board.offsetY };
-              let r = applyTransform(loopPanelXf, ps);
-              if (transform && transform !== loopPanelXf) r = applyTransform(transform, r);
-              mx = r.x; my = r.y;
-            } else if (transform) {
-              const r = applyTransform(transform, dp);
-              mx = r.x; my = r.y;
-            } else {
-              const ox = selectedOrigin ? selectedOrigin.x : (boardOutline ? boardOutline.minX : 0);
-              const oy = selectedOrigin ? selectedOrigin.y : (boardOutline ? boardOutline.minY : 0);
-              const boardOffX = isPnpPanel && board.offsetX != null ? board.offsetX : 0;
-              const boardOffY = isPnpPanel && board.offsetY != null ? board.offsetY : 0;
-              mx = dp.x - ox + boardOffX; my = dp.y - oy + boardOffY;
-            }
-            return { finalX: mx + calibCorrection.x, finalY: my + calibCorrection.y };
-          };
+        const padVolUl = isPnpMode ? glueDotVolUl : (glueSummary?.annotated?.[globalPointCount - 1]?.glue?.volUl ?? 0);
+        setCurrentPadInfo({
+          padIndex: globalPointCount,
+          total: totalPoints,
+          pressure,
+          dwellMs: dwell,
+          volumeUl: padVolUl.toFixed ? padVolUl.toFixed(3) : '—',
+          mode: dispenseMode.mode,
+        });
 
-          // Dot offsets in design space — [{dx, dy}].  Single-dot = [{0,0}] (Gerber + 1-dot PnP).
-          const dotOffsets = isPnpMode
-            ? getComponentDotOffsets(seq[seqIdx], dotSpacingMm, customDotPatterns)
-            : [{ dx: 0, dy: 0 }];
+        // Accumulate log entry for this pad
+        padLogRef.current.push({
+          padIndex: globalPointCount,
+          padId: p.id || p.componentIdentifier || `P${globalPointCount}`,
+          x: finalX.toFixed(3),
+          y: finalY.toFixed(3),
+          pressure,
+          dwellMs: dwell,
+          volumeUl: padVolUl.toFixed ? padVolUl.toFixed(4) : '0',
+          dotPassed: null,
+          dotDiameter_mm: '',
+        });
 
-          let pressure, dwell, dispenseMode;
-          if (isPnpMode) {
-            pressure = localPressure;
-            dwell = baseDwellTime;
-            dispenseMode = { mode: 'dot' };
+        if (dotOffsets.length === 1) {
+          // ── Single-dot path — unchanged behaviour (Gerber pads + 1-dot PnP) ──
+          let cmds;
+          if (dispenseMode.mode === 'bead') {
+            cmds = dispenseBead({
+              x: finalX, y: finalY,
+              beadLength: dispenseMode.length,
+              beadAxis: dispenseMode.axis,
+              zWork,
+              zSafe: safeTravelHeight,
+              feedXY: speedSettings.travelSpeed || 6000,
+              feedZ: speedSettings.dispenseSpeed || 300,
+              feedBead: beadFeedRate,
+              pressure,
+              pwmDuty,
+            });
           } else {
-            const configDwell = pressureSettings.customDwellTime || baseDwellTime;
-            pressure = dispensingSequencer.calculatePadPressure(p, { customPressure: localPressure });
-            dwell = dispensingSequencer.calculateDwellTime(p, { customDwellTime: configDwell });
-            dispenseMode = dispensingSequencer.selectDispenseMode(p, { beadAreaThreshold });
+            cmds = dispensePoint({
+              x: finalX, y: finalY,
+              zWork,
+              zSafe: safeTravelHeight,
+              feedXY: speedSettings.travelSpeed || 6000,
+              feedZ: speedSettings.dispenseSpeed || 300,
+              pressure,
+              dwellMs: dwell,
+              pwmDuty,
+            });
           }
-
-          const padVolUl = isPnpMode ? glueDotVolUl : (glueSummary?.annotated?.[globalPointCount - 1]?.glue?.volUl ?? 0);
-          setCurrentPadInfo({
-            padIndex: globalPointCount,
-            total: totalPoints,
-            pressure,
-            dwellMs: dwell,
-            volumeUl: padVolUl.toFixed ? padVolUl.toFixed(3) : '—',
-            mode: dispenseMode.mode,
-          });
-
-          // Accumulate log entry for this pad
-          padLogRef.current.push({
-            padIndex: globalPointCount,
-            padId: p.id || p.componentIdentifier || `P${globalPointCount}`,
-            x: finalX.toFixed(3),
-            y: finalY.toFixed(3),
-            pressure,
-            dwellMs: dwell,
-            volumeUl: padVolUl.toFixed ? padVolUl.toFixed(4) : '0',
-            dotPassed: null,
-            dotDiameter_mm: '',
-          });
-
-          if (dotOffsets.length === 1) {
-            // ── Single-dot path — unchanged behaviour (Gerber pads + 1-dot PnP) ──
-            let cmds;
-            if (dispenseMode.mode === 'bead') {
-              cmds = dispenseBead({
-                x: finalX, y: finalY,
-                beadLength: dispenseMode.length,
-                beadAxis: dispenseMode.axis,
-                zWork,
-                zSafe: safeTravelHeight,
-                feedXY: speedSettings.travelSpeed || 6000,
-                feedZ: speedSettings.dispenseSpeed || 300,
-                feedBead: beadFeedRate,
-                pressure,
-                pwmDuty,
-              });
-            } else {
-              cmds = dispensePoint({
-                x: finalX, y: finalY,
-                zWork,
-                zSafe: safeTravelHeight,
-                feedXY: speedSettings.travelSpeed || 6000,
-                feedZ: speedSettings.dispenseSpeed || 300,
-                pressure,
-                dwellMs: dwell,
-                pwmDuty,
-              });
-            }
-            for (const c of cmds) await sendGcodeWait(c);
+          for (const c of cmds) await sendGcodeWait(c);
+          nozzleMaintenance.recordDispense();
+        } else {
+          // ── Multi-dot path — PnP dual/quad pattern ───────────────────────────
+          for (const dot of dotOffsets) {
+            const { finalX: dfx, finalY: dfy } = designToFinalXY(dot.dx, dot.dy);
+            const dotZWork = dispenseHeight + getZOffsetForPoint(dfx, dfy);
+            assertInBounds(dfx, dfy, dotZWork, `pad ${globalPointCount} dot`);
+            const dotCmds = dispensePoint({
+              x: dfx, y: dfy,
+              zWork: dotZWork,
+              zSafe: safeTravelHeight,
+              feedXY: speedSettings.travelSpeed || 6000,
+              feedZ: speedSettings.dispenseSpeed || 300,
+              pressure,
+              dwellMs: dwell,
+              pwmDuty,
+            });
+            for (const c of dotCmds) await sendGcodeWait(c);
             nozzleMaintenance.recordDispense();
-          } else {
-            // ── Multi-dot path — PnP dual/quad pattern ───────────────────────────
-            for (const dot of dotOffsets) {
-              const { finalX: dfx, finalY: dfy } = designToFinalXY(dot.dx, dot.dy);
-              const dotZWork = dispenseHeight + getZOffsetForPoint(dfx, dfy);
-              assertInBounds(dfx, dfy, dotZWork, `pad ${globalPointCount} dot`);
-              const dotCmds = dispensePoint({
-                x: dfx, y: dfy,
-                zWork: dotZWork,
-                zSafe: safeTravelHeight,
-                feedXY: speedSettings.travelSpeed || 6000,
-                feedZ: speedSettings.dispenseSpeed || 300,
-                pressure,
-                dwellMs: dwell,
-                pwmDuty,
-              });
-              for (const c of dotCmds) await sendGcodeWait(c);
-              nozzleMaintenance.recordDispense();
-            }
           }
+        }
 
-          // ── Post-dispense dot verification ─────────────────────────────
-          if (enableDotVerification && tp) {
-            try {
-              const res = await fetch('http://localhost:8000/api/check_glue_dot');
-              if (res.ok) {
-                const dot = await res.json();
-                const result = { padIndex: globalPointCount, passed: dot.found, diameter_mm: dot.diameter_mm ?? 0, confidence: dot.confidence ?? 0 };
-                setDotCheckResults(prev => [...prev, result]);
-                // Backfill dot result into the log entry for this pad
-                const entry = padLogRef.current.find(e => e.padIndex === globalPointCount);
-                if (entry) { entry.dotPassed = dot.found; entry.dotDiameter_mm = dot.diameter_mm ?? ''; }
+        // ── Post-dispense dot verification ─────────────────────────────
+        if (enableDotVerification && tp) {
+          try {
+            const res = await fetch('http://localhost:8000/api/check_glue_dot');
+            if (res.ok) {
+              const dot = await res.json();
+              const result = { padIndex: globalPointCount, passed: dot.found, diameter_mm: dot.diameter_mm ?? 0, confidence: dot.confidence ?? 0 };
+              setDotCheckResults(prev => [...prev, result]);
+              // Backfill dot result into the log entry for this pad
+              const entry = padLogRef.current.find(e => e.padIndex === globalPointCount);
+              if (entry) { entry.dotPassed = dot.found; entry.dotDiameter_mm = dot.diameter_mm ?? ''; }
 
-                // ── Clog detection ────────────────────────────────────────
-                if (clogDetectionEnabled) {
-                  if (dot.found) {
+              // ── Clog detection ────────────────────────────────────────
+              if (clogDetectionEnabled) {
+                if (dot.found) {
+                  consecutiveFailsRef.current = 0;
+                } else {
+                  consecutiveFailsRef.current++;
+                  if (consecutiveFailsRef.current >= clogThreshold) {
+                    const padLabel = p.id || `P${globalPointCount}`;
+                    toast.warning(`Nozzle clog detected — ${consecutiveFailsRef.current} consecutive failed dots at ${padLabel}. Job paused.`);
+                    clogPausedRef.current = true;
+                    setClogNotification({ padId: padLabel, failedCount: consecutiveFailsRef.current });
+                    while (clogPausedRef.current && isJobRunningRef.current) {
+                      await new Promise(r => setTimeout(r, 300));
+                    }
+                    if (!isJobRunningRef.current) throw new Error("Job Aborted");
                     consecutiveFailsRef.current = 0;
-                  } else {
-                    consecutiveFailsRef.current++;
-                    if (consecutiveFailsRef.current >= clogThreshold) {
-                      const padLabel = p.id || `P${globalPointCount}`;
-                      toast.warning(`Nozzle clog detected — ${consecutiveFailsRef.current} consecutive failed dots at ${padLabel}. Job paused.`);
-                      clogPausedRef.current = true;
-                      setClogNotification({ padId: padLabel, failedCount: consecutiveFailsRef.current });
-                      while (clogPausedRef.current && isJobRunningRef.current) {
-                        await new Promise(r => setTimeout(r, 300));
-                      }
-                      if (!isJobRunningRef.current) throw new Error("Job Aborted");
-                      consecutiveFailsRef.current = 0;
-                      setClogNotification(null);
-                      if (retryCurrentPadRef.current) {
-                        retryCurrentPadRef.current = false;
-                        globalPointCount--;
-                        fi--;
-                      }
+                    setClogNotification(null);
+                    if (retryCurrentPadRef.current) {
+                      retryCurrentPadRef.current = false;
+                      globalPointCount--;
+                      fi--;
                     }
                   }
                 }
               }
-            } catch (_e) { /* vision server offline — skip silently */ }
-          }
+            }
+          } catch (_e) { /* vision server offline — skip silently */ }
         }
+      }
 
       // Charge glue stock once for the entire job (all boards)
       if (isPnpMode) {
@@ -1511,8 +1511,8 @@ export default function AutomatedDispensingPanel({
         ? ((b.dotsChecked - (b.dotsFailed ?? 0)) / b.dotsChecked * 100).toFixed(1) + '%'
         : 'N/A';
       return [b.boardNum, b.totalPads, b.totalVolUl.toFixed(2), b.jobDurationSec.toFixed(1),
-        b.dotsFailed ?? 'N/A', b.dotsChecked ?? 'N/A', passRate,
-        b.avgDotDiameter_mm ?? 'N/A', b.timestamp].join(',');
+      b.dotsFailed ?? 'N/A', b.dotsChecked ?? 'N/A', passRate,
+      b.avgDotDiameter_mm ?? 'N/A', b.timestamp].join(',');
     }).join('\n');
     const blob = new Blob([hdr + rows], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
@@ -1628,20 +1628,20 @@ export default function AutomatedDispensingPanel({
   const handleLoadRecipe = (name) => {
     const r = savedRecipes[name];
     if (!r) return;
-    if (r.localPressure     != null) setLocalPressure(r.localPressure);
-    if (r.baseDwellTime     != null) setBaseDwellTime(r.baseDwellTime);
-    if (r.dispenseHeight    != null) setDispenseHeight(r.dispenseHeight);
-    if (r.safeTravelHeight  != null) setSafeTravelHeight(r.safeTravelHeight);
-    if (r.viscosity         != null) setViscosity(r.viscosity);
+    if (r.localPressure != null) setLocalPressure(r.localPressure);
+    if (r.baseDwellTime != null) setBaseDwellTime(r.baseDwellTime);
+    if (r.dispenseHeight != null) setDispenseHeight(r.dispenseHeight);
+    if (r.safeTravelHeight != null) setSafeTravelHeight(r.safeTravelHeight);
+    if (r.viscosity != null) setViscosity(r.viscosity);
     if (r.beadAreaThreshold != null) setBeadAreaThreshold(r.beadAreaThreshold);
-    if (r.beadFeedRate      != null) setBeadFeedRate(r.beadFeedRate);
-    if (r.purgeEnabled      != null) setPurgeEnabled(r.purgeEnabled);
-    if (r.purgeDurationMs   != null) setPurgeDurationMs(r.purgeDurationMs);
-    if (r.valveOnCmd        != null) setValveOnCmd(r.valveOnCmd);
-    if (r.valveOffCmd       != null) setValveOffCmd(r.valveOffCmd);
+    if (r.beadFeedRate != null) setBeadFeedRate(r.beadFeedRate);
+    if (r.purgeEnabled != null) setPurgeEnabled(r.purgeEnabled);
+    if (r.purgeDurationMs != null) setPurgeDurationMs(r.purgeDurationMs);
+    if (r.valveOnCmd != null) setValveOnCmd(r.valveOnCmd);
+    if (r.valveOffCmd != null) setValveOffCmd(r.valveOffCmd);
     if (r.enableDotVerification != null) setEnableDotVerification(r.enableDotVerification);
-    if (r.enableSurfaceProbe    != null) setEnableSurfaceProbe(r.enableSurfaceProbe);
-    if (r.nozzleDia         != null) setNozzleDia(r.nozzleDia);
+    if (r.enableSurfaceProbe != null) setEnableSurfaceProbe(r.enableSurfaceProbe);
+    if (r.nozzleDia != null) setNozzleDia(r.nozzleDia);
     setActiveRecipe(name);
     setRecipeName(name);
   };
@@ -2022,11 +2022,22 @@ export default function AutomatedDispensingPanel({
                   onClick={handleExportRecipes}
                   title="Download all recipes as a JSON file"
                 >⬇ Export JSON</button>
-                <label style={{ flex: 1 }}>
-                  <span className="btn secondary" style={{ display: 'block', textAlign: 'center', fontSize: '0.78em', padding: '4px 0', cursor: 'pointer' }}>
-                    ⬆ Import JSON
-                  </span>
-                  <input type="file" accept=".json" style={{ display: 'none' }} onChange={handleImportRecipes} />
+                <label
+                  className="btn secondary import-json-btn"
+                  style={{
+                    flex: 1,
+                    fontSize: '0.78em',
+                    padding: '4px 0',
+                    cursor: 'pointer'
+                  }}
+                >
+                  ⬆ Import JSON
+                  <input
+                    type="file"
+                    accept=".json"
+                    style={{ display: 'none' }}
+                    onChange={handleImportRecipes}
+                  />
                 </label>
               </div>
             </div>
@@ -2269,11 +2280,11 @@ export default function AutomatedDispensingPanel({
             const jobs = spcData.jobs;
             if (jobs.length === 0 && !enableDotVerification) return null;
 
-            const recent   = jobs.slice(-10);
+            const recent = jobs.slice(-10);
             const passRates = recent.map(j => j.passRate * 100);
             const diameters = recent.filter(j => j.avgDiameter != null).map(j => j.avgDiameter);
 
-            const overallPass  = jobs.length > 0
+            const overallPass = jobs.length > 0
               ? jobs.reduce((s, j) => s + j.passed, 0) / jobs.reduce((s, j) => s + j.checked, 0) * 100
               : null;
             const recentAvgPass = recent.length > 0
@@ -2284,11 +2295,11 @@ export default function AutomatedDispensingPanel({
             const half = Math.floor(diameters.length / 2);
             const diamTrend = half >= 2
               ? (diameters.slice(half).reduce((a, b) => a + b, 0) / (diameters.length - half)) -
-                (diameters.slice(0, half).reduce((a, b) => a + b, 0) / half)
+              (diameters.slice(0, half).reduce((a, b) => a + b, 0) / half)
               : 0;
 
             const qualityAlert = recentAvgPass !== null && recentAvgPass < 80;
-            const wearAlert    = diamTrend < -0.05;
+            const wearAlert = diamTrend < -0.05;
 
             return (
               <details style={{ marginTop: 14 }} open={qualityAlert || wearAlert}>
@@ -3130,10 +3141,10 @@ export default function AutomatedDispensingPanel({
                         </tbody>
                         {batchHistory.length > 1 && (() => {
                           const totalComps = batchHistory.reduce((s, b) => s + b.totalPads, 0);
-                          const totalVol   = batchHistory.reduce((s, b) => s + b.totalVolUl, 0);
-                          const avgTime    = batchHistory.reduce((s, b) => s + b.jobDurationSec, 0) / batchHistory.length;
-                          const totalChk   = batchHistory.reduce((s, b) => s + (b.dotsChecked ?? 0), 0);
-                          const totalFail  = batchHistory.reduce((s, b) => s + (b.dotsFailed ?? 0), 0);
+                          const totalVol = batchHistory.reduce((s, b) => s + b.totalVolUl, 0);
+                          const avgTime = batchHistory.reduce((s, b) => s + b.jobDurationSec, 0) / batchHistory.length;
+                          const totalChk = batchHistory.reduce((s, b) => s + (b.dotsChecked ?? 0), 0);
+                          const totalFail = batchHistory.reduce((s, b) => s + (b.dotsFailed ?? 0), 0);
                           const overallPass = totalChk > 0
                             ? `${Math.round((totalChk - totalFail) / totalChk * 100)}%` : '—';
                           const totPassColor = totalChk === 0 ? '#8b949e' : totalFail === 0 ? '#3fb950' : '#f85149';

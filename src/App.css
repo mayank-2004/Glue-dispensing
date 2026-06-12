@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════
-   APP LAYOUT — MACHINE HMI  (3-section: Header / Sidebar / Content)
+   APP LAYOUT — MACHINE HMI  (Header / Sidebar / Content)
 ═══════════════════════════════════════════════════════════ */
 
 #root {
@@ -11,30 +11,33 @@
   flex-direction: column;
 }
 
-/* ── Top Header Bar ─────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════
+   TOP HEADER BAR
+═══════════════════════════════════════════════════════════ */
 .app-header {
-  height: 56px;
-  min-height: 56px;
+  height: 54px;
+  min-height: 54px;
   background: var(--bg-header);
   border-bottom: 1px solid var(--border-primary);
   display: flex;
   align-items: center;
   padding: 0 16px;
-  gap: 16px;
+  gap: 14px;
   position: relative;
   z-index: 100;
   flex-shrink: 0;
 }
-/* Subtle scan-line decoration */
+/* Cyan scan-line accent */
 .app-header::after {
   content: '';
   position: absolute;
   bottom: 0; left: 0; right: 0;
   height: 1px;
   background: linear-gradient(90deg, transparent 0%, var(--accent-primary) 40%, transparent 100%);
-  opacity: 0.3;
+  opacity: 0.28;
 }
 
+/* ── Logo ────────────────────────────────────────────────── */
 .app-logo {
   display: flex;
   align-items: center;
@@ -42,39 +45,38 @@
   flex-shrink: 0;
 }
 .app-logo-icon {
-  width: 28px;
-  height: 28px;
-  background: rgba(0,200,215,0.12);
-  border: 1px solid rgba(0,200,215,0.35);
+  width: 28px; height: 28px;
+  background: rgba(0,200,215,0.1);
+  border: 1px solid rgba(0,200,215,0.32);
   border-radius: 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: flex; align-items: center; justify-content: center;
   font-size: 14px;
+  box-shadow: 0 0 8px rgba(0,200,215,0.12);
 }
 .app-logo-text {
-  font-size: 0.78rem;
+  font-size: 0.76rem;
   font-weight: 800;
   text-transform: uppercase;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.15em;
   color: var(--text-bright);
-  line-height: 1.1;
+  line-height: 1.15;
 }
 .app-logo-sub {
-  font-size: 0.58rem;
+  font-size: 0.56rem;
   color: var(--text-muted);
-  letter-spacing: 0.08em;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
   font-weight: 500;
 }
 
+/* ── Header Divider ──────────────────────────────────────── */
 .header-divider {
-  width: 1px;
-  height: 28px;
+  width: 1px; height: 26px;
   background: var(--border-primary);
   flex-shrink: 0;
 }
 
+/* ── DRO in header ───────────────────────────────────────── */
 .header-dro {
   display: flex;
   align-items: center;
@@ -95,14 +97,18 @@
   flex-shrink: 0;
 }
 
-/* ── Main Row (Sidebar + Content) ───────────────────────── */
+/* ═══════════════════════════════════════════════════════════
+   MAIN BODY (Sidebar + Content)
+═══════════════════════════════════════════════════════════ */
 .app-body {
   flex: 1;
   display: flex;
   overflow: hidden;
 }
 
-/* ── Left Sidebar ───────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════
+   LEFT SIDEBAR
+═══════════════════════════════════════════════════════════ */
 .sidebar {
   width: 380px;
   min-width: 380px;
@@ -114,44 +120,44 @@
   flex-shrink: 0;
   position: relative;
 }
-/* Cyan edge glow */
+/* Edge glow */
 .sidebar::after {
   content: '';
   position: absolute;
   top: 0; bottom: 0; right: 0;
   width: 1px;
-  background: linear-gradient(180deg, transparent 0%, rgba(0,200,215,0.2) 40%, transparent 100%);
+  background: linear-gradient(180deg, transparent 0%, rgba(0,200,215,0.18) 40%, transparent 100%);
+  pointer-events: none;
 }
 
 .sidebar-logo-area {
-  padding: 14px 14px 10px;
+  padding: 12px 14px 10px;
   border-bottom: 1px solid var(--border-primary);
   flex-shrink: 0;
 }
 
-/* ── Workflow Steps ─────────────────────────────────────── */
+/* ── Workflow Steps ──────────────────────────────────────── */
 .sidebar-workflow {
-  padding: 10px 8px 6px;
+  padding: 8px 7px 6px;
   flex-shrink: 0;
 }
 .sidebar-section-label {
-  font-size: 0.58rem;
+  font-size: 0.56rem;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.15em;
   color: var(--text-muted);
   padding: 0 6px 6px;
   border-bottom: 1px solid var(--border-primary);
-  margin-bottom: 6px;
+  margin-bottom: 5px;
 }
 .workflow-step-connector {
-  width: 1px;
-  height: 6px;
+  width: 1px; height: 5px;
   background: var(--border-primary);
-  margin-left: 23px;
+  margin-left: 22px;
 }
 
-/* ── Sidebar Lower (controls) ───────────────────────────── */
+/* ── Sidebar Lower (scrollable controls) ─────────────────── */
 .sidebar-controls {
   flex: 1;
   display: flex;
@@ -161,7 +167,7 @@
   overflow-y: auto;
 }
 
-/* File Upload Drop Zone */
+/* ── File Upload Drop Zone ───────────────────────────────── */
 .sidebar-upload {
   border: 1px dashed var(--border-highlight);
   border-radius: var(--radius-md);
@@ -170,28 +176,24 @@
   background: rgba(0,200,215,0.02);
   cursor: pointer;
   transition: all var(--transition);
+  user-select: none;
 }
 .sidebar-upload:hover {
   border-color: var(--accent-primary);
   background: rgba(0,200,215,0.05);
+  box-shadow: 0 0 12px rgba(0,200,215,0.08);
 }
-.sidebar-upload-icon { font-size: 20px; margin-bottom: 6px; opacity: 0.7; }
+.sidebar-upload-icon { font-size: 20px; margin-bottom: 6px; opacity: 0.65; }
 .sidebar-upload-label {
-  font-size: 0.7rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--text-secondary);
-  margin: 0 0 3px;
+  font-size: 0.68rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.09em;
+  color: var(--text-secondary); margin: 0 0 3px;
 }
-.sidebar-upload-hint {
-  font-size: 0.6rem;
-  color: var(--text-muted);
-}
+.sidebar-upload-hint { font-size: 0.58rem; color: var(--text-muted); }
 
-/* Sidebar sub-section */
+/* ── Sidebar Sub-section ─────────────────────────────────── */
 .sidebar-sub {
-  background: rgba(0,0,0,0.2);
+  background: rgba(0,0,0,0.22);
   border: 1px solid var(--border-primary);
   border-radius: var(--radius-md);
   overflow: hidden;
@@ -199,46 +201,43 @@
 .sidebar-sub-header {
   padding: 7px 10px;
   border-bottom: 1px solid var(--border-primary);
-  font-size: 0.65rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
+  font-size: 0.62rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.1em;
   color: var(--text-secondary);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  background: rgba(0,0,0,0.15);
+  display: flex; justify-content: space-between; align-items: center;
+  background: rgba(0,0,0,0.18);
 }
 .sidebar-sub-content { padding: 8px; }
 
-/* Layer List */
+/* ── Layer List ──────────────────────────────────────────── */
 .layer-list {
   background: var(--bg-input);
   border: 1px solid var(--border-primary);
   border-radius: var(--radius-sm);
-  max-height: 180px;
+  max-height: 175px;
   overflow-y: auto;
 }
 .layer-list li {
-  padding: 5px 8px;
-  border-bottom: 1px solid #0e1018;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(0,0,0,0.3);
+  display: flex; justify-content: space-between; align-items: center;
   font-size: 0.73rem;
   cursor: pointer;
   transition: background var(--transition);
+  color: var(--text-secondary);
 }
-.layer-list li:hover { background: var(--bg-hover); }
+.layer-list li:hover { background: var(--bg-hover); color: var(--text-primary); }
 .layer-list li:last-child { border-bottom: none; }
 
-/* ── Main Content Area ──────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════
+   MAIN CONTENT AREA
+═══════════════════════════════════════════════════════════ */
 .main {
   flex: 1;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: radial-gradient(ellipse at 60% 0%, rgba(0,200,215,0.03) 0%, var(--bg-app) 60%);
+  background: radial-gradient(ellipse at 55% 0%, rgba(0,200,215,0.03) 0%, var(--bg-app) 65%);
 }
 
 /* Viewer Container */
@@ -248,7 +247,7 @@
   flex-direction: column;
   min-height: 0;
   height: 100%;
-  max-height: calc(100vh - 120px); /* Header(56) + Breadcrumb(40) + Padding(24) */
+  max-height: calc(100vh - 118px);
 }
 
 /* Content Panel Area */
@@ -261,52 +260,35 @@
   gap: 10px;
 }
 
-/* ── Breadcrumb Strip ───────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════
+   BREADCRUMB STRIP
+═══════════════════════════════════════════════════════════ */
 .breadcrumb-bar {
-  height: 40px;
-  min-height: 40px;
-  background: rgba(0,0,0,0.3);
+  height: 38px; min-height: 38px;
+  background: rgba(0,0,0,0.32);
   border-bottom: 1px solid var(--border-primary);
-  display: flex;
-  align-items: center;
-  padding: 0 14px;
-  gap: 8px;
+  display: flex; align-items: center;
+  padding: 0 14px; gap: 8px;
   flex-shrink: 0;
 }
 .breadcrumb-step {
-  font-size: 0.65rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
+  font-size: 0.63rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.11em;
   color: var(--text-muted);
 }
 .breadcrumb-step.active { color: var(--accent-primary); }
-.breadcrumb-sep { color: var(--text-muted); font-size: 0.65rem; }
+.breadcrumb-sep { color: var(--text-muted); font-size: 0.62rem; }
 .breadcrumb-desc {
-  flex: 1;
-  font-size: 0.62rem;
-  color: var(--text-muted);
-  text-align: right;
+  flex: 1; font-size: 0.6rem;
+  color: var(--text-muted); text-align: right;
   font-family: var(--font-mono);
 }
 
-/* Full-height panel helper */
-.full-height {
-  height: 100%;
-  flex: 1;
-}
+/* ── Grid Layouts ────────────────────────────────────────── */
+.layout-panels { display: grid; grid-template-columns: 1fr; gap: 10px; }
+@media (min-width: 1400px) { .layout-panels { grid-template-columns: 1fr 1fr; } }
 
-/* ── Grid Layouts ───────────────────────────────────────── */
-.layout-panels {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 10px;
-}
-@media (min-width: 1400px) {
-  .layout-panels { grid-template-columns: 1fr 1fr; }
-}
-
-/* ── Reference / Origin Controls in sidebar ─────────────── */
+/* ── Reference / Origin area ─────────────────────────────── */
 .sidebar .header {
   border: 1px dashed var(--border-highlight);
   border-radius: var(--radius-md);
@@ -315,16 +297,8 @@
   background: rgba(255,255,255,0.015);
 }
 
-/* Batch/Job Queue */
-.batch-list { background: var(--bg-input); border: 1px solid var(--border-primary); border-radius: var(--radius-sm); }
-.batch-item { border-bottom: 1px solid var(--border-highlight); padding: 8px; font-size: 0.82rem; display: flex; justify-content: space-between; }
-.batch-item strong { color: var(--accent-primary); }
-
-/* Misc Origin/Ref controls */
-.flex-row { display: flex; gap: 8px; align-items: center; }
-
-/* ── Responsive ─────────────────────────────────────────── */
+/* ── Responsive ──────────────────────────────────────────── */
 @media (max-width: 900px) {
-  .sidebar { width: 180px; min-width: 180px; }
+  .sidebar { width: 200px; min-width: 200px; }
   .app-header .header-dro { display: none; }
 }

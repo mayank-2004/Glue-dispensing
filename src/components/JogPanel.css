@@ -1,163 +1,217 @@
 .jog-panel {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    /* max-width: 550px; */
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 
+/* ── Main Controls Container ─────────────────────────────── */
 .jog-controls-container {
-    display: flex;
-    gap: 24px;
-    align-items: center;
-    background: #0a0a0a;
-    padding: 16px;
-    border-radius: 12px;
-    border: 1px solid #333;
-    box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.5);
-    margin: 10px;
+  display: flex;
+  gap: 20px;
+  align-items: center;
+  background: var(--bg-sidebar);
+  padding: 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-primary);
+  box-shadow: inset 0 2px 12px rgba(0,0,0,0.5), var(--shadow-sm);
+  margin: 8px 10px 0;
+  position: relative;
+  overflow: hidden;
+}
+/* Subtle corner accent */
+.jog-controls-container::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(0,200,215,0.25), transparent);
 }
 
+/* ── XY D-Pad Grid ───────────────────────────────────────── */
 .jog-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    grid-template-rows: repeat(3, 1fr);
-    gap: 8px;
-    width: 160px;
-    height: 160px;
-    background: #111;
-    padding: 12px;
-    border-radius: 50%;
-    /* Circle D-Pad */
-    border: 1px solid #333;
-    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  gap: 6px;
+  width: 168px;
+  height: 168px;
+  background: var(--bg-input);
+  padding: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--border-highlight);
+  box-shadow: 0 4px 18px rgba(0,0,0,0.6),
+              inset 0 2px 6px rgba(0,0,0,0.45),
+              inset 0 0 0 1px rgba(255,255,255,0.03);
+  flex-shrink: 0;
+  place-items: center;
 }
 
 .jog-cell {
-    display: flex;
-    align-items: center;
-    justify-content: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
 }
 
+/* ── Jog Buttons ─────────────────────────────────────────── */
 .jog-btn {
-    width: 100%;
-    height: 100%;
-    font-weight: bold;
-    font-size: 1.1em;
-    border-radius: 8px;
-    padding: 0;
-    color: var(--text-secondary);
-    background: #1a1a1a;
-    border: 1px solid #333;
-    transition: all 0.1s;
-    box-shadow: 0 4px 0 #000;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+  width: 100%;
+  height: 100%;
+  /* Override .btn defaults that break the grid cell sizing */
+  min-height: 0;
+  padding: 0;
+  font-weight: 700;
+  font-size: 0.9em;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  border: 1px solid var(--border-highlight);
+  transition: all 0.1s ease;
+  box-shadow: 0 3px 0 rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  letter-spacing: 0.04em;
 }
-
 .jog-btn:hover:not(:disabled) {
-    color: var(--accent-primary);
-    border-color: var(--accent-primary);
-    background: #222;
-    box-shadow: 0 0 10px rgba(0, 243, 255, 0.2), 0 4px 0 #000;
+  color: var(--accent-primary);
+  border-color: rgba(0,200,215,0.5);
+  background: var(--bg-hover);
+  box-shadow: 0 0 10px rgba(0,200,215,0.2), 0 3px 0 rgba(0,0,0,0.5);
+  transform: translateY(-1px);
 }
-
 .jog-btn:active:not(:disabled) {
-    transform: translateY(2px);
-    box-shadow: 0 2px 0 #000;
-    background: #000;
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 rgba(0,0,0,0.5);
+  background: var(--bg-input);
+  color: var(--accent-primary);
+}
+.jog-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+/* ── Home Button (center of D-pad) ───────────────────────── */
+.jog-btn.home-btn {
+  /* Override jog-btn's 100% sizing — home is a fixed circle */
+  width: 38px;
+  height: 38px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 1.15em;
+  border: 1px solid var(--border-highlight);
+  background: var(--bg-hover);
+  box-shadow: 0 0 0 3px var(--border-primary), 0 3px 6px rgba(0,0,0,0.6);
+  flex-shrink: 0;
+}
+.jog-btn.home-btn:hover:not(:disabled) {
+  border-color: var(--accent-success);
+  background: rgba(0,232,122,0.1);
+  box-shadow: 0 0 12px rgba(0,232,122,0.35), 0 0 0 3px rgba(0,232,122,0.15);
+  transform: none;
+}
+.jog-btn.home-btn:active:not(:disabled) {
+  transform: scale(0.93);
+  box-shadow: 0 0 6px rgba(0,232,122,0.2), 0 0 0 3px var(--border-primary);
 }
 
-.home-btn {
-    border-radius: 50%;
-    width: 44px;
-    height: 44px;
-    font-size: 1.2em;
-    border-color: var(--text-secondary);
-    background: #222;
-}
-
-.home-btn:hover:not(:disabled) {
-    color: var(--accent-success);
-    border-color: var(--accent-success);
-    box-shadow: 0 0 10px rgba(0, 255, 157, 0.3), 0 4px 0 #000;
-}
-
+/* ── Z Axis Column ───────────────────────────────────────── */
 .z-jog-column {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    align-items: center;
-    justify-content: center;
-    background: #111;
-    padding: 12px 12px;
-    border-radius: 20px;
-    border: 1px solid #333;
-    box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-input);
+  padding: 14px 10px;
+  border-radius: 20px;
+  border: 1px solid var(--border-highlight);
+  box-shadow: inset 0 2px 6px rgba(0,0,0,0.5);
+  flex-shrink: 0;
 }
-
 .z-jog-column .jog-btn {
-    width: 48px;
-    height: 48px;
-    border-radius: 50%;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+}
+.z-jog-column-label {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
 }
 
+/* ── Settings Panel (right side of jog control) ──────────── */
 .jog-settings {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    flex: 1;
-    border-left: 1px solid #333;
-    padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  border-left: 1px solid var(--border-primary);
+  padding-left: 16px;
+  min-width: 0;
 }
-
 .jog-settings label {
-    display: flex;
-    flex-direction: column;
-    font-size: 0.85em;
-    color: var(--text-secondary);
-    font-weight: 600;
+  display: flex;
+  flex-direction: column;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  gap: 5px;
 }
-
 .jog-settings input,
 .jog-settings select {
-    margin-top: 4px;
-    padding: 6px;
-    background: #000;
-    border: 1px solid #333;
-    color: var(--accent-primary);
-    border-radius: 4px;
-    font-family: var(--font-mono);
+  margin-top: 0;
+  padding: 8px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-primary);
+  color: var(--accent-primary);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  min-height: 38px;
 }
-
 .jog-settings input:focus,
 .jog-settings select:focus {
-    border-color: var(--accent-primary);
-    box-shadow: 0 0 5px rgba(0, 243, 255, 0.2);
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px rgba(0,200,215,0.14);
+  outline: none;
 }
 
+/* ── Safe Z Section ──────────────────────────────────────── */
 .safe-z-section {
-    border-top: 1px solid #333;
-    padding-top: 12px;
-    margin-top: 4px;
+  border-top: 1px solid var(--border-primary);
+  padding-top: 12px;
+  margin-top: 4px;
 }
 
+/* ── Machine Status Display ──────────────────────────────── */
 .status-display {
-    background: #000;
-    padding: 8px;
-    border-radius: 4px;
-    font-family: 'JetBrains Mono', monospace;
-    text-align: center;
-    border: 1px solid #333;
-    color: var(--accent-success);
-    font-size: 0.9em;
-    margin-top: 8px;
+  background: var(--bg-input);
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  text-align: center;
+  border: 1px solid var(--border-primary);
+  color: var(--accent-success);
+  font-size: 0.82rem;
+  margin-top: 8px;
+  letter-spacing: 0.04em;
+  text-shadow: 0 0 6px rgba(0,232,122,0.4);
 }
 
+/* ── Keyboard Hint ───────────────────────────────────────── */
 .keyboard-hint {
-    text-align: center;
-    color: var(--text-secondary);
-    font-size: 0.75em;
-    opacity: 0.5;
-    margin-top: 4px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  opacity: 0.55;
+  margin-top: 4px;
+  letter-spacing: 0.04em;
 }

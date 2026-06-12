@@ -111,16 +111,16 @@ export default function Viewer({
             )}
           </div>
           <div className="viewer-btn-group">
-            <div style={{ fontWeight: 'bold', fontSize: '14px', color: '#fff', paddingRight: '10px', borderRight: '1px solid var(--border-secondary)' }}>Zoom</div>
+            <div className="viewer-zoom-label">Zoom</div>
             <button
               className="viewer-btn"
               onClick={handleZoomOut}
               disabled={zoomLevel <= 0.5}
               title="Zoom Out"
             >
-              -
+              −
             </button>
-            <div className="viewer-readout" style={{ color: '#fff' }}>
+            <div className="viewer-readout">
               {zoomLevel === 1 ? 'Fit' : `${zoomLevel}x`}
             </div>
             <button
@@ -132,10 +132,9 @@ export default function Viewer({
               +
             </button>
             <button
-              className="viewer-btn"
+              className={`viewer-btn${zoomLevel !== 1 ? ' zoom-reset-active' : ''}`}
               onClick={handleZoomReset}
               title="Reset to fit"
-              style={{ color: zoomLevel !== 1 ? '#00c8d7' : undefined }}
             >
               Fit
             </button>
