@@ -9,7 +9,7 @@ export default function JogPanel({
 }) {
     const toast = useToast();
     const [stepSize, setStepSize] = useState(10); // mm
-    const [feedRate, setFeedRate] = useState(2000); // mm/min
+    const [feedRate, setFeedRate] = useState(1000); // mm/min
     const [safeZ, setSafeZ] = useState(-5); // mm (Machine coordinate usually negative)
     const [isBusy, setIsBusy] = useState(false);
 

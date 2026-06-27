@@ -8,12 +8,36 @@
     <title>PCB Glue Dispenser</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="startup-msg" style="font-family:monospace;padding:32px;color:#ccc;background:#0d1117;min-height:100vh">
+        <h2 style="color:#58a6ff">Loading app...</h2>
+        <p id="startup-step">Step 1: HTML loaded. Waiting for vendor scripts...</p>
+      </div>
+    </div>
+
+    <script>
+      window.onerror = function(msg, src, line, col, err) {
+        var el = document.getElementById('startup-msg');
+        if (el) {
+          el.innerHTML = '<h2 style="color:#f85149">App Crashed</h2>'
+            + '<pre style="color:#ff7b72;white-space:pre-wrap;background:#161b22;padding:16px;border-radius:8px">'
+            + (err ? (err.stack || err.message) : msg)
+            + '\n\nSource: ' + src + ':' + line + ':' + col
+            + '</pre>'
+            + '<p style="color:#8b949e">Fix the error above and re-run npm run dev</p>';
+        }
+        return false;
+      };
+    </script>
 
     <!-- Offline UMDs (copied by scripts/copy-vendor.mjs) -->
+    <script>document.getElementById('startup-step').textContent = 'Step 2: Loading whats-that-gerber...'</script>
     <script src="/vendor/whats-that-gerber.min.js"></script>
+    <script>document.getElementById('startup-step').textContent = 'Step 3: Loading pcb-stackup...'</script>
     <script src="/vendor/pcb-stackup.min.js"></script>
+    <script>document.getElementById('startup-step').textContent = 'Step 4: Loading opencv.js (large file, please wait)...'</script>
     <script src="/vendor/opencv.js"></script>
+    <script>document.getElementById('startup-step').textContent = 'Step 5: Vendor scripts done. Starting React...'</script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

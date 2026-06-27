@@ -16,12 +16,10 @@ import { detectPcbOrigins } from "./lib/gerber/originDetection.js";
 import { FiducialVisionDetector } from "./lib/vision/fiducialVision.js";
 import { zipTextFiles, downloadBlob } from "./lib/zip/zipUtils.js";
 import { fitSimilarity, fitAffine, fitTranslation, fitHomography, applyTransform, rmsError } from "./lib/utils/transform2d.js";
-import { CollisionDetector } from "./lib/collision/collisionDetection.js";
 import { PadDetector } from "./lib/vision/padDetection.js";
 import { QualityController } from "./lib/quality/qualityControl.js";
 import { NozzleMaintenanceManager } from "./lib/maintenance/nozzleMaintenance.js";
 import { generatePath } from "./lib/motion/pathGeneration.js";
-import { PasteVisualizer } from "./lib/paste/pasteVisualization.js";
 import { DispensingSequencer } from "./lib/automation/dispensingSequence.js";
 import { SafePathPlanner } from "./lib/automation/safePathPlanner.js";
 import { extractPadsMm } from "./lib/gerber/extractPads.js";
@@ -242,6 +240,7 @@ export default function App() {
 
   const [isHomed, setIsHomed] = useState(false);
   const [isJobRunning, setIsJobRunning] = useState(false);
+  const [isAdminMode, setIsAdminMode] = useState(false);
 
   const handleHomingComplete = useCallback(async () => {
     setIsHomed(true);
@@ -273,12 +272,10 @@ export default function App() {
     }
   }, []);
 
-  const [collisionDetector] = useState(() => new CollisionDetector());
   const [padDetector] = useState(() => new PadDetector());
   const [qualityController] = useState(() => new QualityController());
   const [maintenanceManager] = useState(() => new NozzleMaintenanceManager());
   const [fiducialVisionDetector] = useState(() => new FiducialVisionDetector());
-  const [pasteVisualizer] = useState(() => new PasteVisualizer());
   const [dispensingSequencer] = useState(() => new DispensingSequencer());
   const [safePathPlanner] = useState(() => new SafePathPlanner());
 
@@ -344,7 +341,6 @@ export default function App() {
 
         try {
           const T = fitSimilarity(designPts, machinePts);
-          console.log("Panel Alignment Computed:", T);
           next.transform = T;
           setXf(T);
           setApplyXf(true);
@@ -450,7 +446,6 @@ export default function App() {
   const verifyTransform = useCallback((designPt) => {
     if (!xf || !applyXf) return designPt;
     const transformed = applyTransform(xf, designPt);
-    console.log(`Transform verification: Design(${designPt.x.toFixed(3)}, ${designPt.y.toFixed(3)}) → Machine(${transformed.x.toFixed(3)}, ${transformed.y.toFixed(3)})`);
     return transformed;
   }, [xf, applyXf]);
 
@@ -768,7 +763,6 @@ export default function App() {
       const hasChanged = !prev || prev.id !== activeRef.id || Math.abs(prev.x - activeRef.x) > 0.001 || Math.abs(prev.y - activeRef.y) > 0.001;
 
       if (hasChanged) {
-        // console.log('Drawing activeRef:', activeRef, 'coordinates:', { x: activeRef.x, y: activeRef.y });
         prevActiveRefLogRef.current = { ...activeRef };
       }
       const uh = mmToCurrentUnits({ x: activeRef.x, y: activeRef.y });
@@ -1020,7 +1014,6 @@ export default function App() {
       const dx = selectedMm.x - activeRef.x;
       const dy = selectedMm.y - activeRef.y;
       const dist = Math.hypot(dx, dy);
-      console.log('Distance calculation:', { dx, dy, dist, selectedMm, activeRef });
       const midX = (uh.x + uf.x) / 2, midY = (uh.y + uf.y) / 2 - uh.r * 0.6;
       drawText(gm, midX, midY, `${dist.toFixed(3)} mm`, uh.r * 1.2, "#222", "#fffb");
     }
@@ -1474,7 +1467,6 @@ export default function App() {
       const widthMm = geom.vbW * geom.mmPerUnit;
       const heightMm = geom.vbH * geom.mmPerUnit;
       if (mm.x < 0 || mm.x > widthMm || mm.y < 0 || mm.y > heightMm) {
-        console.log('Click outside board bounds ignored:', mm);
         return;
       }
     }
@@ -1515,12 +1507,6 @@ export default function App() {
         centerMethod: hit.pos.centerMethod,
         originalPad: pads[hit.pad]
       };
-      console.log('🔄 Coordinate selection:', {
-        originalPad: { x: hit.pos.x, y: hit.pos.y },
-        origin: { x: origin.x, y: origin.y },
-        selectedMm: padCenter,
-        note: 'Storing absolute coordinates for overlay. Distances calculated in UI.'
-      });
     } else {
       padCenter = {
         x: hit.pos.x,
@@ -1530,14 +1516,6 @@ export default function App() {
         originalPad: pads[hit.pad]
       };
     }
-
-    console.log('Pad selection details:', {
-      clickMm: mm,
-      hitPad: hit.pad + 1,
-      hitPos: hit.pos,
-      padCenter,
-      distanceToCenter: hit.distanceToCenter
-    });
 
     if (!hit.pos.centerValid) {
       console.warn('Pad center calculation may be inaccurate:', hit.pos.centerMethod);
@@ -1644,7 +1622,6 @@ export default function App() {
         : fitSimilarity(withDesign.map(f => f.design), withDesign.map(f => f.machine));
     setApplyXf(true);  // check "Apply transform to output" first
     setXf(T);
-    console.log(`[AutoSolve] Board transform computed (${withDesign.length} pts, applyXf enabled)`);
   }, [fiducials]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Auto-solve panel rail transform once ALL rail fiducials have machine coords ──
@@ -1658,7 +1635,6 @@ export default function App() {
         ? fitAffine(withDesign.map(f => f.design), withDesign.map(f => f.machine))
         : fitSimilarity(withDesign.map(f => f.design), withDesign.map(f => f.machine));
     setPanelXf(T);
-    console.log(`[AutoSolve] Panel rail transform computed (${withDesign.length} pts)`);
   }, [panelRailFiducials]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onRedetectFiducials = () => {
@@ -1699,7 +1675,10 @@ export default function App() {
   };
 
   const onAutoDetectCamera = async () => {
-    console.log('Camera-based fiducial detection initiated');
+    if (!window.cameraControl || !window.cameraControl.autoDetect) {
+      alert("Camera auto-detection is not supported in this environment.");
+      return;
+    };
   };
 
   const onDetectOrigins = () => {
@@ -1794,6 +1773,8 @@ export default function App() {
         onStop={triggerEmergencyStop}
         onReset={resetEmergencyStop}
         onQuit={window.appControl ? () => window.appControl.quit() : null}
+        isAdminMode={isAdminMode}
+        onToggleAdmin={setIsAdminMode}
       />
 
       {/* ── BODY: Sidebar + Content ─────────────────────────── */}
@@ -2019,14 +2000,10 @@ export default function App() {
                 <div style={{ padding: 12 }}>
                   <SerialPanel
                     isConnected={isSerialConnected}
-                    skipHome={hasConnectedRef.current}
+                    skipHome={isHomed}
                     onConnect={() => {
                       handleSerialConnect(true);
-                      if (!hasConnectedRef.current) {
-                        setIsHomed(false); // first connect — G28 will establish position
-                      } else {
-                        setIsHomed(true);  // reconnect — machine is at known position
-                      }
+                      setIsHomed(false); // always re-home on connect; onHomingComplete sets it true
                     }}
                     onDisconnect={() => {
                       intentionalDisconnectRef.current = true;
@@ -2341,7 +2318,7 @@ export default function App() {
                 onJobComplete={() => {
                   setIsJobRunning(false);
                 }}
-                layerData={layerData}
+                isAdminMode={isAdminMode}
               />
             </div>
           </div>

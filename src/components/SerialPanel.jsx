@@ -15,7 +15,7 @@ export default function SerialPanel({
   const toast = useToast();
   const [ports, setPorts] = useState([]);
   const [path, setPath] = useState('');
-  const [baud, setBaud] = useState(115200);
+  const [baud, setBaud] = useState(250000);
   const [consoleLines, setConsoleLines] = useState([]);
   const [isHoming, setIsHoming] = useState(false);
 
@@ -25,6 +25,8 @@ export default function SerialPanel({
   const statusQueryRef = useRef(null); // interval handle for M114 polling
   const watchdogRef = useRef(null);   // interval handle for data-update watchdog
   const lastDataRef = useRef(0);      // timestamp of last received serial data
+  const awaitingOkRef = useRef(null);      // one-shot callback fired on next "ok" from Marlin
+  const marlinBootCbRef = useRef(null);    // fired once when Marlin's boot message is detected
   // Always-current refs for callbacks so native disconnect handler never goes stale
   const onUnexpectedDisconnectRef = useRef(onUnexpectedDisconnect);
   const onDisconnectRef = useRef(onDisconnect);
@@ -59,6 +61,8 @@ export default function SerialPanel({
       if (statusQueryRef.current) { clearInterval(statusQueryRef.current); statusQueryRef.current = null; }
       setIsHoming(false);
       hasReceivedPosRef.current = false;
+      marlinBootCbRef.current = null;  // cancel any pending boot detection
+      window._pollPauseCount = 0;      // reset counter — homing/job may have left it non-zero
       const handler = onUnexpectedDisconnectRef.current || onDisconnectRef.current;
       if (handler) handler();
     });
@@ -81,15 +85,11 @@ export default function SerialPanel({
 
   useEffect(() => { refresh(); }, []);
   useEffect(() => {
-    window.serial.onData((line) => {
+    if (!window.serial?.onData) return;
+    const unsub = window.serial.onData((line) => {
       lastDataRef.current = Date.now();
       const ts = new Date().toISOString();
-      const isStatusPos = line.match(/X\s*:\s*([-\d.]+)/i) || line.match(/MPos:([-\d.]+)/);
-      // Optional: hide M114 responses if they spam too much, but for now we'll format them all
-      // as per request if they aren't purely repetitive. We will just format it.
-      if (!isStatusPos) {
-        setConsoleLines((prev) => [...prev, `[RECE] - ${ts} - ${line}`].slice(-500));
-      }
+      setConsoleLines((prev) => [...prev, `[RECE] ${ts} ${line}`].slice(-500));
 
       let x = null, y = null, z = null;
       // Try Marlin format
@@ -113,6 +113,25 @@ export default function SerialPanel({
         const pos = { x, y, z };
         if (onMachinePositionUpdate) onMachinePositionUpdate(pos);
       }
+      // Detect Marlin boot — fires the ready callback as soon as firmware is alive
+      if (marlinBootCbRef.current) {
+        const trimmed = line.trim();
+        const isReady = /\bstart\b/i.test(trimmed)
+                     || /marlin/i.test(trimmed)
+                     || /^ok\b/i.test(trimmed);
+        if (isReady) {
+          const cb = marlinBootCbRef.current;
+          marlinBootCbRef.current = null;
+          cb();
+        }
+      }
+
+      // Resolve pending G28 ok-waiter (fires when Marlin sends "ok" after homing completes)
+      if (awaitingOkRef.current && /^ok\b/i.test(line.trim())) {
+        const cb = awaitingOkRef.current;
+        awaitingOkRef.current = null;
+        cb();
+      }
       // Bridge for BedCalibrationPanel auto-probe (M119 endstop response)
       if (line.includes('z_min:')) {
         const triggered = /z_min:\s*TRIGGERED/i.test(line);
@@ -121,6 +140,7 @@ export default function SerialPanel({
         ));
       }
     });
+    return unsub;
   }, []);
 
   const connect = async () => {
@@ -128,35 +148,84 @@ export default function SerialPanel({
     try {
       hasReceivedPosRef.current = false;
       setIsHoming(false);
+      window._pollPauseCount = 0; // always start clean
       await window.serial.open({ path, baudRate: baud });
       // setConnected(true); // Removed
       if (onConnect) onConnect(); // Notify Parent
 
-      startStatusQuery();
-      startWatchdog();
+      // Grace period covers DTR reset + bootloader + Marlin boot + fallback delay.
+      // 15 s is enough for the slowest boards; on fast ones the boot message
+      // arrives in 3-6 s and homing starts immediately.
+      startWatchdog(skipHome ? 0 : 15);
 
       if (skipHome) {
-        // Reconnect — machine is already at a known position, just query it
+        // Reconnect — machine is at a known position, resume M114 polling immediately
+        startStatusQuery();
         setTimeout(async () => {
           try { await window.serial.writeLine('M114'); } catch {}
         }, 500);
       } else {
-        // First connect — run full auto-home sequence
-        setTimeout(async () => {
+        // Dynamic boot detection for RAMPS v1.4 + Arduino Mega 2560:
+        // Arduino resets on USB connect (DTR), bootloader runs ~2s, then Marlin boots ~4-6s.
+        // We listen for Marlin's "start" / version line / first "ok" instead of fixed delays.
+        // Falls back to 12s if no boot message received.
+        let bootHandled = false;
+
+        const onMarlinReady = async () => {
+          if (bootHandled) return;
+          bootHandled = true;
+          clearTimeout(bootFallback);
+          console.log('[Boot] Marlin ready — starting M114 polling and homing sequence');
+
+          startStatusQuery();
+
+          await new Promise(r => setTimeout(r, 500));
+
           try {
-            console.log("Sending G28 auto-home...");
             setIsHoming(true);
-            await window.serial.writeLine('G28');
-            setTimeout(() => {
+            window.pauseSerialPolling = true;
+            await new Promise(r => setTimeout(r, 700));
+
+            // await window.serial.writeLine('G28');
+            // await window.serial.writeLine('M400');
+
+            const homingTimeout = setTimeout(() => {
+              awaitingOkRef.current = null;
+              window.pauseSerialPolling = false;
               setIsHoming(false);
               if (onHomingComplete) onHomingComplete();
-            }, 5000);
+            }, 120000);
+
+            let okPhase = 0;
+            const resolveHoming = () => {
+              okPhase++;
+              if (okPhase < 2) {
+                awaitingOkRef.current = resolveHoming;
+              } else {
+                clearTimeout(homingTimeout);
+                window.pauseSerialPolling = false;
+                setIsHoming(false);
+                if (onHomingComplete) onHomingComplete();
+              }
+            };
+            awaitingOkRef.current = resolveHoming;
           } catch (e) {
             console.error(e);
+            window.pauseSerialPolling = false;
             setIsHoming(false);
             toast.warning("Auto-home failed — check machine connection and retry.");
           }
-        }, 2000);
+        };
+
+        marlinBootCbRef.current = onMarlinReady;
+
+        const bootFallback = setTimeout(() => {
+          if (!bootHandled) {
+            console.warn('[Boot] No Marlin boot message in 12 s — using fallback timing');
+            marlinBootCbRef.current = null;
+            onMarlinReady();
+          }
+        }, 12000);
       }
     } catch (e) {
       toast.error(`Failed to open ${path}: ${e.message}`);
@@ -172,9 +241,12 @@ export default function SerialPanel({
     }
   };
 
-  const startWatchdog = () => {
+  const startWatchdog = (delaySec = 0) => {
     stopWatchdog();
-    lastDataRef.current = Date.now(); // seed so watchdog doesn't fire immediately
+    // Seed with future time so an initial grace period can be applied.
+    // Arduino Mega 2560 resets on DTR and takes up to 8 s to boot Marlin;
+    // without this delay the watchdog fires before the first M114 response arrives.
+    lastDataRef.current = Date.now() + delaySec * 1000;
     watchdogRef.current = setInterval(() => {
       if (window.pauseSerialPolling) {
         // A job is actively running — G-code write failures will catch cable pulls.
@@ -182,8 +254,8 @@ export default function SerialPanel({
         lastDataRef.current = Date.now();
         return;
       }
-      if (Date.now() - lastDataRef.current > 5000) {
-        // No incoming data for 5 s while idle → cable pulled or port closed
+      if (Date.now() - lastDataRef.current > 10000) {
+        // No incoming data for 10 s while idle → cable pulled or port closed
         stopWatchdog();
         if (statusQueryRef.current) { clearInterval(statusQueryRef.current); statusQueryRef.current = null; }
         try { window.serial.close(); } catch {}
@@ -309,8 +381,8 @@ export default function SerialPanel({
         <button className="btn secondary" onClick={refresh}>Refresh</button>
 
         <select value={baud} onChange={e => setBaud(Number(e.target.value))} style={{ width: 100 }}>
-          <option value={115200}>115200</option>
           <option value={250000}>250000</option>
+          <option value={115200}>115200</option>
           <option value={57600}>57600</option>
           <option value={9600}>9600</option>
         </select>

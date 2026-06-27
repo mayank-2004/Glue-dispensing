@@ -300,7 +300,6 @@ export default function CameraPanel({
         setVisionResult(result);
 
         if (result && result.detected && result.offset) {
-          console.log('[Auto-Align] Pad detected at offset:', result.offset);
 
           const dxMm = result.offset.x;
           const distMm = Math.hypot(dxMm, result.offset.y);
@@ -309,7 +308,6 @@ export default function CameraPanel({
             const cmds = jogRel({ dx: dxMm, dy: result.offset.y, feed: 500 });
             if (window.serial && window.serial.writeLine) {
               for (const line of cmds) await window.serial.writeLine(line);
-              console.log('[Auto-Align] Jogged once by:', dxMm.toFixed(3), result.offset.y.toFixed(3));
             }
           } else {
             console.warn('[Auto-Align] Pad correction rejected — distance out of bounds:', distMm);
@@ -395,7 +393,6 @@ export default function CameraPanel({
   }, [H, projectPx]);
 
   const predictedPx = useMemo(() => {
-    // console.log("selected design: ", selectedDesign);
     if (!selectedDesign) return null;
     let m;
     if (applyXf && xf) {
@@ -664,7 +661,6 @@ export default function CameraPanel({
       );
 
       if (latestCb) latestCb(newFids);
-      console.log(`Mapped ${pendingPick} to absolute Machine Pos: X${newX.toFixed(3)}, Y${newY.toFixed(3)}`);
       setPendingPick(null);
     }
 
@@ -716,7 +712,6 @@ export default function CameraPanel({
       setVisionResult(result);
 
       if (result && result.detected) {
-        console.log('Pad detected at:', result.position, 'Offset:', result.offset);
       }
     } catch (error) {
       console.error('Pad detection failed:', error);
@@ -939,7 +934,6 @@ export default function CameraPanel({
 
     setAutoSearchStatus(`Moving to ${fidActiveId}…`);
     setTimeout(() => setAutoSearchStatus(''), 2500);
-    console.log(`[AutoSearch] ${fidActiveId} → camera (${camX.toFixed(3)}, ${camY.toFixed(3)})`);
   }, [fidActiveId, detectionInterval, panelXf]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- OVERWRITE HELPER: update a specific slot by ID without advancing the arm dropdown ---
@@ -952,7 +946,6 @@ export default function CameraPanel({
       cProps.setPanelRailFiducials(railFids.map((f, i) =>
         i === railIdx ? { ...f, machine: coord, autoDetected: true } : f
       ));
-      console.log(`[SnapCorrect] Corrected rail ${id} ← (${coord.x.toFixed(3)}, ${coord.y.toFixed(3)})`);
       return;
     }
     // panelBoards local fiducials
@@ -966,7 +959,6 @@ export default function CameraPanel({
           f.id === id ? { ...f, machine: coord, autoDetected: true } : f
         );
         setPBoards(pBoards.map((b, i) => i === bIdx ? { ...b, fiducials: newFids } : b));
-        console.log(`[SnapCorrect] Corrected local ${id} ← (${coord.x.toFixed(3)}, ${coord.y.toFixed(3)})`);
         return;
       }
     }
@@ -975,7 +967,6 @@ export default function CameraPanel({
       f.id === id ? { ...f, machine: coord, autoDetected: true } : f
     );
     cProps.onUpdateFiducials?.(updated);
-    console.log(`[SnapCorrect] Corrected fid ${id} ← (${coord.x.toFixed(3)}, ${coord.y.toFixed(3)})`);
   };
 
   // --- FIDUCIAL STORAGE HELPER ---
@@ -1007,7 +998,6 @@ export default function CameraPanel({
       overwriteFiducialById(lastSaved.id, estimatedWorld);
       lastAutoSavedRef.current = { id: lastSaved.id, position: { ...estimatedWorld } };
       saveBlockRef.current = Date.now() + 2000;
-      console.log(`[FiducialDetect] Still near ${lastSaved.id} — overwriting same slot, arm stays.`);
       return;
     }
 
@@ -1023,7 +1013,6 @@ export default function CameraPanel({
         setRailFids(railFids.map((f, i) =>
           i === armedRailIdx ? { ...f, machine: estimatedWorld, autoDetected: true } : f
         ));
-        console.log(`[FiducialDetect] Rail ${armedId} ← Machine(${estimatedWorld.x.toFixed(3)}, ${estimatedWorld.y.toFixed(3)})`);
         saveBlockRef.current = Date.now() + 4000; // block detection 4s — operator must physically move to next fiducial
         lastAutoSavedRef.current = { id: armedId, position: { ...estimatedWorld } };
         cProps.onAdvanceArmedFid?.(armedId);
@@ -1077,7 +1066,6 @@ export default function CameraPanel({
         const gf = sortedGerberFids[effectiveSnapCount];
         designCoord = { x: gf.x, y: gf.y };
         const action = nearbyIdx >= 0 ? 'Overwriting' : 'New snap';
-        console.log(`[FiducialDetect] ${action} #${effectiveSnapCount + 1} → Gerber (${gf.x.toFixed(3)}, ${gf.y.toFixed(3)}), machine (${estimatedWorld.x.toFixed(3)}, ${estimatedWorld.y.toFixed(3)})`);
       } else {
         const existing = targetFidIdx >= 0 ? newFiducials[targetFidIdx].design : null;
         designCoord = existing || null;

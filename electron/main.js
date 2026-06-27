@@ -23,7 +23,7 @@ function startKeepAlive() {
   stopKeepAlive();
   keepAliveTimer = setInterval(() => {
     if (serial.port?.isOpen) {
-      serial.port.write('?\n', () => {});
+      serial.port.write('\n', () => {}); // empty newline — Marlin ignores it, prevents Windows USB suspend
     } else {
       stopKeepAlive();
     }
@@ -344,6 +344,54 @@ ipcMain.handle('fs:saveJobLog', async (e, { filename, content }) => {
     return { ok: true, path: filePath };
   } catch (err) {
     console.error('fs:saveJobLog failed', err);
+    return { ok: false, error: err.message };
+  }
+});
+
+// ── Fault log ─────────────────────────────────────────────────────────────────
+const faultLogPath = () => path.join(app.getPath('documents'), 'GlueJobLogs', 'fault-log.csv');
+
+ipcMain.handle('fs:appendFaultLog', async (e, { entry }) => {
+  try {
+    const dir = path.join(app.getPath('documents'), 'GlueJobLogs');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const filePath = faultLogPath();
+    const needsHeader = !fs.existsSync(filePath);
+    const header = needsHeader ? 'Timestamp,Level,Message\n' : '';
+    const row = `"${entry.timestamp}","${entry.level}","${String(entry.message).replace(/"/g, '""')}"\n`;
+    fs.appendFileSync(filePath, header + row, 'utf8');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('fs:readFaultLog', async () => {
+  try {
+    const filePath = faultLogPath();
+    if (!fs.existsSync(filePath)) return [];
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const lines = raw.trim().split('\n').slice(1).filter(Boolean); // skip header
+    return lines
+      .map(line => {
+        const m = line.match(/^"([^"]*)","([^"]*)","(.*)"\s*$/);
+        if (!m) return null;
+        return { timestamp: m[1], level: m[2], message: m[3].replace(/""/g, '"') };
+      })
+      .filter(Boolean)
+      .reverse()   // most recent first
+      .slice(0, 500);
+  } catch {
+    return [];
+  }
+});
+
+ipcMain.handle('fs:clearFaultLog', async () => {
+  try {
+    const filePath = faultLogPath();
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    return { ok: true };
+  } catch (err) {
     return { ok: false, error: err.message };
   }
 });

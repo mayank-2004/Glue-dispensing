@@ -43,6 +43,13 @@ export function ToastProvider({ children }) {
     const duration = DURATIONS[type] ?? 3500;
     setToasts(prev => [...prev, { id, message, type }]);
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), duration);
+    if ((type === 'error' || type === 'warning') && window.fs?.appendFaultLog) {
+      window.fs.appendFaultLog({
+        timestamp: new Date().toISOString(),
+        level: type.toUpperCase(),
+        message: String(message),
+      }).catch(() => {});
+    }
   }, []);
 
   const toast = {

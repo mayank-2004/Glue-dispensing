@@ -319,3 +319,406 @@ Before writing any more code: check your CNC board to find which physical pin co
 What board is it (RAMPS 1.4, SKR, MKS, etc.)?
 What is the physical connector for "Fan 0", "Servo", or "AUX" pins?
 That pin is what you wire to the 983A trigger input. The code is already correct — the missing piece is just the physical wire.
+
+
+
+
+
+
+
+
+
+What's Actually Happening
+Step 1: App sends G28 (home all axes) at connect.
+
+Step 2: Marlin homes X successfully → then tries to home Y.
+
+Step 3: Y stepper driver is not working (not seated, missing, or no endstop) → Y motor never moves → G28 hangs forever waiting for Y endstop to trigger.
+
+Step 4: You click jog → app sends G1 X10 → Marlin queues it behind the stuck G28 → machine stays frozen → nothing moves.
+
+The jog buttons aren't broken — their commands are just stuck in the queue behind the never-finishing G28.
+
+Fix 1 — Hardware (permanent, correct fix)
+On your RAMPS 1.4 board, check that all three stepper driver modules are properly seated:
+
+Slot	Driver needed
+X	A4988 or DRV8825
+Y	A4988 or DRV8825
+Z	A4988 or DRV8825
+A4988/DRV8825 chips need to be pressed firmly onto the 8-pin headers. A half-seated chip gives no motion. Also verify Y and Z endstop cables are connected to Y-MIN and Z-MIN on the RAMPS board.
+
+What You Still Need to Fix on RAMPS Hardware
+#	Check	What to look for
+1	Y stepper driver	Is an A4988/DRV8825 firmly seated in the Y slot?
+2	Z stepper driver	Is an A4988/DRV8825 firmly seated in the Z slot?
+3	Y endstop cable	Is it plugged into Y-MIN on RAMPS?
+4	Z endstop cable	Is it plugged into Z-MIN on RAMPS?
+Once all three drivers are seated and all three endstops are wired, change the code back from G28 X to G28 to home all axes on connect.
+
+
+
+
+/* ============================================================
+   FEATURES IMPLEMENTED IN SOFTWARE (Session Log)
+   ============================================================ */
+
+
+/* ---- 1. skipHome Bug Fix (src/App.jsx) ---- */
+
+Problem:
+After the very first successful connect, hasConnectedRef.current was permanently set to true.
+skipHome={hasConnectedRef.current} was therefore always true after the first session,
+meaning G28 was never sent again even after a full disconnect and reconnect.
+A secondary bug also prematurely called setIsHomed(true) on reconnect before G28 had run.
+
+Fix applied:
+- Changed skipHome={hasConnectedRef.current} → skipHome={isHomed}
+- isHomed is reset to false on every disconnect (both intentional and cable-pull)
+- onConnect callback now always calls setIsHomed(false); only onHomingComplete sets it true
+- Result: G28 runs on every connect. isHomed only becomes true when homing physically completes.
+
+Files changed: src/App.jsx
+
+
+/* ---- 2. Persistent Fault Log (src/Toast.jsx + electron/main.js + electron/preload.js) ---- */
+
+Problem:
+All errors and warnings appeared as temporary toast messages that disappeared after 4–5 seconds.
+No permanent record of faults existed. In a production environment this means:
+- No audit trail of what went wrong and when
+- Faults during unattended runs are invisible
+- No data for maintenance decisions
+
+Implementation:
+- Every toast.error() and toast.warning() call anywhere in the app now automatically
+  writes a row to Documents\GlueJobLogs\fault-log.csv
+- CSV format: Timestamp (ISO 8601), Level (ERROR / WARNING), Message
+- Logging is wired at the ToastProvider level — no changes needed in any component
+- If the log file does not exist, it is created with a header row automatically
+- Logging is fire-and-forget (.catch(() => {}) so a disk error never blocks the UI
+
+IPC handler added: fs:appendFaultLog (electron/main.js)
+Preload method added: window.fs.appendFaultLog (electron/preload.js)
+Files changed: src/Toast.jsx, electron/main.js, electron/preload.js
+
+Log location: C:\Users\<user>\Documents\GlueJobLogs\fault-log.csv
+
+
+/* ---- 3. User Access Levels — Admin / Operator PIN Lock ---- */
+/*         (src/components/AppHeader.jsx, src/App.jsx,          */
+/*          src/components/AutomatedDispensingPanel.jsx)         */
+
+Problem:
+Any operator could accidentally change critical dispensing parameters (pressure, dwell time,
+Z heights, valve commands, axis limits) and corrupt the calibrated process settings.
+No distinction existed between an operator running jobs and a technician changing settings.
+
+Implementation:
+- A lock/unlock button appears in the top header bar at all times
+- Two modes:
+    OPERATOR mode (default, 🔒 OPERATOR — yellow):
+      Operator can connect/disconnect, run jobs, view stats, load recipes, view all data.
+      All dispensing parameter inputs (pressure, dwell, Z heights, valve commands, axis limits,
+      bead settings, PWM duty, etc.) are covered by a locked overlay showing:
+      "🔒 Settings locked — Log in as Admin to change parameters"
+      The overlay uses CSS pointer-events so inputs cannot be clicked through it.
+    ADMIN mode (🔓 ADMIN — green):
+      Full access to all settings. Unlocked by entering the admin PIN.
+
+- Default PIN: 1234
+- PIN is stored in localStorage under key 'glueAdminPin'
+- To change the PIN: open browser DevTools console and run:
+    localStorage.setItem('glueAdminPin', 'yournewpin')
+- Clicking the lock button while in Admin mode immediately locks back to Operator
+- Clicking the lock button while in Operator mode shows a prompt for the PIN
+
+Files changed: src/components/AppHeader.jsx, src/App.jsx, src/components/AutomatedDispensingPanel.jsx
+
+
+/* ---- 4. Recipe System (already existed — no new implementation needed) ---- */
+
+Status: Already fully implemented before this session.
+- Recipes stored in localStorage under key 'glueRecipes'
+- Parameters saved: pressure, dwell, dispense Z, safe travel Z, viscosity,
+  bead threshold, bead feed rate, purge on/off, purge duration, valve commands,
+  dot verification, surface probe, nozzle diameter
+- UI: Recipe Manager section in Automated Dispensing panel (collapsible)
+- Functions: Save As (named recipe), Load, Delete, Export to JSON file, Import from JSON file
+- Active recipe name shown in the Recipe Manager header
+
+Additionally this session added file-based IPC handlers for recipes (for future use
+if recipes need to survive across app reinstalls or be shared between machines):
+  window.fs.saveRecipe(name, data)   → Documents\GlueRecipes\<name>.json
+  window.fs.loadRecipes()            → returns all recipes as an array
+  window.fs.deleteRecipe(name)       → deletes the named recipe file
+
+Files changed (IPC only): electron/main.js, electron/preload.js
+
+
+/* ---- 5. pauseSerialPolling Race Condition Fix ---- */
+/*         (src/main.jsx, src/components/SerialPanel.jsx)        */
+
+Problem:
+window.pauseSerialPolling was a plain boolean. Multiple code paths (homing in SerialPanel
+and job execution in AutomatedDispensingPanel) set and cleared it independently.
+The critical failure scenario:
+  1. Connect → homing starts → pauseSerialPolling = true
+  2. Cable is pulled during homing
+  3. onDisconnect fires → clears isHoming state but does NOT clear pauseSerialPolling
+  4. Reconnect → new homing sets pauseSerialPolling = true (already true — no change)
+  5. Homing completes → pauseSerialPolling = false
+  6. But if a second consumer (job execution) had also set it to true, that consumer's
+     false-clear now incorrectly un-pauses polling while the job is still running
+  7. M114 responses flood the ackQueue during job execution → job sends wrong G-code
+
+This caused the "jog doesn't work after failed homing" symptom.
+
+Fix: Reference-counted pause system
+- window._pollPauseCount = 0 (counter initialized in src/main.jsx before React renders)
+- window.pauseSerialPolling is now a computed property:
+    getter: returns (_pollPauseCount > 0)
+    setter: true → increments counter; false → decrements but never below 0
+- All existing call sites (window.pauseSerialPolling = true/false) work unchanged
+- onDisconnect now resets window._pollPauseCount = 0 (clean slate on cable pull)
+- connect() also resets window._pollPauseCount = 0 at the start (clean slate on reconnect)
+
+Effect: Multiple concurrent pausers (homing + job) can independently pause/resume
+polling without accidentally clearing each other. Cable pull during any operation
+always recovers cleanly on the next connect.
+
+Files changed: src/main.jsx, src/components/SerialPanel.jsx
+
+
+/* ---- 6. Dynamic Boot Timing (src/components/SerialPanel.jsx) ---- */
+
+Problem:
+The connect sequence used hardcoded delays:
+  - setTimeout 8000ms → start M114 polling
+  - setTimeout 9000ms → send G28 (home all axes)
+These magic numbers were tuned for Arduino Mega 2560 + RAMPS 1.4 booting in ~6 seconds.
+On faster hardware, 8 seconds was wasted. On slower hardware or different firmware,
+G28 was sent before Marlin was ready, causing silent failure or timeout.
+
+Fix: Event-driven boot detection with fallback
+- A marlinBootCbRef is set immediately after the port opens
+- The onData handler watches every incoming serial line for boot indicators:
+    "start"           → Marlin's earliest boot signal (sent before firmware initialises)
+    any line with "Marlin"  → version string (e.g. "Marlin 2.1.1")
+    any line starting with "ok"  → Marlin is definitely alive and accepting commands
+- When any boot indicator is received, the callback fires immediately:
+    → startStatusQuery() begins M114 polling
+    → 500ms settle (clears remaining boot chatter)
+    → G28 + M400 sent → homing begins
+- Fallback: if no boot message arrives within 12 seconds, proceeds anyway with a
+  console warning (covers non-Marlin firmware and very slow boards)
+- bootHandled flag prevents double-firing if multiple boot indicators arrive
+- marlinBootCbRef is cleared on disconnect so stale callbacks never fire on next connect
+- Watchdog grace period updated from 8s → 15s to safely cover the 12s fallback path
+
+Typical result on Mega 2560 + RAMPS:
+  Before: always waited 8s before M114, 9s before G28 (regardless of actual boot time)
+  After:  homing starts at ~3.5–4s (as soon as Marlin sends its first "ok")
+
+Files changed: src/components/SerialPanel.jsx
+
+
+/* ---- 7. Marlin Error Detection Mid-Job ---- */
+/*         (src/components/AutomatedDispensingPanel.jsx)          */
+
+Problem:
+If Marlin sent an error response during a running job (e.g. Error:MAXTEMP,
+Error:Printer halted. kill() called!, !!, echo:Unknown command), the job continued
+silently. The ackQueue entries waited forever for "ok" responses that would never arrive,
+and the machine stayed halted while the app believed it was still dispensing.
+
+Root issue: ackQueue stored bare resolve functions — there was no reject path.
+Errors from Marlin had no way to propagate back to sendGcodeWait.
+
+Fix:
+- ackQueue entries now store {resolve, reject} pairs instead of bare resolve functions
+- handleData detects the following Marlin error patterns:
+    /^Error:/i           → all Marlin error conditions (thermal, position, etc.)
+    trimmed === '!!'     → emergency halt (thermal runaway, etc.)
+    /^echo:Unknown command/i  → unrecognised G-code command
+- On detection (only when job is running):
+    1. marlinFaultRef.current is set to the error line
+    2. All pending ackQueue entries are rejected with Error("Machine fault: <line>")
+    3. sendGcodeWait throws, propagating up to runDispenseLoop's catch block
+    4. Job stops cleanly with a toast showing the exact Marlin error text
+    5. The fault is simultaneously written to fault-log.csv (via Toast layer)
+- sendGcodeWait checks marlinFaultRef at the start of every call — refuses to send
+  further commands after a fault (prevents flooding a halted machine with G-code)
+- marlinFaultRef is cleared at the start of each new job run
+- cancelJob now properly rejects pending acks (entry.reject) instead of just
+  emptying the array — ensures the loop unwinds immediately on operator abort
+
+Error flow:
+  Marlin → "Error:MAXTEMP"
+    → handleData detects it
+    → all pending acks rejected
+    → sendGcodeWait throws "Machine fault: Error:MAXTEMP"
+    → runDispenseLoop catch block: toast.error(e.message) + job stops
+    → fault-log.csv gets a new row
+
+Files changed: src/components/AutomatedDispensingPanel.jsx
+
+
+/* ---- 8. Mid-Job Pause / Resume Button ---- */
+/*         (src/components/AutomatedDispensingPanel.jsx)          */
+
+Problem:
+The only way to stop a running job was to abort it entirely. If an operator needed to
+check the nozzle, swap a syringe, or briefly pause production, they had to abort and
+lose their place — then manually set resumeFromPad to continue.
+
+Implementation:
+- New state: isOperatorPaused (React state for UI), operatorPausedRef (ref for loop access)
+- New functions:
+    pauseJob()          → sets operatorPausedRef true + shows info toast
+    resumeOperatorPause() → clears operatorPausedRef
+- Pause check inserted at the top of each pad iteration in runDispenseLoop:
+    if (operatorPausedRef.current) {
+      while (operatorPausedRef.current && isJobRunningRef.current) {
+        await new Promise(r => setTimeout(r, 300));  // poll every 300ms
+      }
+      if (!isJobRunningRef.current) throw new Error("Job Aborted");
+    }
+- The check is deliberately BETWEEN pads — the machine always finishes the current
+  pad fully before pausing. Glue is never left partially applied.
+- cancelJob() clears operatorPausedRef before setting isJobRunningRef false,
+  so an abort while paused propagates cleanly without deadlock.
+
+UI changes:
+- ⏸ PAUSE button: appears alongside ABORT JOB only while a job is running
+  When paused → changes to ▶ RESUME (highlighted in blue)
+- Yellow status banner displayed below the buttons while paused:
+  "⏸ Job paused — machine will hold after current pad. Click RESUME to continue or ABORT to stop."
+- Download G-Code button is hidden while job is running (was always disabled anyway)
+
+States:
+  Job running, not paused   → shows [⏹ ABORT JOB] [⏸ PAUSE] buttons
+  Job running, paused       → shows [⏹ ABORT JOB] [▶ RESUME] buttons + yellow banner
+  Job not running           → shows [▶ START JOB] button only
+
+Files changed: src/components/AutomatedDispensingPanel.jsx
+
+
+
+
+
+
+G-code Flow — Source to Machine
+
+UI Component
+    │
+    ▼
+src/lib/motion/gcode.js        ← builds G-code strings
+    │
+    ▼
+window.serial.writeLine()      ← IPC call (defined in preload.js)
+    │
+    ▼
+electron/preload.js            ← bridges renderer → main process
+    │
+    ▼
+electron/main.js               ← writes to SerialPort (USB)
+    │
+    ▼
+RAMPS / Marlin firmware
+
+
+
+
+
+
+
+
+
+
+
+
+Wiring — Arduino Mega Pins to 2DM556
+The simplest approach: use the same pin numbers that RAMPS uses so you don't need to change any Marlin pin configuration. Just wire those Arduino Mega pins directly to each 2DM556.
+
+Signal	Arduino Mega Pin	Wire to 2DM556
+X STEP	Pin 54 (A0)	PUL+ (via 1kΩ resistor)
+X DIR	Pin 55 (A1)	DIR+ (via 1kΩ resistor)
+X ENABLE	Pin 38	ENA+ (via 1kΩ resistor)
+Y STEP	Pin 60 (A6)	PUL+
+Y DIR	Pin 61 (A7)	DIR+
+Y ENABLE	Pin 56 (A2)	ENA+
+Z STEP	Pin 46	PUL+
+Z DIR	Pin 48	DIR+
+Z ENABLE	Pin 62 (A8)	ENA+
+X endstop	Pin 3	signal wire
+Y endstop	Pin 14	signal wire
+Z endstop	Pin 18	signal wire
+All PUL−, DIR−, ENA− → common GND (Arduino GND and power supply GND joined)
+
+
+Arduino Mega Pin 54 ──[1kΩ]── PUL+
+Arduino GND ──────────────── PUL−
+                              2DM556
+Arduino Mega Pin 55 ──[1kΩ]── DIR+
+Arduino GND ──────────────── DIR−
+
+Arduino Mega Pin 38 ──[1kΩ]── ENA+
+Arduino GND ──────────────── ENA−
+The 1kΩ resistors protect the optocouplers inside the 2DM556 at 5V logic.
+
+Marlin Configuration.h Changes
+1. Change the board type:
+
+
+// Was:
+#define MOTHERBOARD BOARD_RAMPS_14_EFB
+
+// Change to:
+#define MOTHERBOARD BOARD_MEGA
+2. Remove A4988 driver type definitions:
+
+
+// Remove or comment out:
+// #define X_DRIVER_TYPE  A4988
+// #define Y_DRIVER_TYPE  A4988
+// #define Z_DRIVER_TYPE  A4988
+2DM556 is a plain external driver — Marlin doesn't control it over SPI/UART. Leave driver type undefined (or NONE).
+
+3. Fix enable pin polarity — CRITICAL:
+
+
+// 2DM556 enables motor when ENA+ is HIGH
+// So Marlin must set enable pin HIGH to activate
+#define X_ENABLE_ON 1
+#define Y_ENABLE_ON 1
+#define Z_ENABLE_ON 1
+(RAMPS with A4988 uses 0 = LOW to enable. 2DM556 is opposite.)
+
+4. Recalculate steps per unit based on 2DM556 DIP switches:
+
+Check your 2DM556 DIP switches. The microstepping is set hardware-side:
+
+2DM556 DIP setting	Microsteps	Steps/mm (2mm lead screw)	Steps/mm (4mm lead screw)
+400 pulse/rev	2	200	100
+800 pulse/rev	4	400	200
+1600 pulse/rev	8	800	400
+3200 pulse/rev	16	1600	800
+6400 pulse/rev	32	3200	1600
+Formula: steps/mm = (pulse_per_rev) ÷ (lead_screw_pitch_mm)
+
+
+// Example: 1600 pulse/rev DIP setting, 2mm pitch lead screw
+#define DEFAULT_AXIS_STEPS_PER_UNIT { 800, 800, 800, 93 }
+5. Disable internal endstop pullups (2DM556 setup usually means external wiring):
+
+
+// Check if your endstops need pullups — if wired with external resistors, disable:
+// #define ENDSTOPPULLUPS
+#define ENDSTOPPULLUP_XMIN
+#define ENDSTOPPULLUP_YMIN
+#define ENDSTOPPULLUP_ZMIN
+Power Supply
+The 2DM556 needs a separate DC power supply for motors (24V–48V, minimum 5A per driver). Arduino Mega runs from USB or its own 5V/12V barrel jack. Join GND of motor PSU with Arduino GND — this is mandatory for signal reference.
+
+After reflashing Marlin with these changes, run M119 to confirm endstops, then G28 to test homing.

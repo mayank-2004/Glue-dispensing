@@ -167,6 +167,10 @@ export default function Viewer({
       <div
         ref={canvasRef}
         className="canvas"
+        style={{
+          overflowX: zoomLevel > 1 ? 'auto' : 'hidden',
+          alignItems: zoomLevel > 1 ? 'flex-start' : 'center',
+        }}
         onClick={handleCanvasClick}
         onMouseDown={onMouseDown}
       />

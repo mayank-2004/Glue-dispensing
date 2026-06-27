@@ -5,7 +5,10 @@ contextBridge.exposeInMainWorld('appControl', {
 });
 
 contextBridge.exposeInMainWorld('fs', {
-  saveJobLog: (opts) => ipcRenderer.invoke('fs:saveJobLog', opts),
+  saveJobLog:     (opts)  => ipcRenderer.invoke('fs:saveJobLog', opts),
+  appendFaultLog: (entry) => ipcRenderer.invoke('fs:appendFaultLog', { entry }),
+  readFaultLog:   ()      => ipcRenderer.invoke('fs:readFaultLog'),
+  clearFaultLog:  ()      => ipcRenderer.invoke('fs:clearFaultLog'),
 });
 
 contextBridge.exposeInMainWorld('vision', {

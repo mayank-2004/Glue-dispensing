@@ -309,7 +309,6 @@ export default function AutomatedDispensingPanel({
   boardOutline,
   useSafePathPlanning = false,
   setUseSafePathPlanning,
-  safePathPlanner,
   onStartJob,
   onDownloadGCode,
   batchProcessor,
@@ -330,7 +329,8 @@ export default function AutomatedDispensingPanel({
   panelInfo = null,
   panelXf = null,
   panelRailFiducials = [],
-  toolOffset = { dx: 0, dy: 0 }
+  toolOffset = { dx: 0, dy: 0 },
+  isAdminMode = false,
 }) {
   const toast = useToast();
   const [isJobRunning, setIsJobRunning] = useState(false);
@@ -354,10 +354,6 @@ export default function AutomatedDispensingPanel({
   const [regIndex, setRegIndex] = useState(0);
   // const [currentPos, setCurrentPos] = useState({ x: 0, y: 0, z: 0 }); // Replaced by prop
   const [jogStep, setJogStep] = useState(1);
-
-  // Fine-tune residual offset correction (applied on top of everything else)
-  // const [fineTuneX, setFineTuneX] = useState(() => parseFloat(localStorage.getItem('fineTuneX') || '0'));
-  // const [fineTuneY, setFineTuneY] = useState(() => parseFloat(localStorage.getItem('fineTuneY') || '0'));
 
   // Pad Alignment Preview state
   const [previewPadIdx, setPreviewPadIdx] = useState(0);
@@ -444,6 +440,8 @@ export default function AutomatedDispensingPanel({
   const [clogThreshold, setClogThreshold] = useState(2);     // consecutive failures before notifying
   const [clogNotification, setClogNotification] = useState(null); // {padId, failedCount} while paused
   const clogPausedRef = useRef(false);
+  const [isOperatorPaused, setIsOperatorPaused] = useState(false);
+  const operatorPausedRef = useRef(false);
   const consecutiveFailsRef = useRef(0);
   const retryCurrentPadRef = useRef(false);
 
@@ -554,8 +552,9 @@ export default function AutomatedDispensingPanel({
   const xfRef = useRef(xf);
   const fiducialsRef = useRef(fiducials);
 
-  // Queue for synchronous sending
+  // Queue for synchronous sending — entries are {resolve, reject} pairs
   const ackQueue = useRef([]);
+  const marlinFaultRef = useRef(null);
 
   // Soft axis limits — prevent moves outside machine travel envelope
   const [axisLimits, setAxisLimits] = useState(() => {
@@ -687,8 +686,19 @@ export default function AutomatedDispensingPanel({
 
       // 3. Handle ACKs (Marlin/GRBL sends 'ok')
       if (line.trim().startsWith('ok')) {
-        const resolver = ackQueue.current.shift();
-        if (resolver) resolver(true);
+        const entry = ackQueue.current.shift();
+        if (entry) entry.resolve(true);
+      }
+
+      // 4. Detect Marlin errors — reject all pending acks so sendGcodeWait throws immediately
+      const trimmed = line.trim();
+      const isMarlinError = /^Error:/i.test(trimmed) || trimmed === '!!' || /^echo:Unknown command/i.test(trimmed);
+      if (isMarlinError && isJobRunningRef.current) {
+        marlinFaultRef.current = trimmed;
+        const pending = ackQueue.current.splice(0);
+        for (const entry of pending) {
+          entry.reject(new Error(`Machine fault: ${trimmed}`));
+        }
       }
     };
     if (window.serial && window.serial.onData) window.serial.onData(handleData);
@@ -696,9 +706,12 @@ export default function AutomatedDispensingPanel({
 
   // Reliable Sender
   const sendGcodeWait = async (cmd) => {
-    // Create a promise that waits for 'ok'
-    const ackPromise = new Promise(resolve => {
-      ackQueue.current.push(resolve);
+    if (marlinFaultRef.current) {
+      throw new Error(`Machine fault: ${marlinFaultRef.current}`);
+    }
+
+    const ackPromise = new Promise((resolve, reject) => {
+      ackQueue.current.push({ resolve, reject });
     });
 
     let writeOk = false;
@@ -711,9 +724,9 @@ export default function AutomatedDispensingPanel({
       return true;
     } catch (e) {
       console.error("Send failed:", e);
-      ackQueue.current.pop();
       if (!writeOk) {
         // writeLine itself failed — port is gone (cable pulled)
+        ackQueue.current.pop();
         const connErr = new Error(e.message || "Write failed");
         connErr.isConnectionLoss = true;
         throw connErr;
@@ -942,6 +955,9 @@ export default function AutomatedDispensingPanel({
     setMachineStatus('busy');
     jobStartTimeRef.current = Date.now();
     globalPointCountRef.current = 0;
+    marlinFaultRef.current = null;
+    operatorPausedRef.current = false;
+    setIsOperatorPaused(false);
     setJobReport(null);
     setCurrentPadInfo(null);
     if (startFromPad === 0) setDotCheckResults([]);
@@ -1038,7 +1054,6 @@ export default function AutomatedDispensingPanel({
 
         const solvedFiducials = board.fiducials?.filter(f => f.design && f.machine) || [];
         if (applyXf && dynamicPanelCorrection && solvedFiducials.length >= 2) {
-          console.log(`[Dynamic Vision] Auto-correcting board: ${board.name} using ${solvedFiducials.length} fiducials`);
           setJobStage('auto-aligning');
           setCurrentBoardIdx(bIdx);
 
@@ -1048,7 +1063,6 @@ export default function AutomatedDispensingPanel({
           for (let f of solvedFiducials) {
             if (!isJobRunningRef.current) throw new Error("Job Aborted");
             const expectedMachine = applyTransform(transform, f.design);
-            console.log(`[Dynamic Vision] Moving camera to expected fiducial ${f.id}: X${expectedMachine.x.toFixed(3)} Y${expectedMachine.y.toFixed(3)}`);
             await sendGcodeWait(`G1 Z${safeTravelHeight} F3000`);
             await sendGcodeWait(`G1 X${expectedMachine.x.toFixed(3)} Y${expectedMachine.y.toFixed(3)} F4000`);
             await sendGcodeWait('M400');
@@ -1065,7 +1079,6 @@ export default function AutomatedDispensingPanel({
                 }
               }
               if (snap && snap.confidence > 0.4) {
-                console.log(`[Dynamic Vision] Fiducial ${f.id} snapped at Machine(${snap.x.toFixed(3)}, ${snap.y.toFixed(3)}) confidence=${snap.confidence.toFixed(2)}`);
                 updatedMachineFiducials.push({ design: f.design, machine: { x: snap.x, y: snap.y } });
               } else {
                 console.warn(`[Dynamic Vision] Fiducial ${f.id}: ${snap ? `low confidence (${snap.confidence.toFixed(2)})` : 'not detected'}. Falling back to baseline.`);
@@ -1085,7 +1098,6 @@ export default function AutomatedDispensingPanel({
                 ? fitAffine(updatedMachineFiducials.map(f => f.design), updatedMachineFiducials.map(f => f.machine))
                 : fitSimilarity(updatedMachineFiducials.map(f => f.design), updatedMachineFiducials.map(f => f.machine));
               if (freshXf) {
-                console.log(`[Dynamic Vision] Board ${board.name} corrected. New XF applied.`);
                 transform = freshXf;
               }
             } catch (e) {
@@ -1094,7 +1106,7 @@ export default function AutomatedDispensingPanel({
           }
           setJobStage('dispensing');
         } else if (applyXf && dynamicPanelCorrection && solvedFiducials.length < 2) {
-          console.log(`[Dynamic Vision] Skipping for board "${board.name}" — need ≥2 solved fiducials, got ${solvedFiducials.length}. Using baseline transform.`);
+          console.warn(`Board "${board.name}" has less than 2 solved fiducials — skipping dynamic correction.`);
         }
 
         // Safety check
@@ -1106,7 +1118,6 @@ export default function AutomatedDispensingPanel({
         }
 
         transformMap.set(bIdx, transform);
-        console.log(`--- TRANSFORM READY: ${board.name.toUpperCase()} ---`, transform);
       }
 
       // ── Phase 2: Build flat job plan ─────────────────────────────────────
@@ -1150,6 +1161,13 @@ export default function AutomatedDispensingPanel({
       // ── Phase 3: Flat dispense loop across all boards ─────────────────────
       for (let fi = 0; fi < jobPlan.length; fi++) {
         if (!isJobRunningRef.current) throw new Error("Job Aborted");
+
+        if (operatorPausedRef.current) {
+          while (operatorPausedRef.current && isJobRunningRef.current) {
+            await new Promise(r => setTimeout(r, 300));
+          }
+          if (!isJobRunningRef.current) throw new Error("Job Aborted");
+        }
 
         globalPointCount++;
         globalPointCountRef.current = globalPointCount;
@@ -1521,11 +1539,26 @@ export default function AutomatedDispensingPanel({
     URL.revokeObjectURL(url);
   };
 
+  const pauseJob = () => {
+    operatorPausedRef.current = true;
+    setIsOperatorPaused(true);
+    toast.info('Job pausing — will stop after current pad completes.');
+  };
+
+  const resumeOperatorPause = () => {
+    operatorPausedRef.current = false;
+    setIsOperatorPaused(false);
+  };
+
   const cancelJob = async () => {
+    operatorPausedRef.current = false;
+    setIsOperatorPaused(false);
     const padsDone = globalPointCountRef.current;
     isJobRunningRef.current = false;
     setIsJobRunning(false);
-    ackQueue.current = []; // Unblock any pending sendGcodeWait
+    // Reject all pending acks so sendGcodeWait throws immediately and unwinds the loop
+    const pending = ackQueue.current.splice(0);
+    for (const entry of pending) entry.reject(new Error('Job Aborted'));
     toast.warning(
       padsDone > 0
         ? `Job stopped by operator — ${padsDone} component${padsDone !== 1 ? 's' : ''} dispensed.`
@@ -1564,7 +1597,6 @@ export default function AutomatedDispensingPanel({
     const corrY = my + calibCorrection.y;
     await window.serial.writeLine(`G1 Z${safeTravelHeight} F3000`);
     await window.serial.writeLine(`G1 X${corrX.toFixed(3)} Y${corrY.toFixed(3)} F${feed}`);
-    console.log(`[AlignPreview] Camera → predicted(${mx.toFixed(3)},${my.toFixed(3)}) corrected(${corrX.toFixed(3)},${corrY.toFixed(3)}) correction(${calibCorrection.x.toFixed(3)},${calibCorrection.y.toFixed(3)})`);
   };
 
   const handleDownloadGCode = () => {
@@ -1772,6 +1804,18 @@ export default function AutomatedDispensingPanel({
           </label>
           <hr style={{ borderColor: '#444', margin: '12px 0' }} />
           <h5>G-Code Generation Config</h5>
+          <div style={{ position: 'relative' }}>
+          {!isAdminMode && (
+            <div style={{
+              position: 'absolute', inset: 0, zIndex: 10, borderRadius: 6,
+              background: 'rgba(13,17,23,0.78)', backdropFilter: 'blur(2px)',
+              display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8,
+            }}>
+              <span style={{ fontSize: '1.6em' }}>🔒</span>
+              <span style={{ color: '#e3b341', fontWeight: 700, fontSize: '0.9em' }}>Settings locked</span>
+              <span style={{ color: '#8b949e', fontSize: '0.78em' }}>Log in as Admin to change parameters</span>
+            </div>
+          )}
           <div className="grid2" style={{ gap: '8px', fontSize: '0.9em' }}>
             <label style={{ gridColumn: '1 / -1' }}>
               Glue Viscosity (Presets):
@@ -1950,7 +1994,7 @@ export default function AutomatedDispensingPanel({
               <span>Purge nozzle before job</span>
             </label>
           </div>
-
+          </div>{/* end settings lock wrapper */}
           {/* ── Recipe Manager ──────────────────────────────────────────── */}
           <details open style={{ marginTop: 14 }}>
             <summary style={{ cursor: 'pointer', fontWeight: 600, color: '#58a6ff', fontSize: '0.9em', userSelect: 'none' }}>
@@ -2141,20 +2185,6 @@ export default function AutomatedDispensingPanel({
                       Optimize dispense path
                       <span style={{ display: 'block', fontSize: '0.78em', color: '#8b949e', marginTop: 2 }}>
                         Reorders components nearest-neighbor to minimize nozzle travel
-                      </span>
-                    </span>
-                  </label>
-                  <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer', fontSize: '0.85em' }}>
-                    <input
-                      type="checkbox"
-                      checked={pnpFlipY}
-                      onChange={e => setPnpFlipY(e.target.checked)}
-                      style={{ width: 'auto', marginTop: 2, flexShrink: 0 }}
-                    />
-                    <span>
-                      Flip Y-axis
-                      <span style={{ display: 'block', fontSize: '0.78em', color: '#8b949e', marginTop: 2 }}>
-                        Enable if crosshair lands at wrong Y position. Altium CSVs use Y-down (screen coords) while Gerber uses Y-up — this corrects the mismatch.
                       </span>
                     </span>
                   </label>
@@ -2695,7 +2725,7 @@ export default function AutomatedDispensingPanel({
                   timestamp: Date.now()
                 };
                 setCalibCaptures(prev => {
-                  // Replace any previous capture for this same pad index
+                  // Replace any previous capture for this same pad index 
                   const filtered = prev.filter(c => c.padIdx !== previewPadIdx);
                   return [...filtered, newCapture];
                 });
@@ -2832,6 +2862,16 @@ export default function AutomatedDispensingPanel({
                   {isJobRunning ? '⏹ ABORT JOB' : resumeFromPad > 0 ? '▶ Start From Beginning' : '▶ START JOB'}
                 </button>
 
+                {isJobRunning && (
+                  <button
+                    className={`btn ${isOperatorPaused ? 'primary' : 'secondary'}`}
+                    onClick={isOperatorPaused ? resumeOperatorPause : pauseJob}
+                    style={{ minWidth: 110 }}
+                  >
+                    {isOperatorPaused ? '▶ RESUME' : '⏸ PAUSE'}
+                  </button>
+                )}
+
                 <button
                   className="btn secondary"
                   onClick={handleDownloadGCode}
@@ -2840,6 +2880,17 @@ export default function AutomatedDispensingPanel({
                   💾 Download G-Code
                 </button>
               </div>
+
+              {isOperatorPaused && (
+                <div style={{
+                  marginTop: 8, padding: '8px 12px', borderRadius: 6,
+                  background: 'rgba(227,179,65,0.12)', border: '1px solid #e3b341',
+                  color: '#e3b341', fontSize: '0.85em', fontWeight: 600, textAlign: 'center',
+                }}>
+                  ⏸ Job paused — machine will hold after current pad.
+                  Click RESUME to continue or ABORT to stop.
+                </div>
+              )}
 
               {jobMode === 'batch' && <p>Batch mode not supported in new flow yet</p>}
             </div>
