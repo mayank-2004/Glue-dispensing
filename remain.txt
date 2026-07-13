@@ -641,19 +641,19 @@ RAMPS / Marlin firmware
 Wiring — Arduino Mega Pins to 2DM556
 The simplest approach: use the same pin numbers that RAMPS uses so you don't need to change any Marlin pin configuration. Just wire those Arduino Mega pins directly to each 2DM556.
 
-Signal	Arduino Mega Pin	Wire to 2DM556
-X STEP	Pin 54 (A0)	PUL+ (via 1kΩ resistor)
-X DIR	Pin 55 (A1)	DIR+ (via 1kΩ resistor)
-X ENABLE	Pin 38	ENA+ (via 1kΩ resistor)
-Y STEP	Pin 60 (A6)	PUL+
-Y DIR	Pin 61 (A7)	DIR+
-Y ENABLE	Pin 56 (A2)	ENA+
-Z STEP	Pin 46	PUL+
-Z DIR	Pin 48	DIR+
-Z ENABLE	Pin 62 (A8)	ENA+
-X endstop	Pin 3	signal wire
-Y endstop	Pin 14	signal wire
-Z endstop	Pin 18	signal wire
+Signal	             Arduino Mega Pin	           Wire to 2DM556
+X STEP	               Pin D2 	                  PUL+ (via 1kΩ resistor)
+X DIR	                 Pin D5 	                  DIR+ (via 1kΩ resistor)
+X ENABLE	             Pin D8	                    ENA+ (via 1kΩ resistor)
+Y STEP	               Pin D3	                    PUL+
+Y DIR	                 Pin D6	                    DIR+
+Y ENABLE	             Pin D9	                    ENA+
+Z STEP	               Pin D4	                    PUL+
+Z DIR	                 Pin D7	                    DIR+
+Z ENABLE	             Pin D10                     ENA+
+X limit switch	       Pin D22	                  signal wire
+Y limit switch	       Pin D23	                  signal wire
+Z limit switch	       Pin D24	                  signal wire
 All PUL−, DIR−, ENA− → common GND (Arduino GND and power supply GND joined)
 
 
@@ -722,3 +722,23 @@ Power Supply
 The 2DM556 needs a separate DC power supply for motors (24V–48V, minimum 5A per driver). Arduino Mega runs from USB or its own 5V/12V barrel jack. Join GND of motor PSU with Arduino GND — this is mandatory for signal reference.
 
 After reflashing Marlin with these changes, run M119 to confirm endstops, then G28 to test homing.
+
+
+
+
+
+
+Method: Calculate pitch from Marlin (if the machine already moves correctly)
+
+If you know:
+
+Motor = 200 steps/rev
+Microstepping = 16
+Marlin Steps/mm = 80
+
+Then:
+
+Lead=
+Steps/mm
+Motor Steps×Microsteps
+	​

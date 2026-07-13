@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import "./JogPanel.css";
 import { jogRel } from "../lib/motion/gcode.js";
 import { useToast } from '../Toast.jsx';
@@ -8,8 +8,10 @@ export default function JogPanel({
     isConnected = false
 }) {
     const toast = useToast();
+    const jogRestoreRef = useRef(null); // debounce handle for G90 restore
     const [stepSize, setStepSize] = useState(10); // mm
-    const [feedRate, setFeedRate] = useState(1000); // mm/min
+    const [xyFeedRate, setXyFeedRate] = useState(3000); // mm/min — 50 mm/s, fast manual jog
+    const [zFeedRate, setZFeedRate] = useState(600);   // mm/min — 10 mm/s, Z max feedrate
     const [safeZ, setSafeZ] = useState(-5); // mm (Machine coordinate usually negative)
     const [isBusy, setIsBusy] = useState(false);
 
@@ -18,13 +20,21 @@ export default function JogPanel({
         if (!isConnected) { toast.warning("Please connect to machine first!"); return; }
         if (isBusy) return;
         setIsBusy(true);
+
+        // Cancel any pending G90 restore — the user is still jogging
+        if (jogRestoreRef.current) {
+            clearTimeout(jogRestoreRef.current);
+            jogRestoreRef.current = null;
+        }
+
         try {
             let da = {};
+            const feed = axis === "Z" ? zFeedRate : xyFeedRate;
             if (axis === "X") da = { dx: dir * stepSize };
             else if (axis === "Y") da = { dy: dir * stepSize };
             else if (axis === "Z") da = { dz: dir * stepSize };
 
-            const cmds = jogRel({ ...da, feed: feedRate });
+            const cmds = jogRel({ ...da, feed });
 
             if (window.serial?.writeLine) {
                 for (const line of cmds) await window.serial.writeLine(line);
@@ -33,6 +43,12 @@ export default function JogPanel({
             console.error("Jog failed:", e);
         } finally {
             setIsBusy(false);
+            // Restore absolute mode 600 ms after the last jog click so Marlin is
+            // back in G90 before any job or homing command runs.
+            jogRestoreRef.current = setTimeout(async () => {
+                try { if (window.serial?.writeLine) await window.serial.writeLine('G90'); } catch {}
+                jogRestoreRef.current = null;
+            }, 600);
         }
     };
 
@@ -125,8 +141,13 @@ export default function JogPanel({
                     </label>
 
                     <label>
-                        Feed Rate (mm/min)
-                        <input type="number" value={feedRate} onChange={(e) => setFeedRate(Number(e.target.value))} step={100} />
+                        XY Feed Rate (mm/min)
+                        <input type="number" value={xyFeedRate} onChange={(e) => setXyFeedRate(Number(e.target.value))} step={50} min={10} />
+                    </label>
+
+                    <label>
+                        Z Feed Rate (mm/min)
+                        <input type="number" value={zFeedRate} onChange={(e) => setZFeedRate(Number(e.target.value))} step={20} min={10} />
                     </label>
 
                     <div className="safe-z-section">

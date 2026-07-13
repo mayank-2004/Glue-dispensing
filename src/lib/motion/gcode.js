@@ -6,8 +6,8 @@ export const defaultAxisMap = {
 };
 
 export const defaultFeeds = {
-  travel: { X: 9000, Y: 9000, Z: 600, R: 1800 }, // mm/min
-  work: { X: 1500, Y: 1500, Z: 300, R: 600 },
+  travel: { X: 3000, Y: 3000, Z: 600, R: 600 }, // mm/min — 50 mm/s XY, 10 mm/s Z
+  work: { X: 600, Y: 600, Z: 240, R: 240 },
 };
 
 export function header({ units = "mm", absolute = true } = {}) {
@@ -59,8 +59,10 @@ export function jogRel({ dx, dy, dz, dr, feed }, axisMap = defaultAxisMap) {
   if (dr) parts.push(`${axisMap.R}${fmt(dr)}`);
   if (!parts.length) return [];
   const f = feed != null ? ` F${Math.max(1, Math.round(feed))}` : "";
-  // Bundle into a single string with newlines to prevent async interleaving race conditions!
-  return [`G91\nG1 ${parts.join(" ")}${f}\nG90`];
+  // No G90 here — caller restores absolute mode after jog session ends (debounced).
+  // Keeping G91 between consecutive jog clicks lets Marlin's planner blend moves
+  // instead of hard-stopping between each click.
+  return [`G91\nG1 ${parts.join(" ")}${f}`];
 }
 
 export function dwell(ms = 50) {

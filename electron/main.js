@@ -221,6 +221,31 @@ app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 app.on('will-quit', stopVisionServer);
 
+// When the app closes, send M410 (Quickstop) to halt any active motion (e.g. mid-homing)
+// then cleanly close the serial port before letting Electron exit.
+let serialStopDone = false;
+app.on('before-quit', async (e) => {
+  if (serialStopDone || !serial.port?.isOpen) return;
+  e.preventDefault();
+  serialStopDone = true;
+  try {
+    await new Promise((res, rej) =>
+      serial.port.write('M410\r\n', err => err ? rej(err) : res())
+    );
+    await new Promise(r => setTimeout(r, 150)); // give Marlin time to halt
+  } catch {}
+  try {
+    stopKeepAlive();
+    stopPortWatcher();
+    intentionalClose = true;
+    await new Promise(r => serial.port.close(() => r()));
+    serial.port = null;
+    serial.parser = null;
+    intentionalClose = false;
+  } catch {}
+  app.quit();
+});
+
 // Deliberate quit from the in-app Exit button
 ipcMain.handle('app:quit', () => { intentionalAppQuit = true; app.quit(); });
 

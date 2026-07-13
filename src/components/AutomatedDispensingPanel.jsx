@@ -831,8 +831,8 @@ export default function AutomatedDispensingPanel({
             const xfm = applyXf ? board.xf : null;
             for (const pad of effectiveSequence) {
               let tp = xfm ? applyTransform(xfm, pad) : pad;
-              const px = tp.x - (toolOffset?.dx || 0);
-              const py = tp.y - (toolOffset?.dy || 0);
+              const px = tp.x + (toolOffset?.dx || 0);
+              const py = tp.y + (toolOffset?.dy || 0);
               if (px < 0 || px > maxX || py < 0 || py > maxY) {
                 outCount++;
                 if (!firstOut) firstOut = `${pad.id || 'pad'} @ X${px.toFixed(1)}, Y${py.toFixed(1)}`;
@@ -1026,8 +1026,8 @@ export default function AutomatedDispensingPanel({
             probeTarget = applyTransform(firstXf, fp);
           }
           if (probeTarget) {
-            const cx = probeTarget.x - (toolOffset?.dx || 0) + calibCorrection.x;
-            const cy = probeTarget.y - (toolOffset?.dy || 0) + calibCorrection.y;
+            const cx = probeTarget.x + (toolOffset?.dx || 0) + calibCorrection.x;
+            const cy = probeTarget.y + (toolOffset?.dy || 0) + calibCorrection.y;
             await sendGcodeWait(`G1 X${cx.toFixed(3)} Y${cy.toFixed(3)} F4000`);
             await sendGcodeWait('M400');
             await new Promise(r => setTimeout(r, 300));
@@ -1509,9 +1509,9 @@ export default function AutomatedDispensingPanel({
         toast.warning('Purge station not set — purging in place. Configure it in Nozzle Maintenance ⚙ settings.');
       }
       toast.info(`Purging nozzle… (${durationMs} ms @ ${pressure} PSI)`);
-      await sendGcodeWait(`M42 P4 S${Math.round(pressure)}`);
+      await sendGcodeWait(`M106 S${Math.min(255, Math.max(0, Math.round(pressure)))}`);
       await sendGcodeWait(`G4 P${Math.round(durationMs)}`);
-      await sendGcodeWait('M42 P4 S0');
+      await sendGcodeWait('M107');
       await sendGcodeWait('M400');
       if (station.configured) {
         await sendGcodeWait(`G0 Z${safeTravelHeight.toFixed(3)}`);
@@ -1570,7 +1570,7 @@ export default function AutomatedDispensingPanel({
     }
     // Emergency: bypass the queue — send directly so the machine stops immediately
     try {
-      await window.serial.writeLine('M42 P4 S0');
+      await window.serial.writeLine('M107');
       await window.serial.writeLine('G1 Z10 F3000');
     } catch (e) { }
     setJobStage('idle');

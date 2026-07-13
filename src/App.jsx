@@ -240,10 +240,11 @@ export default function App() {
 
   const [isHomed, setIsHomed] = useState(false);
   const [isJobRunning, setIsJobRunning] = useState(false);
-  const [isAdminMode, setIsAdminMode] = useState(false);
+  const [isAdminMode, setIsAdminMode] = useState(true); // Force Admin mode always
 
   const handleHomingComplete = useCallback(async () => {
     setIsHomed(true);
+    toast.success("Machine is homed — all axes at zero.");
     const { xf: curXf, applyXf: curApplyXf, selectedOrigin: curOrigin, pcbOriginOffset: curOffset } = originStateRef.current;
     let targetX, targetY;
 
@@ -266,9 +267,9 @@ export default function App() {
     targetY = Math.max(0, Math.min(235, targetY));
 
     if (window.serial?.writeLine) {
-      console.log(`[AutoMove] Homing done — moving to PCB origin X${targetX.toFixed(3)} Y${targetY.toFixed(3)}`);
+      console.log(`[AutoMove] Homing done — moving to PCB origin X${targetX} Y${targetY}`);
       await window.serial.writeLine(`G90`);
-      await window.serial.writeLine(`G0 X${targetX.toFixed(3)} Y${targetY.toFixed(3)} F3000`);
+      await window.serial.writeLine(`G0 X${targetX} Y${targetY} F3000`);
     }
   }, []);
 
@@ -495,6 +496,11 @@ export default function App() {
   const changeSide = (s, skip = false) => {
     changeSideFn(s, layers, skip);
     reinitSideState(s, layers);
+    setSelectedMm(null);
+    setGeneratedPath(null);
+    setSelectedPadIndices([]);
+    setPadDistances([]);
+    setMultiSelectMode(false);
   };
 
   const pickFiles = async (e) => handleFiles(e.target.files);
@@ -1648,8 +1654,8 @@ export default function App() {
         return {
           ...f,
           machine: {
-            x: f.design.x + (pcbOriginOffset?.x || 0) + (toolOffset?.dx || 0),
-            y: f.design.y + (pcbOriginOffset?.y || 0) + (toolOffset?.dy || 0)
+            x: f.design.x + (pcbOriginOffset?.x || 0) - (toolOffset?.dx || 0),
+            y: f.design.y + (pcbOriginOffset?.y || 0) - (toolOffset?.dy || 0)
           }
         };
       }
@@ -1911,7 +1917,7 @@ export default function App() {
                 if (!livePreview.machinePosition) { toast.warning("Machine position unknown."); return; }
                 const lmp = livePreview.machinePosition;
                 const tOff = maintenanceManager.getToolOffset();
-                setPcbOriginOffset({ x: -(lmp.x + (tOff?.dx || 0)), y: -(lmp.y + (tOff?.dy || 0)) });
+                setPcbOriginOffset({ x: lmp.x + (tOff?.dx || 0), y: lmp.y + (tOff?.dy || 0) });
               }} style={{ width: '100%', marginBottom: 6 }}>
                 🎯 Set Camera Origin Here
               </button>
@@ -2001,6 +2007,7 @@ export default function App() {
                   <SerialPanel
                     isConnected={isSerialConnected}
                     skipHome={isHomed}
+                    isHomed={isHomed}
                     onConnect={() => {
                       handleSerialConnect(true);
                       setIsHomed(false); // always re-home on connect; onHomingComplete sets it true

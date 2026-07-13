@@ -269,7 +269,7 @@ export default function AppHeader({ mPos, isSerialConnected, isEmergencyStopped,
             <span className="pill-dot" />
             {isSerialConnected ? 'CONNECTED' : 'OFFLINE'}
           </div>
-          {onToggleAdmin && (
+          {/* onToggleAdmin && (
             <>
               <button
                 onClick={handleAdminToggle}
@@ -300,7 +300,7 @@ export default function AppHeader({ mPos, isSerialConnected, isEmergencyStopped,
                 </button>
               )}
             </>
-          )}
+          ) */}
           <button
             onClick={() => setShowFaultLog(true)}
             title="View fault log"

@@ -10,6 +10,7 @@ export default function SerialPanel({
   onUnexpectedDisconnect,  // called when cable is pulled / port closes unexpectedly
   onHomingComplete,
   skipHome = false,         // true on reconnect — skip G28, preserve current position
+  isHomed = false,
   machinePosition = { x: 0, y: 0, z: 0 } // Default for safety
 }) {
   const toast = useToast();
@@ -186,8 +187,8 @@ export default function SerialPanel({
             window.pauseSerialPolling = true;
             await new Promise(r => setTimeout(r, 700));
 
-            // await window.serial.writeLine('G28');
-            // await window.serial.writeLine('M400');
+            await window.serial.writeLine('G28');
+            await window.serial.writeLine('M400');
 
             const homingTimeout = setTimeout(() => {
               awaitingOkRef.current = null;
@@ -350,12 +351,17 @@ export default function SerialPanel({
 
         {/* Machine Position Display */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          {isConnected && (isHoming || !hasReceivedPosRef.current) && (
+          {isConnected && isHoming && (
             <span style={{ fontSize: '0.7em', fontWeight: 'bold', background: '#ffaa00', color: 'black', padding: '3px 8px', borderRadius: 4, textTransform: 'uppercase', animation: 'pulse 1.5s infinite' }}>
               Homing...
             </span>
           )}
-          {isConnected && !isHoming && hasReceivedPosRef.current && (
+          {isConnected && !isHoming && isHomed && hasReceivedPosRef.current && (
+            <span style={{ fontSize: '0.7em', fontWeight: 'bold', background: '#28a745', color: 'white', padding: '3px 8px', borderRadius: 4, textTransform: 'uppercase' }}>
+              Homed
+            </span>
+          )}
+          {isConnected && !isHoming && !isHomed && hasReceivedPosRef.current && (
             <span style={{ fontSize: '0.7em', fontWeight: 'bold', background: '#00c49a', color: 'black', padding: '3px 8px', borderRadius: 4, textTransform: 'uppercase' }}>
               Position Known
             </span>
