@@ -100,16 +100,21 @@ export class DispensingSequencer {
     // Standard pitch: step every 1.2x nozzle diameter for good overlap
     const pitch = nozzleDia * 1.2;
 
-    const needsSplitX = pad.width > nozzleDia * 1.8;
-    const needsSplitY = pad.height > nozzleDia * 1.8;
+    // Safe inner core: We strictly restrict multi-dot dispensing to the central 40% 
+    // of the component footprint to avoid dispensing glue onto the copper pads.
+    const safeWidth = (pad.width || 1) * 0.4;
+    const safeHeight = (pad.height || 1) * 0.4;
+
+    const needsSplitX = safeWidth > nozzleDia * 1.8;
+    const needsSplitY = safeHeight > nozzleDia * 1.8;
 
     if (!needsSplitX && !needsSplitY) {
       return [pad];
     }
 
     const subDots = [];
-    const countX = needsSplitX ? Math.max(2, Math.floor(pad.width / pitch)) : 1;
-    const countY = needsSplitY ? Math.max(2, Math.floor(pad.height / pitch)) : 1;
+    const countX = needsSplitX ? Math.max(2, Math.floor(safeWidth / pitch)) : 1;
+    const countY = needsSplitY ? Math.max(2, Math.floor(safeHeight / pitch)) : 1;
 
     // Calculate actual span and center it within the pad
     const spanX = (countX - 1) * pitch;

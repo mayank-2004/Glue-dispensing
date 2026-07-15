@@ -7,6 +7,7 @@ import { analyzeFiducialsWithRails } from "../lib/gerber/fiducialDetection.js";
 import { detectPcbOrigins } from "../lib/gerber/originDetection.js";
 import { extractBoardOutline } from "../lib/gerber/boardOutline.js";
 import { LayerDataExtractor } from "../lib/gerber/layerDataExtractor.js";
+import { parsePnpCsv } from "../lib/gerber/pnpParser.js";
 
 function padCenter(p) {
   if (typeof p.x === "number" && typeof p.y === "number") return p;
@@ -35,6 +36,7 @@ export function useGerberFiles() {
   const [pasteIdx, setPasteIdx] = useState(null);
   const [boardOutline, setBoardOutline] = useState(null);
   const [layerData, setLayerData] = useState({});
+  const [csvComponents, setCsvComponents] = useState([]);
 
   const rebuild = async (nextLayers, s) => {
     const ssvg = await stackupToSvg(nextLayers, s);
@@ -57,12 +59,21 @@ export function useGerberFiles() {
       const idx = currentLayers.findIndex(x => x.type === "solderpaste" && x.side === s);
       if (idx >= 0) {
         newPasteIdx = idx;
-        newPads = processPads(extractPadsMm(currentLayers[idx].text).map(padCenter));
+        if (csvComponents.length > 0) {
+          newPads = csvComponents.filter(c => c.side === s);
+        } else {
+          newPads = processPads(extractPadsMm(currentLayers[idx].text).map(padCenter));
+        }
         setPasteIdx(idx);
         setPads(newPads);
       } else {
-        setPasteIdx(null);
-        setPads([]);
+        if (csvComponents.length > 0) {
+          newPads = csvComponents.filter(c => c.side === s);
+          setPads(newPads);
+        } else {
+          setPasteIdx(null);
+          setPads([]);
+        }
       }
     }
     await rebuild(currentLayers, s);
@@ -81,7 +92,8 @@ export function useGerberFiles() {
       }
     }
 
-    // Strip PnP/CSV files — they are not Gerber layers and are handled separately
+    // Separate PnP/CSV files from Gerber layers
+    const csvFiles = expanded.filter(f => /\.(csv)$/i.test(f.name));
     expanded = expanded.filter(f => !/\.(csv|txt)$/i.test(f.name));
 
     const read = await Promise.all(expanded.map(async f => ({ name: f.name, text: await f.text() })));
@@ -92,6 +104,15 @@ export function useGerberFiles() {
     let parsedPads = [];
     let parsedPasteIdx = null;
     let parsedSide = "top";
+    let loadedCsvComponents = [];
+
+    if (csvFiles.length > 0) {
+      const csvText = await csvFiles[0].text();
+      loadedCsvComponents = parsePnpCsv(csvText);
+      if (loadedCsvComponents.length > 0) {
+        console.log(`PnP Parser: Extracted ${loadedCsvComponents.length} components from CSV.`);
+      }
+    }
 
     let pi = ls.findIndex(x => x.type === "solderpaste" && x.side === "top");
     if (pi < 0) pi = ls.findIndex(x => x.type === "solderpaste");
@@ -99,8 +120,17 @@ export function useGerberFiles() {
       parsedPasteIdx = pi;
       const { pads: basePads, panel: panelGrid } = extractPadsWithPanel(ls[pi].text);
       detectedPanelGrid = panelGrid;
-      parsedPads = processPads(basePads.map(padCenter));
       parsedSide = ls[pi].side === 'bottom' ? 'bottom' : 'top';
+      
+      if (loadedCsvComponents.length > 0) {
+        parsedPads = loadedCsvComponents.filter(c => c.side === parsedSide);
+      } else {
+        parsedPads = processPads(basePads.map(padCenter));
+      }
+    } else if (loadedCsvComponents.length > 0) {
+      // If no solder paste layer but CSV exists, default to top side components
+      parsedSide = 'top';
+      parsedPads = loadedCsvComponents.filter(c => c.side === parsedSide);
     }
 
     const { localFiducials: detectedFiducials, railFiducials: detectedRailFiducials } = analyzeFiducialsWithRails(ls);
@@ -127,6 +157,7 @@ export function useGerberFiles() {
     // Commit local state
     setLayers(ls);
     setLayerData(extractedData);
+    setCsvComponents(loadedCsvComponents);
     setPads(parsedPads);
     setPasteIdx(parsedPasteIdx);
     setBoardOutline(parsedOutline);

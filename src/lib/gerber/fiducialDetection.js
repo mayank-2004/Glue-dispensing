@@ -1,466 +1,411 @@
 const IN2MM = 25.4;
 
-export function detectFiducials(gerberText) {
+/**
+ * Parse all D03 (flash) operations from a Gerber text.
+ * Returns an array of { x, y, diameter, type, hasHole } in mm.
+ */
+function parseAllFlashes(gerberText) {
+  const paramBlocks = [];
+  gerberText.replace(/%[^%]*%/g, (m) => { paramBlocks.push(m); return ''; });
+
+  let units = 'mm';
+  let zeroSupp = 'L';
+  let xInt = 2, xDec = 4, yInt = 2, yDec = 4;
+  const apertures = new Map();
+  const macros = new Map();
+
+  for (const block of paramBlocks) {
+    const mo = block.match(/%MO(IN|MM)\*%/i);
+    if (mo) units = mo[1].toLowerCase() === 'in' ? 'in' : 'mm';
+
+    const fs = block.match(/%FS([LT])([AI])X(\d)(\d)Y(\d)(\d)\*%/i);
+    if (fs) {
+      zeroSupp = fs[1].toUpperCase();
+      xInt = +fs[3]; xDec = +fs[4];
+      yInt = +fs[5]; yDec = +fs[6];
+    }
+
+    // Circle aperture %ADDnnC,dia[,holeDia]*%
+    const adC = block.match(/%ADD(\d+)C,([^*,]+)(?:,([^*]+))?\*%/i);
+    if (adC) {
+      apertures.set(parseInt(adC[1]), {
+        type: 'circle',
+        diameter: parseFloat(adC[2]),
+        holeDiameter: adC[3] ? parseFloat(adC[3]) : 0
+      });
+    }
+
+    // Rect/Oval aperture %ADDnnR,wxh or O,wxh
+    const adRO = block.match(/%ADD(\d+)[RO],([^*,]+)X([^*,]+)(?:,([^*]+))?\*%/i);
+    if (adRO) {
+      const w = parseFloat(adRO[2]), h = parseFloat(adRO[3]);
+      apertures.set(parseInt(adRO[1]), { type: 'rect', diameter: Math.max(w, h), holeDiameter: 0 });
+    }
+
+    // Aperture Macro definition: collect the entire body
+    const amDef = block.match(/%AM([A-Za-z0-9_]+)\*([\s\S]*?)%/);
+    if (amDef) {
+      macros.set(amDef[1], amDef[2]);
+    }
+
+    // ADD using macro: %ADDnnMacroName[,params]*%
+    const adMacro = block.match(/%ADD(\d+)([A-Za-z][A-Za-z0-9_]*)(?:,([^*]*))?\*%/i);
+    if (adMacro && !['C','R','O','P'].includes(adMacro[2])) {
+      const dCode = parseInt(adMacro[1]);
+      const macroName = adMacro[2];
+      const macroBody = macros.get(macroName) || '';
+      // Try to find circle primitive (code 1): 1,exposure,diameter,x,y
+      const circlePrim = macroBody.match(/1\s*,\s*1\s*,\s*([\d.]+(?:[eE][+\-]?\d+)?)\s*,\s*[\d.\-]+\s*,\s*[\d.\-]+/);
+      if (circlePrim) {
+        let dia = parseFloat(circlePrim[1]);
+        // If dia looks like a variable ($1), try to use the first ADD param
+        if (isNaN(dia) || dia === 0) {
+          const params = adMacro[3] ? adMacro[3].split(',').map(parseFloat) : [];
+          if (params.length > 0 && !isNaN(params[0])) dia = params[0];
+        }
+        if (dia > 0) {
+          apertures.set(dCode, { type: 'circle', diameter: dia, holeDiameter: 0, isMacro: true });
+        }
+      }
+    }
+  }
+
+  const opsText = gerberText.replace(/%[^%]*%/g, '');
+  const tokens = opsText.split('*').map(s => s.trim()).filter(Boolean);
+
+  const parseCoord = (val, iDigits, dDigits) => {
+    if (!val) return 0;
+    if (val.includes('.')) return parseFloat(val);
+    let sign = 1;
+    if (val.startsWith('+')) val = val.slice(1);
+    if (val.startsWith('-')) { sign = -1; val = val.slice(1); }
+    const total = iDigits + dDigits;
+    const s = zeroSupp === 'L' ? val.padStart(total, '0') : val.padEnd(total, '0');
+    return sign * parseFloat(`${s.slice(0, iDigits)}.${s.slice(iDigits)}`);
+  };
+
+  const parseXY = (t, lastX, lastY) => {
+    const m = {};
+    t.replace(/([XY])([+\-]?\d+(?:\.\d+)?)/gi, (_, k, v) => { m[k.toUpperCase()] = v; });
+    return {
+      x: m.X !== undefined ? parseCoord(m.X, xInt, xDec) : lastX,
+      y: m.Y !== undefined ? parseCoord(m.Y, yInt, yDec) : lastY
+    };
+  };
+
+  let curX = 0, curY = 0, currentD = null, currentAperture = null;
+  const flashes = [];
+
+  for (const raw of tokens) {
+    const t = raw.replace(/\s+/g, '');
+    if (!t || /^G0?4/i.test(t)) continue;
+
+    // Standalone D-code
+    const dSel = t.match(/^D(\d+)$/i);
+    if (dSel) {
+      const code = parseInt(dSel[1]);
+      if (code >= 10) currentAperture = apertures.get(code) ?? null;
+      else currentD = code;
+      continue;
+    }
+
+    // Combined token: may have D-code at end
+    const md = t.match(/D0?([123])$/i);
+    if (md) currentD = +md[1];
+
+    const mdAp = t.match(/D(\d{2,})$/i);
+    if (mdAp && parseInt(mdAp[1]) >= 10) {
+      currentAperture = apertures.get(parseInt(mdAp[1])) ?? null;
+    }
+
+    if (/[XY]/i.test(t)) {
+      const pos = parseXY(t, curX, curY);
+      curX = pos.x; curY = pos.y;
+    }
+
+    if (currentD === 3 && currentAperture) {
+      const xMm = units === 'in' ? curX * IN2MM : curX;
+      const yMm = units === 'in' ? curY * IN2MM : curY;
+      const dMm = units === 'in' ? currentAperture.diameter * IN2MM : currentAperture.diameter;
+      flashes.push({
+        x: xMm, y: yMm,
+        diameter: dMm,
+        type: currentAperture.type,
+        hasHole: (currentAperture.holeDiameter ?? 0) > 0
+      });
+    }
+  }
+
+  return flashes;
+}
+
+/**
+ * Detect fiducials in a single Gerber layer.
+ * Returns { local: [...], rail: [...] }
+ */
+export function detectFiducials(gerberText, layerType = 'copper') {
   try {
-    const paramBlocks = [];
-    gerberText.replace(/%[^%]*%/g, (m) => { paramBlocks.push(m); return ''; });
+    const allFlashes = parseAllFlashes(gerberText);
 
-    let units = 'mm';
-    let zeroSupp = 'L';
-    let xInt = 2, xDec = 4, yInt = 2, yDec = 4;
-    const apertures = new Map();
-
-    // Parse format and units
-    for (const block of paramBlocks) {
-      const mo = block.match(/%MO(IN|MM)\*%/i);
-      if (mo) units = mo[1].toLowerCase() === 'in' ? 'in' : 'mm';
-
-      const fs = block.match(/%FS([LT])([AI])X(\d)(\d)Y(\d)(\d)\*%/i);
-      if (fs) {
-        zeroSupp = fs[1].toUpperCase();
-        xInt = +fs[3]; xDec = +fs[4];
-        yInt = +fs[5]; yDec = +fs[6];
-      }
-
-      // Parse aperture definitions - look for circular apertures that could be fiducials
-      const ad = block.match(/%ADD(\d+)C,([^*,]+)(?:,([^*]+))?\*%/i);
-      if (ad) {
-        const dCode = parseInt(ad[1]);
-        const diameter = parseFloat(ad[2]);
-        // Some fiducials might have hole definitions (second parameter)
-        const holeDia = ad[3] ? parseFloat(ad[3]) : 0;
-        apertures.set(dCode, { type: 'circle', diameter, holeDiameter: holeDia });
-        // console.log(`[FiducialParser] Aperture D${dCode}: CIRCLE diameter=${diameter}${units}${holeDia > 0 ? ` hole=${holeDia}` : ''}`);
-      }
-
-      // Also check for rectangular apertures that might be fiducial markers
-      const adRect = block.match(/%ADD(\d+)R,([^*,]+)X([^*,]+)(?:,([^*]+))?\*%/i);
-      if (adRect) {
-        const dCode = parseInt(adRect[1]);
-        const width = parseFloat(adRect[2]);
-        const height = parseFloat(adRect[3]);
-        // Square apertures might be fiducial markers
-        if (Math.abs(width - height) < 0.1) {
-          apertures.set(dCode, { type: 'square', diameter: width });
-          // console.log(`[FiducialParser] Aperture D${dCode}: SQUARE size=${width}${units}`);
-        }
-      }
+    // For soldermask layer, just return all circular openings as potential positions
+    // (used for cross-correlation in analyzeFiducialsWithRails)
+    if (layerType === 'soldermask') {
+      const maskOpenings = allFlashes.filter(f =>
+        f.type === 'circle' && !f.hasHole && f.diameter >= 1.5 && f.diameter <= 6.0
+      );
+      console.log(`[Fid] soldermask: ${maskOpenings.length} circular openings (1.5-6mm)`);
+      return { local: maskOpenings, rail: [] };
     }
 
-    const opsText = gerberText.replace(/%[^%]*%/g, '');
-    const tokens = opsText.split('*').map(s => s.trim()).filter(Boolean);
+    // For copper layer: find isolated circular SMD pads
+    const maxDia = 2.5; // copper fiducial pads are small
 
-    const parseCoord = (val, i, d, z = zeroSupp) => {
-      if (val.includes('.')) return parseFloat(val);
-      let sign = 1;
-      if (val.startsWith('+')) val = val.slice(1);
-      if (val.startsWith('-')) { sign = -1; val = val.slice(1); }
-      const total = i + d;
-      let s = z === 'L' ? val.padStart(total, '0') : val.padEnd(total, '0');
-      return sign * parseFloat(`${s.slice(0, i)}.${s.slice(i)}`);
-    };
+    const candidates = allFlashes.filter(f =>
+      !f.hasHole &&
+      f.type === 'circle' &&
+      f.diameter >= 0.3 &&
+      f.diameter <= maxDia
+    );
 
-    const parseXY = (t, last) => {
-      const m = {};
-      t.replace(/([XY])([+\-]?\d+(?:\.\d+)?)?/gi, (_, k, v) => { m[k.toUpperCase()] = v || ''; return ''; });
-      let x = last.x, y = last.y;
-      if (m.X !== undefined) x = parseCoord(m.X, xInt, xDec);
-      if (m.Y !== undefined) y = parseCoord(m.Y, yInt, yDec);
-      return { x, y };
-    };
+    console.log(`[Fid] ${layerType}: ${allFlashes.length} total flashes, ${candidates.length} circular SMD pads (0.3-${maxDia}mm)`);
 
-    let curX = 0, curY = 0, currentD = null, currentAperture = null;
-    const candidates = [];
+    // Log all candidates for debugging (up to 50)
+    candidates.slice(0, 50).forEach(c =>
+      console.log(`  pad: x=${c.x.toFixed(3)} y=${c.y.toFixed(3)} dia=${c.diameter.toFixed(3)}`)
+    );
 
-    for (const raw of tokens) {
-      const t = raw.replace(/\s+/g, '');
-      if (!t || /^G0?4/i.test(t)) continue;
+    // Isolation filter: true fiducials have 2.5mm clearance from any other flash
+    const computeNearestDist = (c) =>
+      allFlashes
+        .filter(f => !(Math.abs(f.x - c.x) < 0.01 && Math.abs(f.y - c.y) < 0.01))
+        .reduce((minD, f) => Math.min(minD, Math.hypot(f.x - c.x, f.y - c.y)), Infinity);
 
-      // Standalone aperture/operation code (no XY coords in same token)
-      const dSelect = t.match(/^D(\d+)$/i);
-      if (dSelect) {
-        const dCode = parseInt(dSelect[1]);
-        if (dCode >= 10) {
-          currentAperture = apertures.get(dCode);
-        } else {
-          currentD = dCode; // D01, D02, D03
-        }
-        continue;
-      }
+    const isolated25 = candidates.filter(c => computeNearestDist(c) >= 2.5);
+    const isolated15 = candidates.filter(c => computeNearestDist(c) >= 1.5);
+    const isolated10 = candidates.filter(c => computeNearestDist(c) >= 1.0);
 
-      // Combined XY + operation token (e.g. X1234Y5678D03)
-      const md = t.match(/D0?([123])$/i);
-      if (md) currentD = +md[1];
+    console.log(`[Fid] ${layerType}: isolated >= 2.5mm: ${isolated25.length}, >= 1.5mm: ${isolated15.length}, >= 1.0mm: ${isolated10.length}`);
 
-      // Also handle aperture selection combined with movement (e.g. X0Y0D10)
-      const mdAp = t.match(/D(\d{2,})$/i);
-      if (mdAp && parseInt(mdAp[1]) >= 10) {
-        currentAperture = apertures.get(parseInt(mdAp[1]));
-      }
+    // Pick the tightest isolation threshold that gives us >=2 candidates
+    let workingSet = isolated25.length >= 2 ? isolated25
+                   : isolated15.length >= 2 ? isolated15
+                   : isolated10.length >= 2 ? isolated10
+                   : candidates;
 
-      if (/[XY]/i.test(t)) {
-        const { x, y } = parseXY(t, { x: curX, y: curY });
-        curX = x;
-        curY = y;
-      }
+    console.log(`[Fid] ${layerType}: workingSet size=${workingSet.length}`);
+    workingSet.forEach(c =>
+      console.log(`  kept: x=${c.x.toFixed(3)} y=${c.y.toFixed(3)} dia=${c.diameter.toFixed(3)} nearest=${computeNearestDist(c).toFixed(2)}mm`)
+    );
 
-      if (currentD === 3 && currentAperture) { // FLASH operation
-        // Skip through-hole apertures — SMD fiducials never have drill holes
-        if (currentAperture.holeDiameter > 0) continue;
-
-        const diameter = currentAperture.diameter;
-
-        // Convert to mm if needed
-        const xMm = units === 'in' ? curX * IN2MM : curX;
-        const yMm = units === 'in' ? curY * IN2MM : curY;
-        const diameterMm = units === 'in' ? diameter * IN2MM : diameter;
-
-        // Fiducials are small SMD copper pads — cap at 2.5mm to avoid vias/mounting pads
-        if (diameterMm >= 0.4 && diameterMm <= 2.5) {
-          let fiducialScore = 1;
-
-          // Must be circular
-          if (currentAperture.type === 'circle') fiducialScore += 3;
-
-          // Ideal fiducial size range (0.5–1.5mm copper pad)
-          if (diameterMm >= 0.5 && diameterMm <= 1.5) fiducialScore += 4;
-          else if (diameterMm > 1.5 && diameterMm <= 2.0) fiducialScore += 1;
-
-          candidates.push({
-            x: xMm,
-            y: yMm,
-            diameter: diameterMm,
-            aperture: currentAperture,
-            fiducialScore: fiducialScore
-          });
-        }
-      }
-
+    if (workingSet.length < 2) {
+      console.log(`[Fid] ${layerType}: not enough candidates`);
+      return { local: [], rail: [] };
     }
 
-    // Sort candidates by fiducial score before filtering
-    candidates.sort((a, b) => (b.fiducialScore || 1) - (a.fiducialScore || 1));
-
-    if (candidates.length > 0) {
-      // console.log(`[FiducialParser] Flash candidates (SMD, no hole, 0.4–2.5mm): ${candidates.length}`);
-      // console.table(candidates.map(c => ({
-      //   x_mm: parseFloat(c.x.toFixed(3)),
-      //   y_mm: parseFloat(c.y.toFixed(3)),
-      //   diameter_mm: parseFloat(c.diameter.toFixed(3)),
-      //   type: c.aperture?.type || '?',
-      //   score: c.fiducialScore,
-      // })));
-    } else {
-      // console.warn('[FiducialParser] No SMD D03 flash operations (0.4–2.5mm, no hole) found in this layer');
+    // Deduplicate
+    const deduped = [];
+    for (const c of workingSet) {
+      if (!deduped.some(e => Math.hypot(e.x - c.x, e.y - c.y) < 0.1)) deduped.push(c);
     }
 
-    return filterFiducialCandidates(candidates);
-  } catch (error) {
-    console.warn('Error detecting fiducials in Gerber file:', error);
+    // Group by diameter (within 0.05mm bins)
+    const groups = new Map();
+    for (const c of deduped) {
+      const key = Math.round(c.diameter * 20) / 20;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(c);
+    }
+
+    // Pick best group: most members * widest spread
+    let bestGroup = null, bestScore = -1;
+    for (const [, grp] of groups) {
+      if (grp.length < 2) continue;
+      const xs = grp.map(c => c.x), ys = grp.map(c => c.y);
+      const span = Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+      const score = grp.length * span;
+      if (score > bestScore) { bestScore = score; bestGroup = grp; }
+    }
+
+    if (!bestGroup) return { local: [], rail: [] };
+
+    console.log(`[Fid] ${layerType}: bestGroup size=${bestGroup.length}`);
+    bestGroup.forEach(c => console.log(`  fid: x=${c.x.toFixed(3)} y=${c.y.toFixed(3)} dia=${c.diameter.toFixed(3)}`));
+
+    // Rail vs local based on ALL flash bounding box
+    const allXs = allFlashes.map(f => f.x), allYs = allFlashes.map(f => f.y);
+    const panelMinX = Math.min(...allXs), panelMaxX = Math.max(...allXs);
+    const panelMinY = Math.min(...allYs), panelMaxY = Math.max(...allYs);
+    const RAIL_MARGIN = 12;
+
+    const isRail = c =>
+      (c.x - panelMinX < RAIL_MARGIN) || (panelMaxX - c.x < RAIL_MARGIN) ||
+      (c.y - panelMinY < RAIL_MARGIN) || (panelMaxY - c.y < RAIL_MARGIN);
+
+    const railGroup = bestGroup.filter(isRail);
+    const localGroup = bestGroup.filter(c => !isRail(c));
+
+    const finalLocal = localGroup.length >= 2 ? localGroup : bestGroup;
+    const finalRail  = localGroup.length >= 2 ? railGroup : [];
+
+    const conf = Math.min(1.0, bestScore / 200);
+    const toFid = (arr, prefix) => arr
+      .sort((a, b) => (a.y * 1000 + a.x) - (b.y * 1000 + b.x))
+      .map((f, i) => ({ id: `${prefix}${i + 1}`, x: f.x, y: f.y, diameter: f.diameter, confidence: conf }));
+
+    return { local: toFid(finalLocal, 'F'), rail: toFid(finalRail, 'R') };
+
+  } catch (err) {
+    console.warn('[FiducialDetect] Error:', err);
     return { local: [], rail: [] };
   }
 }
 
 /**
- * Filters fiducial candidates based on typical fiducial characteristics
+ * Analyze all layers to find fiducials using SOLDERMASK CROSS-CORRELATION.
+ * The most reliable method: fiducials have a soldermask opening 1.5-3x larger than their copper pad.
+ * Returns { localFiducials, railFiducials }
  */
-function filterFiducialCandidates(candidates) {
-  if (candidates.length === 0) return [];
+export function analyzeFiducialsWithRails(layers, side = 'top') {
+  const sideLayers = layers.filter(l => l.side === side && l.text);
+  console.log(`[FidAnalyze] ${side} layers:`, sideLayers.map(l => `${l.filename}(${l.type})`));
 
-  // Remove exact duplicates (< 0.1 mm apart)
-  const deduped = [];
-  for (const candidate of candidates) {
-    const isDuplicate = deduped.some(existing =>
-      Math.hypot(existing.x - candidate.x, existing.y - candidate.y) < 0.1
-    );
-    if (!isDuplicate) deduped.push(candidate);
-  }
+  // Find layers by type
+  const copperLayers   = sideLayers.filter(l => l.type === 'copper');
+  const maskLayers     = sideLayers.filter(l => l.type === 'soldermask');
+  const fabLayers      = sideLayers.filter(l => ['fab', 'assembly', 'fiducial'].some(p => l.filename.toLowerCase().includes(p)));
 
-  // Isolation filter: SMD fiducials are always isolated copper islands — no other pad
-  // within 2.5 mm by PCB design rules.  Clustered pads (component pads, test points,
-  // multi-pad connectors) all fail this check and are removed here.
-  const ISOLATION_RADIUS = 2.5; // mm
-  const isolated = deduped.filter(c =>
-    !deduped.some(other => other !== c && Math.hypot(other.x - c.x, other.y - c.y) < ISOLATION_RADIUS)
-  );
-  const filtered = isolated.length >= 2 ? isolated : deduped; // fallback if over-filtered
-  if (isolated.length !== deduped.length) {
-    // console.log(`[FiducialFilter] Isolation filter (${ISOLATION_RADIUS} mm): ${deduped.length} → ${isolated.length} (removed ${deduped.length - isolated.length} clustered pads)`);
-  }
+  // ─── Strategy 1: Soldermask cross-correlation ────────────────────────────────
+  // Find copper pads that have a corresponding soldermask opening (1.3x-4x larger)
+  if (copperLayers.length > 0 && maskLayers.length > 0) {
+    console.log('[FidAnalyze] Trying soldermask cross-correlation strategy...');
 
-  // Group candidates by diameter (fiducials usually have same size)
-  const diameterGroups = new Map();
-  filtered.forEach(c => {
-    const key = Math.round(c.diameter * 100) / 100;
-    if (!diameterGroups.has(key)) {
-      diameterGroups.set(key, []);
-    }
-    diameterGroups.get(key).push(c);
-  });
+    // Collect all copper circular SMD pads
+    const copperFlashes = copperLayers.flatMap(l => parseAllFlashes(l.text))
+      .filter(f => !f.hasHole && f.type === 'circle' && f.diameter >= 0.3 && f.diameter <= 3.0);
 
-  // Find the most common diameter that could be fiducials
-  let bestGroup = [];
-  let bestScore = 0;
+    // Collect all soldermask circular openings
+    const maskFlashes = maskLayers.flatMap(l => parseAllFlashes(l.text))
+      .filter(f => f.type === 'circle' && f.diameter >= 0.8);
 
-  for (const [diameter, group] of diameterGroups) {
-    // Score based on:
-    // 1. Typical fiducial size (1-2mm preferred)
-    // 2. Number of instances (2-4 fiducials typical)
-    // 3. Spatial distribution (should be spread out)
+    console.log(`[FidAnalyze] Copper SMD circles: ${copperFlashes.length}, Mask circles: ${maskFlashes.length}`);
 
-    let sizeScore = 0;
-    if (diameter >= 0.5 && diameter <= 1.5) sizeScore = 15;   // ideal SMD fiducial
-    else if (diameter > 1.5 && diameter <= 2.0) sizeScore = 8;
-    else if (diameter > 2.0 && diameter <= 2.5) sizeScore = 3;
-    else sizeScore = 1;
-
-    // Panelized boards have 6–12 fiducials (2 per sub-board × N boards + panel rail marks).
-    // Reward proportionally up to 12; above 12 is likely component/test pads — penalise.
-    let countScore = 0;
-    if (group.length >= 2 && group.length <= 12) {
-      countScore = Math.min(group.length * 2, 22); // 2→4 … 11→22 (capped at 22)
-    } else if (group.length > 12) {
-      countScore = Math.max(2, 22 - (group.length - 12) * 2);
-    } else {
-      countScore = 1;
-    }
-
-    let distributionScore = calculateDistributionScore(group);
-
-    const totalScore = sizeScore + countScore + distributionScore;
-    const pass = group.length >= 2 && totalScore > 15;
-    // console.log(
-    //   `[FiducialFilter] ⌀${diameter.toFixed(2)}mm × ${group.length} pads → ` +
-    //   `sizeScore=${sizeScore} countScore=${countScore} distScore=${distributionScore} ` +
-    //   `TOTAL=${totalScore} → ${pass ? '✅ candidate' : '❌ below threshold (need >15 with ≥2 pads)'}`
-    // );
-
-    if (totalScore > bestScore) {
-      bestScore = totalScore;
-      bestGroup = group;
-    }
-  }
-
-  // If we have a good group, separate local board fiducials from panel rail marks
-  if (bestGroup.length >= 2 && bestScore > 15) {
-    let localGroup = bestGroup;
-    let railGroup = [];
-
-    // Panel-rail separation: board-local fiducials repeat N times (once per sub-board)
-    // so they always have a companion in the same X-column. Panel rail marks are
-    // isolated in X — no other fiducial within 10 mm horizontally.
-    if (bestGroup.length > 4) {
-      const X_TOLERANCE = 10; // mm
-      const local = bestGroup.filter(c =>
-        bestGroup.some(other => other !== c && Math.abs(other.x - c.x) < X_TOLERANCE)
+    // For each copper pad, find corresponding mask opening
+    const MATCH_DIST = 0.5; // mm position tolerance
+    const fidCandidates = [];
+    for (const cu of copperFlashes) {
+      const matchingMask = maskFlashes.find(m =>
+        Math.hypot(m.x - cu.x, m.y - cu.y) < MATCH_DIST &&
+        m.diameter >= cu.diameter * 1.3 && // mask opening must be significantly larger
+        m.diameter <= cu.diameter * 5.0    // but not unreasonably larger
       );
-      const rail = bestGroup.filter(c =>
-        !bestGroup.some(other => other !== c && Math.abs(other.x - c.x) < X_TOLERANCE)
-      );
-      if (local.length >= 4) {
-        // console.log(`[FiducialFilter] Panel-rail separation: ${local.length} local + ${rail.length} rail fiducials`);
-        localGroup = local;
-        railGroup = rail;
+      if (matchingMask) {
+        fidCandidates.push({
+          ...cu,
+          maskDiameter: matchingMask.diameter,
+          ratio: matchingMask.diameter / cu.diameter
+        });
+        console.log(`  cross-match: cu=(${cu.x.toFixed(2)},${cu.y.toFixed(2)}) dia=${cu.diameter.toFixed(2)}, mask dia=${matchingMask.diameter.toFixed(2)}, ratio=${matchingMask.diameter/cu.diameter.toFixed(1)}`);
       }
     }
 
-    const toFid = (fid, idx, prefix = 'F') => ({
-      id: `${prefix}${idx + 1}`,
-      x: fid.x, y: fid.y,
-      diameter: fid.diameter,
-      confidence: Math.min(bestScore / 30, 1.0),
-    });
-
-    localGroup.sort((a, b) => (a.y * 1000 + a.x) - (b.y * 1000 + b.x));
-    railGroup.sort((a, b) => (a.y * 1000 + a.x) - (b.y * 1000 + b.x));
-
-    return {
-      local: localGroup.map((f, i) => toFid(f, i, 'F')),
-      rail:  railGroup.map((f, i) => toFid(f, i, 'R')),
-    };
-  }
-
-  return { local: [], rail: [] };
-}
-
-/**
- * Calculate how well distributed the fiducials are (good fiducials are spread out)
- */
-function calculateDistributionScore(candidates) {
-  if (candidates.length < 2) return 0;
-
-  let minDistance = Infinity;
-  let maxDistance = 0;
-  let totalDistance = 0;
-  let pairCount = 0;
-
-  for (let i = 0; i < candidates.length; i++) {
-    for (let j = i + 1; j < candidates.length; j++) {
-      const dist = Math.hypot(
-        candidates[i].x - candidates[j].x,
-        candidates[i].y - candidates[j].y
-      );
-      minDistance = Math.min(minDistance, dist);
-      maxDistance = Math.max(maxDistance, dist);
-      totalDistance += dist;
-      pairCount++;
+    if (fidCandidates.length >= 2) {
+      console.log(`[FidAnalyze] Cross-correlation found ${fidCandidates.length} fiducial matches!`);
+      return buildResult(fidCandidates, copperLayers[0]);
+    } else {
+      console.log('[FidAnalyze] Cross-correlation insufficient, falling back...');
     }
   }
 
-  const avgDistance = totalDistance / pairCount;
-
-  // Good distribution scoring:
-  let score = 0;
-
-  // Minimum separation (fiducials shouldn't be too close)
-  if (minDistance > 15) score += 8;
-  else if (minDistance > 10) score += 5;
-  else if (minDistance > 5) score += 2;
-
-  // Maximum separation (should span a reasonable area)
-  if (maxDistance > 30) score += 8;
-  else if (maxDistance > 20) score += 5;
-  else if (maxDistance > 10) score += 2;
-
-  // Average separation (good overall spacing)
-  if (avgDistance > 20) score += 5;
-  else if (avgDistance > 15) score += 3;
-
-  // Bonus for typical fiducial counts (2–12 covers single boards and panelized boards)
-  if (candidates.length >= 2 && candidates.length <= 12) {
-    score += 3;
-  }
-
-  return score;
-}
-
-/**
- * Analyze all layers to find fiducials — returns { localFiducials, railFiducials }
- */
-export function analyzeFiducialsWithRails(layers, side = 'top') {
-  const allLocal = [];
-  const allRail = [];
-
-  // Layers to search for local board fiducials (tight size/score criteria)
-  const localLayers = layers.filter(layer => {
-    if (layer.side !== side) return false;
-    if (layer.type === 'copper') return true;
-    const name = layer.filename.toLowerCase();
-    return name.includes('fiducial') || name.includes('fid') ||
-           name.includes('fab') || name.includes('assembly');
-  });
-
-  // All layers on the current side — searched for rail marks too
-  const allSideLayers = layers.filter(layer => layer.side === side);
+  // ─── Strategy 2: Per-layer heuristic detection ────────────────────────────────
+  console.log('[FidAnalyze] Using heuristic strategy...');
 
   const priorityOrder = ['fiducial', 'fid', 'fab', 'assembly', 'copper'];
-  localLayers.sort((a, b) => {
-    const aScore = priorityOrder.findIndex(p => a.filename.toLowerCase().includes(p));
-    const bScore = priorityOrder.findIndex(p => b.filename.toLowerCase().includes(p));
-    return (aScore === -1 ? 999 : aScore) - (bScore === -1 ? 999 : bScore);
-  });
+  const allCandidateLayers = [...fabLayers, ...copperLayers]
+    .filter((l, i, arr) => arr.indexOf(l) === i) // deduplicate
+    .sort((a, b) => {
+      const ai = priorityOrder.findIndex(p => a.filename.toLowerCase().includes(p));
+      const bi = priorityOrder.findIndex(p => b.filename.toLowerCase().includes(p));
+      return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+    });
 
-  const searchedNames = new Set();
-  for (const layer of localLayers) {
-    if (!layer.text) continue;
-    searchedNames.add(layer.filename);
-    const result = detectFiducials(layer.text);
-    const local = result?.local ?? [];
-    const rail  = result?.rail  ?? [];
+  const allLocal = [], allRail = [];
+  const searched = new Set();
+
+  for (const layer of allCandidateLayers) {
+    if (searched.has(layer.filename)) continue;
+    searched.add(layer.filename);
+
+    const result = detectFiducials(layer.text, layer.type);
+    const local = result?.local ?? [], rail = result?.rail ?? [];
     const pri = priorityOrder.findIndex(p => layer.filename.toLowerCase().includes(p));
-    if (local.length > 0) {
-      console.log('Found', local.length, 'local +', rail.length, 'rail fiducials in', layer.filename);
-      allLocal.push({ layer: layer.filename, fiducials: local, priority: pri });
-    }
-    if (rail.length > 0) {
-      console.log('Found', rail.length, 'rail fiducials in', layer.filename);
-      allRail.push({ layer: layer.filename, fiducials: rail, priority: pri });
-    }
-  }
 
-  // Also search remaining current-side layers for rail marks only
-  for (const layer of allSideLayers) {
-    if (!layer.text || searchedNames.has(layer.filename)) continue;
-    const result = detectFiducials(layer.text);
-    const rail = result?.rail ?? [];
+    if (local.length > 0) {
+      console.log(`[FidAnalyze] ${local.length} local from ${layer.filename}`);
+      allLocal.push({ layer: layer.filename, fiducials: local, priority: pri === -1 ? 999 : pri });
+    }
     if (rail.length > 0) {
-      console.log('Found', rail.length, 'rail fiducials in extra layer', layer.filename);
-      allRail.push({ layer: layer.filename, fiducials: rail, priority: 999 });
+      allRail.push({ layer: layer.filename, fiducials: rail, priority: pri === -1 ? 999 : pri });
     }
   }
 
   const localFiducials = mergeFiducials(allLocal);
   const railFiducials  = mergeFiducials(allRail).map((f, i) => ({ ...f, id: `R${i + 1}` }));
-
-  console.log(`Final fiducial detection: ${localFiducials.length} local, ${railFiducials.length} rail`);
+  console.log(`[FidAnalyze] Final: ${localFiducials.length} local, ${railFiducials.length} rail`);
   return { localFiducials, railFiducials };
 }
 
-/** Backward-compatible wrapper — returns only local fiducials as a flat array */
+/**
+ * Build final result from cross-correlated fiducial candidates.
+ */
+function buildResult(candidates, copperLayer) {
+  // Compute panel bounding box from the copper layer's all flashes
+  const allFlashes = copperLayer ? parseAllFlashes(copperLayer.text) : candidates;
+  const allXs = allFlashes.map(f => f.x), allYs = allFlashes.map(f => f.y);
+  const panelMinX = Math.min(...allXs), panelMaxX = Math.max(...allXs);
+  const panelMinY = Math.min(...allYs), panelMaxY = Math.max(...allYs);
+  const RAIL_MARGIN = 12;
+
+  const isRail = c =>
+    (c.x - panelMinX < RAIL_MARGIN) || (panelMaxX - c.x < RAIL_MARGIN) ||
+    (c.y - panelMinY < RAIL_MARGIN) || (panelMaxY - c.y < RAIL_MARGIN);
+
+  const railGroup  = candidates.filter(isRail);
+  const localGroup = candidates.filter(c => !isRail(c));
+
+  const finalLocal = localGroup.length >= 2 ? localGroup : candidates;
+  const finalRail  = localGroup.length >= 2 ? railGroup : [];
+
+  const toFid = (arr, prefix) => arr
+    .sort((a, b) => (a.y * 1000 + a.x) - (b.y * 1000 + b.x))
+    .map((f, i) => ({ id: `${prefix}${i + 1}`, x: f.x, y: f.y, diameter: f.diameter, confidence: 0.95 }));
+
+  const localFiducials = toFid(finalLocal, 'F');
+  const railFiducials  = toFid(finalRail,  'R');
+  console.log(`[FidAnalyze] Cross-correlation result: ${localFiducials.length} local, ${railFiducials.length} rail`);
+  return { localFiducials, railFiducials };
+}
+
+/** Backward-compatible wrapper */
 export function analyzeFiducialsInLayers(layers, side = 'top') {
   return analyzeFiducialsWithRails(layers, side).localFiducials;
 }
 
-/**
- * Merge fiducials found in multiple layers at similar positions
- */
+/** Merge fiducials from multiple layers */
 function mergeFiducials(layerFiducials) {
   if (layerFiducials.length === 0) return [];
+  layerFiducials.sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999));
 
   const merged = [];
-  const MERGE_THRESHOLD = 0.5; // mm
-
-  // Sort layers by priority (fiducial-specific layers first)
-  layerFiducials.sort((a, b) => (a.priority || 999) - (b.priority || 999));
-
-  // Start with fiducials from highest priority layer
-  if (layerFiducials[0]) {
-    merged.push(...layerFiducials[0].fiducials.map(f => ({
-      ...f,
-      sourceLayer: layerFiducials[0].layer
-    })));
-  }
-
-  // Merge fiducials from other layers
-  for (let i = 1; i < layerFiducials.length; i++) {
-    const currentFiducials = layerFiducials[i].fiducials;
-
-    for (const fid of currentFiducials) {
-      // Check if this fiducial is close to any existing one
-      let found = false;
-      for (const existing of merged) {
-        const dist = Math.hypot(existing.x - fid.x, existing.y - fid.y);
-        if (dist < MERGE_THRESHOLD) {
-          // Update confidence if this detection is better or from higher priority layer
-          const currentPriority = layerFiducials[i].priority || 999;
-          const existingPriority = layerFiducials.find(l => l.layer === existing.sourceLayer)?.priority || 999;
-
-          if (fid.confidence > existing.confidence || currentPriority < existingPriority) {
-            existing.confidence = Math.max(existing.confidence, fid.confidence);
-            existing.diameter = fid.diameter; // Use the better detection
-            existing.sourceLayer = layerFiducials[i].layer;
-          }
-          found = true;
-          break;
-        }
-      }
-
-      if (!found) {
-        merged.push({
-          ...fid,
-          id: `F${merged.length + 1}`,
-          sourceLayer: layerFiducials[i].layer
-        });
+  for (const { fiducials } of layerFiducials) {
+    for (const fid of fiducials) {
+      const e = merged.find(x => Math.hypot(x.x - fid.x, x.y - fid.y) < 0.5);
+      if (e) {
+        if (fid.confidence > e.confidence) { e.confidence = fid.confidence; e.diameter = fid.diameter; }
+      } else {
+        merged.push({ ...fid });
       }
     }
   }
-
-  // Sort by confidence — allow up to 20 (3-board panel: 6 board fids, well within limit)
-  return merged
-    .sort((a, b) => b.confidence - a.confidence)
-    .slice(0, 20)
-    .map((fid, idx) => ({
-      ...fid,
-      id: `F${idx + 1}`
-    }));
+  merged.sort((a, b) => b.confidence - a.confidence);
+  return merged.map((f, i) => ({ ...f, id: `F${i + 1}` }));
 }
