@@ -295,8 +295,8 @@ export function analyzeFiducialsWithRails(layers, side = 'top') {
     for (const cu of copperFlashes) {
       const matchingMask = maskFlashes.find(m =>
         Math.hypot(m.x - cu.x, m.y - cu.y) < MATCH_DIST &&
-        m.diameter >= cu.diameter * 1.3 && // mask opening must be significantly larger
-        m.diameter <= cu.diameter * 5.0    // but not unreasonably larger
+        m.diameter >= cu.diameter * 1.5 && // mask opening must be significantly larger (stricter: 1.5×)
+        m.diameter <= cu.diameter * 6.0    // but not unreasonably larger
       );
       if (matchingMask) {
         fidCandidates.push({
@@ -304,7 +304,7 @@ export function analyzeFiducialsWithRails(layers, side = 'top') {
           maskDiameter: matchingMask.diameter,
           ratio: matchingMask.diameter / cu.diameter
         });
-        console.log(`  cross-match: cu=(${cu.x.toFixed(2)},${cu.y.toFixed(2)}) dia=${cu.diameter.toFixed(2)}, mask dia=${matchingMask.diameter.toFixed(2)}, ratio=${matchingMask.diameter/cu.diameter.toFixed(1)}`);
+        console.log(`  cross-match: cu=(${cu.x.toFixed(2)},${cu.y.toFixed(2)}) dia=${cu.diameter.toFixed(2)}, mask dia=${matchingMask.diameter.toFixed(2)}, ratio=${(matchingMask.diameter/cu.diameter).toFixed(1)}`);
       }
     }
 
@@ -356,33 +356,146 @@ export function analyzeFiducialsWithRails(layers, side = 'top') {
 
 /**
  * Build final result from cross-correlated fiducial candidates.
+ * Uses gap-based separation to distinguish rail (panel edge) fiducials from
+ * local (on-board) fiducials. Works generically for any panel layout.
  */
 function buildResult(candidates, copperLayer) {
-  // Compute panel bounding box from the copper layer's all flashes
-  const allFlashes = copperLayer ? parseAllFlashes(copperLayer.text) : candidates;
-  const allXs = allFlashes.map(f => f.x), allYs = allFlashes.map(f => f.y);
-  const panelMinX = Math.min(...allXs), panelMaxX = Math.max(...allXs);
-  const panelMinY = Math.min(...allYs), panelMaxY = Math.max(...allYs);
-  const RAIL_MARGIN = 12;
+  if (candidates.length < 2) {
+    return {
+      localFiducials: candidates.map((f, i) => ({ id: `F${i+1}`, x: f.x, y: f.y, diameter: f.diameter, confidence: 0.95 })),
+      railFiducials: []
+    };
+  }
 
-  const isRail = c =>
-    (c.x - panelMinX < RAIL_MARGIN) || (panelMaxX - c.x < RAIL_MARGIN) ||
-    (c.y - panelMinY < RAIL_MARGIN) || (panelMaxY - c.y < RAIL_MARGIN);
+  // Gap-based separation: sort along Y and X, find large gaps that mark the
+  // transition between the panel rail strip and the actual board area.
+  const { local, rail } = gapBasedSeparation(candidates);
 
-  const railGroup  = candidates.filter(isRail);
-  const localGroup = candidates.filter(c => !isRail(c));
+  // If there are too many rail candidates (> 4), trim to the most spread-out pair/quad.
+  // This handles cases where a rail strip contains more than the expected 2-4 marks.
+  const finalRail  = trimRailToCorners(rail);
+  const railSet    = new Set(finalRail.map(c => `${c.x.toFixed(3)},${c.y.toFixed(3)}`));
+  const finalLocal = candidates.filter(c => !railSet.has(`${c.x.toFixed(3)},${c.y.toFixed(3)}`));
 
-  const finalLocal = localGroup.length >= 2 ? localGroup : candidates;
-  const finalRail  = localGroup.length >= 2 ? railGroup : [];
+  console.log(`[FidAnalyze] gap-separation: ${finalLocal.length} local, ${finalRail.length} rail`);
 
   const toFid = (arr, prefix) => arr
-    .sort((a, b) => (a.y * 1000 + a.x) - (b.y * 1000 + b.x))
+    .sort((a, b) => (a.y * 10000 + a.x) - (b.y * 10000 + b.x))
     .map((f, i) => ({ id: `${prefix}${i + 1}`, x: f.x, y: f.y, diameter: f.diameter, confidence: 0.95 }));
 
-  const localFiducials = toFid(finalLocal, 'F');
-  const railFiducials  = toFid(finalRail,  'R');
-  console.log(`[FidAnalyze] Cross-correlation result: ${localFiducials.length} local, ${railFiducials.length} rail`);
-  return { localFiducials, railFiducials };
+  return {
+    localFiducials: toFid(finalLocal, 'F'),
+    railFiducials:  toFid(finalRail,  'R'),
+  };
+}
+
+/**
+ * Separate a set of fiducial candidates into local (on-board) and rail (panel edge) groups
+ * by finding large gaps in the Y or X distribution.
+ *
+ * Rail fiducials are characteristically located in the narrow strips at the panel edges,
+ * well separated from the cluster of local board fiducials by a significant spatial gap.
+ */
+function gapBasedSeparation(candidates) {
+  if (candidates.length < 4) return { local: candidates, rail: [] };
+
+  // Helper: find gap indices and return separation quality for one axis
+  const axisScore = (sorted, axis) => {
+    const vals = sorted.map(c => c[axis]);
+    const span = vals[vals.length - 1] - vals[0];
+    if (span < 5) return { score: 0, gaps: [] };
+
+    const gaps = [];
+    for (let i = 1; i < sorted.length; i++) {
+      gaps.push({ gap: vals[i] - vals[i - 1], before: i });
+    }
+    gaps.sort((a, b) => b.gap - a.gap);
+    const maxGap = gaps[0]?.gap || 0;
+    return { score: maxGap / span, gaps, sorted };
+  };
+
+  const sortedY = [...candidates].sort((a, b) => a.y - b.y);
+  const sortedX = [...candidates].sort((a, b) => a.x - b.x);
+  const resY = axisScore(sortedY, 'y');
+  const resX = axisScore(sortedX, 'x');
+
+  // Choose the axis with the more pronounced gap
+  const useY = resY.score >= resX.score;
+  const { gaps, sorted } = useY ? resY : resX;
+
+  // Minimum gap ratio to consider a separation significant.
+  // 0.12 means the gap must be >= 12% of the full span (e.g. 25mm gap in 200mm panel).
+  const MIN_SCORE = 0.12;
+  if ((useY ? resY.score : resX.score) < MIN_SCORE) {
+    return { local: candidates, rail: [] };
+  }
+
+  // Find the 1 or 2 largest gaps that are at least 40% as large as the biggest gap.
+  // These mark the boundaries between rail strips and the board area.
+  const maxGapSize = gaps[0]?.gap || 0;
+  const significantGaps = gaps
+    .filter(g => g.gap >= maxGapSize * 0.4)
+    .slice(0, 2)
+    .map(g => g.before)
+    .sort((a, b) => a - b);
+
+  let rail = [], local = [];
+
+  if (significantGaps.length >= 2) {
+    // Two large gaps → top rail | local | bottom rail
+    const [g1, g2] = significantGaps;
+    const topRail    = sorted.slice(0, g1);
+    const middleLocal = sorted.slice(g1, g2);
+    const bottomRail = sorted.slice(g2);
+
+    // Only use as rail if the extreme group is smaller than the local group
+    // (prevents classifying half the board as rail for irregular layouts)
+    const MAX_RAIL_FRACTION = 0.35;
+    const useTop    = topRail.length / candidates.length <= MAX_RAIL_FRACTION;
+    const useBottom = bottomRail.length / candidates.length <= MAX_RAIL_FRACTION;
+
+    rail  = [...(useTop ? topRail : []), ...(useBottom ? bottomRail : [])];
+    local = [
+      ...(useTop    ? [] : topRail),
+      ...middleLocal,
+      ...(useBottom ? [] : bottomRail),
+    ];
+  } else if (significantGaps.length === 1) {
+    const [g] = significantGaps;
+    const before = sorted.slice(0, g);
+    const after  = sorted.slice(g);
+    // The smaller group is rail (rail strips are narrower than the board area)
+    if (before.length <= after.length && before.length > 0 && before.length <= Math.ceil(candidates.length * 0.35)) {
+      rail = before; local = after;
+    } else if (after.length < before.length && after.length > 0 && after.length <= Math.ceil(candidates.length * 0.35)) {
+      rail = after; local = before;
+    } else {
+      // Gap exists but neither side is clearly smaller → no rail
+      local = candidates; rail = [];
+    }
+  } else {
+    local = candidates; rail = [];
+  }
+
+  return { local, rail };
+}
+
+/**
+ * If there are more rail candidates than expected (>4), trim to the pair/quad that
+ * spans the greatest distance — these are the true corner alignment marks.
+ */
+function trimRailToCorners(rail) {
+  if (rail.length <= 4) return rail;
+
+  // Find the 2 points with the maximum pairwise distance (widest spread = true corner marks)
+  let bestPair = null, bestDist = -1;
+  for (let i = 0; i < rail.length; i++) {
+    for (let j = i + 1; j < rail.length; j++) {
+      const d = Math.hypot(rail[i].x - rail[j].x, rail[i].y - rail[j].y);
+      if (d > bestDist) { bestDist = d; bestPair = [rail[i], rail[j]]; }
+    }
+  }
+  return bestPair ?? rail.slice(0, 2);
 }
 
 /** Backward-compatible wrapper */

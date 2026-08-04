@@ -10,8 +10,8 @@ export default function JogPanel({
     const toast = useToast();
     const jogRestoreRef = useRef(null); // debounce handle for G90 restore
     const [stepSize, setStepSize] = useState(10); // mm
-    const [xyFeedRate, setXyFeedRate] = useState(3000); // mm/min — 50 mm/s, fast manual jog
-    const [zFeedRate, setZFeedRate] = useState(600);   // mm/min — 10 mm/s, Z max feedrate
+    const [xyFeedRate, setXyFeedRate] = useState(1000); // Matches Marlin XY Homing Speed
+    const [zFeedRate, setZFeedRate] = useState(100);    // Matches Marlin Z Homing Speed
     const [safeZ, setSafeZ] = useState(-5); // mm (Machine coordinate usually negative)
     const [isBusy, setIsBusy] = useState(false);
 

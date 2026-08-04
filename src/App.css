@@ -15,17 +15,18 @@
    TOP HEADER BAR
 ═══════════════════════════════════════════════════════════ */
 .app-header {
-  height: 54px;
-  min-height: 54px;
+  height: 72px;
+  min-height: 72px;
   background: var(--bg-header);
-  border-bottom: 1px solid var(--border-primary);
+  border-bottom: 2px solid var(--border-highlight);
   display: flex;
   align-items: center;
-  padding: 0 16px;
-  gap: 14px;
+  padding: 0 24px;
+  gap: 20px;
   position: relative;
   z-index: 100;
   flex-shrink: 0;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
 }
 /* Cyan scan-line accent */
 .app-header::after {
@@ -45,28 +46,28 @@
   flex-shrink: 0;
 }
 .app-logo-icon {
-  width: 28px; height: 28px;
-  background: rgba(0,200,215,0.1);
-  border: 1px solid rgba(0,200,215,0.32);
-  border-radius: 6px;
+  width: 38px; height: 38px;
+  background: rgba(0,200,215,0.15);
+  border: 1px solid rgba(0,200,215,0.4);
+  border-radius: 8px;
   display: flex; align-items: center; justify-content: center;
-  font-size: 14px;
-  box-shadow: 0 0 8px rgba(0,200,215,0.12);
+  font-size: 20px;
+  box-shadow: 0 0 12px rgba(0,200,215,0.2);
 }
 .app-logo-text {
-  font-size: 0.76rem;
+  font-size: 1rem;
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.15em;
   color: var(--text-bright);
-  line-height: 1.15;
+  line-height: 1.2;
 }
 .app-logo-sub {
-  font-size: 0.56rem;
+  font-size: 0.7rem;
   color: var(--text-muted);
-  letter-spacing: 0.09em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 /* ── Header Divider ──────────────────────────────────────── */
@@ -110,8 +111,8 @@
    LEFT SIDEBAR
 ═══════════════════════════════════════════════════════════ */
 .sidebar {
-  width: 380px;
-  min-width: 380px;
+  width: 350px;
+  min-width: 350px;
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border-primary);
   display: flex;
@@ -185,11 +186,11 @@
 }
 .sidebar-upload-icon { font-size: 20px; margin-bottom: 6px; opacity: 0.65; }
 .sidebar-upload-label {
-  font-size: 0.68rem; font-weight: 700;
+  font-size: 0.85rem; font-weight: 800;
   text-transform: uppercase; letter-spacing: 0.09em;
-  color: var(--text-secondary); margin: 0 0 3px;
+  color: var(--text-secondary); margin: 0 0 4px;
 }
-.sidebar-upload-hint { font-size: 0.58rem; color: var(--text-muted); }
+.sidebar-upload-hint { font-size: 0.7rem; color: var(--text-muted); }
 
 /* ── Sidebar Sub-section ─────────────────────────────────── */
 .sidebar-sub {
@@ -264,16 +265,20 @@
    BREADCRUMB STRIP
 ═══════════════════════════════════════════════════════════ */
 .breadcrumb-bar {
-  height: 38px; min-height: 38px;
-  background: rgba(0,0,0,0.32);
-  border-bottom: 1px solid var(--border-primary);
-  display: flex; align-items: center;
-  padding: 0 14px; gap: 8px;
+  height: 48px; 
+  min-height: 48px;
+  background: rgba(0,0,0,0.4);
+  border-bottom: 2px solid var(--border-primary);
+  display: flex; 
+  align-items: center;
+  padding: 0 20px; 
+  gap: 12px;
   flex-shrink: 0;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
 }
 .breadcrumb-step {
-  font-size: 0.63rem; font-weight: 700;
-  text-transform: uppercase; letter-spacing: 0.11em;
+  font-size: 0.75rem; font-weight: 800;
+  text-transform: uppercase; letter-spacing: 0.12em;
   color: var(--text-muted);
 }
 .breadcrumb-step.active { color: var(--accent-primary); }

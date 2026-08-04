@@ -111,7 +111,7 @@ export class SafePathPlanner {
     gcode.push('G21 ; Set units to millimeters');
     gcode.push('G90 ; Absolute positioning');
     gcode.push('G28 ; Home all axes');
-    gcode.push(`G1 Z${this.safeHeight} F3000 ; Move to safe height`);
+    gcode.push(`G1 Z${this.safeHeight} F600 ; Move to safe height`);
     gcode.push('');
 
     // Process each pad in safe sequence
@@ -136,7 +136,7 @@ export class SafePathPlanner {
       gcode.push('');
     });
 
-    gcode.push(`G1 Z${this.safeHeight} F3000 ; Lift before home`);
+    gcode.push(`G1 Z${this.safeHeight} F600 ; Lift before home`);
     gcode.push('G28 ; Return home');
     gcode.push('M84 ; Disable steppers');
 

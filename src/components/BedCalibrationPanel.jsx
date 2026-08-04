@@ -300,7 +300,7 @@ export default function BedCalibrationPanel({
               `${pts.length} probe points generated. Ready to probe.`);
 
     // Lift nozzle to safe height before probing begins
-    await send(`G1 Z${liftHeight} F800`);
+    await send(`G1 Z${liftHeight} F600`);
     await delay(1000);
 
     if (probeMode === 'auto') {
@@ -387,7 +387,7 @@ export default function BedCalibrationPanel({
 
         // Move to safe Z, then travel to XY
         setStatus(`Moving to ${pt.name} (X${pt.x.toFixed(2)} Y${pt.y.toFixed(2)})…`);
-        await send(`G1 Z${probeStartZ} F800`);
+        await send(`G1 Z${probeStartZ} F600`);
         await delay(1500);
         await send(`G1 X${pt.x.toFixed(3)} Y${pt.y.toFixed(3)} F3000`);
         // Wait for XY travel — proportional to estimated distance
@@ -405,14 +405,14 @@ export default function BedCalibrationPanel({
         setMesh([...updated]);
 
         setStatus(`✅ ${pt.name}: surface Z=${probedZ.toFixed(3)}, dispense Z=${updated[i].zParam.toFixed(3)}. Retracting…`);
-        await send(`G1 Z${probeStartZ} F800`);
+        await send(`G1 Z${probeStartZ} F600`);
         await delay(1000);
         setProgress(Math.round(((i + 1) / pts.length) * 100));
       }
 
       if (!abortRef.current) {
         // Return to PCB origin (BL corner) at safe height
-        await send(`G1 Z${liftHeight} F800`);
+        await send(`G1 Z${liftHeight} F600`);
         await send(`G1 X${pts[0].x.toFixed(3)} Y${pts[0].y.toFixed(3)} F3000`);
         setFlowStep(FLOW.DONE);
         setStatus(`✅ PCB leveling complete! ${pts.length} points probed. Z-compensation is now active.`);
@@ -437,7 +437,7 @@ export default function BedCalibrationPanel({
   const runManualProbe = useCallback(async (pts, idx) => {
     if (idx >= pts.length) {
       await send('M211 S1');
-      await send(`G1 Z${liftHeight} F800`);
+      await send(`G1 Z${liftHeight} F600`);
       setFlowStep(FLOW.DONE);
       setStatus('✅ Manual leveling complete!');
       setManualIdx(-1);
@@ -448,7 +448,7 @@ export default function BedCalibrationPanel({
     setCurrentPtIdx(idx);
     setManualStatus(`Moving to ${pt.name}…`);
     await send('M211 S0');
-    await send(`G1 Z${probeStartZ} F800`);
+    await send(`G1 Z${probeStartZ} F600`);
     await delay(1500);
     await send(`G1 X${pt.x.toFixed(3)} Y${pt.y.toFixed(3)} F3000`);
     await delay(5000);

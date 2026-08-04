@@ -85,6 +85,28 @@ export default function SerialPanel({
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { refresh(); }, []);
+
+  // Ensure serial port is closed when the page refreshes or unloads
+  useEffect(() => {
+    const handleUnload = () => {
+      try {
+        if (isConnectedRef.current && window.serial) {
+          // Send Quick Stop (M410) to flush the machine's internal buffer
+          if (window.serial.writeLine) {
+            window.serial.writeLine('M410');
+          }
+          if (window.serial.close) {
+            window.serial.close();
+          }
+        }
+      } catch (e) {
+        console.error("Error closing serial on unload", e);
+      }
+    };
+    window.addEventListener('beforeunload', handleUnload);
+    return () => window.removeEventListener('beforeunload', handleUnload);
+  }, []);
+
   useEffect(() => {
     if (!window.serial?.onData) return;
     const unsub = window.serial.onData((line) => {
@@ -153,6 +175,8 @@ export default function SerialPanel({
       await window.serial.open({ path, baudRate: baud });
       // setConnected(true); // Removed
       if (onConnect) onConnect(); // Notify Parent
+      
+      setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} Connected to ${path} at ${baud} baud.`].slice(-500));
 
       // Grace period covers DTR reset + bootloader + Marlin boot + fallback delay.
       // 15 s is enough for the slowest boards; on fast ones the boot message
@@ -185,8 +209,12 @@ export default function SerialPanel({
           try {
             setIsHoming(true);
             window.pauseSerialPolling = true;
-            await new Promise(r => setTimeout(r, 700));
+            // Wait 3 seconds to allow stepper drivers and Marlin to fully stabilize 
+            // after the bootloader reset before blasting movement commands.
+            await new Promise(r => setTimeout(r, 3000));
 
+            setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} Starting Auto-Home (G28)...`].slice(-500));
+            await window.serial.writeLine('G90');
             await window.serial.writeLine('G28');
             await window.serial.writeLine('M400');
 
@@ -344,9 +372,9 @@ export default function SerialPanel({
   return (
     <div className="panel serial-panel">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h3>
+        <h3 style={{ marginTop: 10, marginLeft: 8 }}>
           Machine Connectivity
-          {isConnected && <span style={{ fontSize: '0.6em', background: '#28a745', color: 'white', padding: '2px 6px', borderRadius: 4, marginLeft: 8, verticalAlign: 'middle' }}>CONNECTED</span>}
+          {isConnected && <span className="text-success" style={{ fontSize: '0.6em', background: 'rgba(0, 232, 122, 0.1)', padding: '2px 6px', borderRadius: 4, marginLeft: 8, verticalAlign: 'middle', border: '1px solid var(--status-ok)' }}>CONNECTED</span>}
         </h3>
 
         {/* Machine Position Display */}
@@ -357,12 +385,12 @@ export default function SerialPanel({
             </span>
           )}
           {isConnected && !isHoming && isHomed && hasReceivedPosRef.current && (
-            <span style={{ fontSize: '0.7em', fontWeight: 'bold', background: '#28a745', color: 'white', padding: '3px 8px', borderRadius: 4, textTransform: 'uppercase' }}>
+            <span className="text-success" style={{ fontSize: '0.7em', fontWeight: 'bold', background: 'rgba(0, 232, 122, 0.1)', border: '1px solid var(--status-ok)', padding: '3px 8px', borderRadius: 4, textTransform: 'uppercase' }}>
               Homed
             </span>
           )}
           {isConnected && !isHoming && !isHomed && hasReceivedPosRef.current && (
-            <span style={{ fontSize: '0.7em', fontWeight: 'bold', background: '#00c49a', color: 'black', padding: '3px 8px', borderRadius: 4, textTransform: 'uppercase' }}>
+            <span className="text-warning" style={{ fontSize: '0.7em', fontWeight: 'bold', background: 'rgba(245, 166, 35, 0.1)', border: '1px solid var(--status-warn)', padding: '3px 8px', borderRadius: 4, textTransform: 'uppercase' }}>
               Position Known
             </span>
           )}

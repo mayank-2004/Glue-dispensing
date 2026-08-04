@@ -35,7 +35,7 @@ export function useSerialMachine() {
         await window.serial.writeLine('!');
         await window.serial.writeLine('M0');
         await window.serial.writeLine('G91');
-        await window.serial.writeLine('G0 Z10 F1000');
+        await window.serial.writeLine('G0 Z10 F300');
         await window.serial.writeLine('G90');
       }
     } catch (err) { console.error('[E-STOP] Failed to send stop commands:', err); }

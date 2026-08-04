@@ -21,13 +21,13 @@ function ToastItem({ id, message, type, onDismiss }) {
         padding: '10px 14px', borderRadius: 7, cursor: 'pointer',
         background: s.bg, border: `1px solid ${s.border}`,
         boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
-        color: '#e6edf3', fontSize: '0.84em', lineHeight: 1.45,
+        fontSize: '0.84em', lineHeight: 1.45,
         maxWidth: 360, wordBreak: 'break-word',
         animation: 'toast-slide-in 0.18s ease',
       }}
     >
       <span style={{ color: s.border, fontWeight: 700, flexShrink: 0, marginTop: 1 }}>{s.icon}</span>
-      <span>{message}</span>
+      <span className={type === 'success' ? 'text-success' : type === 'error' ? 'text-error' : type === 'warning' ? 'text-warning' : ''} style={type === 'info' ? { color: s.border } : {}}>{message}</span>
     </div>
   );
 }
@@ -64,7 +64,7 @@ export function ToastProvider({ children }) {
       {children}
       <style>{`@keyframes toast-slide-in { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: none; } }`}</style>
       <div style={{
-        position: 'fixed', bottom: 20, right: 20, zIndex: 99999,
+        position: 'fixed', bottom: 120, right: 24, zIndex: 99999,
         display: 'flex', flexDirection: 'column', gap: 8, pointerEvents: 'none',
       }}>
         {toasts.map(t => (

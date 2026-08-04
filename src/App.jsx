@@ -22,12 +22,13 @@ import { NozzleMaintenanceManager } from "./lib/maintenance/nozzleMaintenance.js
 import { generatePath } from "./lib/motion/pathGeneration.js";
 import { DispensingSequencer } from "./lib/automation/dispensingSequence.js";
 import { SafePathPlanner } from "./lib/automation/safePathPlanner.js";
-import { extractPadsMm } from "./lib/gerber/extractPads.js";
+import { extractPadsMm, extractPadsWithPanel } from "./lib/gerber/extractPads.js";
 import MaintenanceManager from "./components/MaintenanceManager.jsx";
 import ToolOffsetCalibration from "./components/ToolOffsetCalibration.jsx";
 import { useSerialMachine } from "./hooks/useSerialMachine.js";
 import { useGerberFiles } from "./hooks/useGerberFiles.js";
 import AppHeader from "./components/AppHeader.jsx";
+import GuidedTour from "./components/GuidedTour.jsx";
 
 function calculatePadCenter(p) {
   if (typeof p.x === "number" && typeof p.y === "number") {
@@ -284,6 +285,7 @@ export default function App() {
   const [dispensingSequence, setDispensingSequence] = useState([]);
   const [safeSequence, setSafeSequence] = useState([]);
   const [jobStatistics, setJobStatistics] = useState(null);
+  const [panelJobStage, setPanelJobStage] = useState('idle');
   const [useSafePathPlanning, setUseSafePathPlanning] = useState(true);
   const [componentHeights, setComponentHeights] = useState([]);
   const [livePreview, setLivePreview] = useState({
@@ -1770,6 +1772,14 @@ export default function App() {
 
   return (
     <div id="root" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
+      <GuidedTour 
+        isConnected={isSerialConnected} 
+        isHomed={isHomed} 
+        hasFileLoaded={generatedPath !== null && generatedPath.segments && generatedPath.segments.length > 0} 
+        hasFiducialsSet={panelBoards && panelBoards.length > 0 && panelBoards[0].fiducials?.every(f => f.machine)} 
+        isJobRunning={isJobRunning} 
+        jobStage={panelJobStage} 
+      />
 
       {/* ── TOP HEADER BAR ─────────────────────────────────── */}
       <AppHeader
@@ -1837,7 +1847,8 @@ export default function App() {
                   if (idx != null) {
                     const selectedLayer = layers[idx];
                     if (selectedLayer.type === "solderpaste") {
-                      const padData = extractPadsMm(selectedLayer.text).map(padCenter);
+                      const { pads: basePads } = extractPadsWithPanel(selectedLayer.text);
+                      const padData = basePads.map(padCenter);
                       setPads(processPads(padData));
                       console.log('Solderpaste layer loaded:', padData.length, 'pads');
                       if (selectedLayer.side === 'top') { changeSide('top', true); }
@@ -2024,6 +2035,7 @@ export default function App() {
                     }}
                     onHomingComplete={handleHomingComplete}
                     dispensingSequence={dispensingSequence}
+                    onJobStageChange={setPanelJobStage}
                     jobStatistics={jobStatistics}
                     pressureSettings={pressureSettings}
                     speedSettings={speedSettings}
@@ -2282,6 +2294,7 @@ export default function App() {
                 dispensingSequencer={dispensingSequencer}
                 dispensingSequence={dispensingSequence}
                 safeSequence={safeSequence}
+                onJobStageChange={setPanelJobStage}
                 jobStatistics={jobStatistics}
                 referencePoint={referencePoint}
                 selectedOrigin={effectiveOrigin}

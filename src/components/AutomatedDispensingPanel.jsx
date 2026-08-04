@@ -331,6 +331,7 @@ export default function AutomatedDispensingPanel({
   panelRailFiducials = [],
   toolOffset = { dx: 0, dy: 0 },
   isAdminMode = false,
+  onJobStageChange,
 }) {
   const toast = useToast();
   const [isJobRunning, setIsJobRunning] = useState(false);
@@ -349,6 +350,9 @@ export default function AutomatedDispensingPanel({
 
   // Advanced Flow State
   const [jobStage, setJobStage] = useState('idle'); // idle, homing, loading, registering, dispensing, finished
+  useEffect(() => {
+    if (onJobStageChange) onJobStageChange(jobStage);
+  }, [jobStage, onJobStageChange]);
   const [machineStatus, setMachineStatus] = useState('idle');
   const [jobProgress, setJobProgress] = useState({ current: 0, total: 0 });
   const [regIndex, setRegIndex] = useState(0);
@@ -615,7 +619,9 @@ export default function AutomatedDispensingPanel({
       setPnpPanelCols(1);
       setPnpPanelStepX(0);
       setPnpPanelStepY(detected.stepY);
-      toast.success(`Panel auto-detected from fiducials: ${detected.rows} rows, step Y=${detected.stepY} mm`);
+      if (isPnpMode) {
+        toast.success(`Panel auto-detected from fiducials: ${detected.rows} rows, step Y=${detected.stepY} mm`);
+      }
     }
   }, [panelInfo, panelBoards, isPnpMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -899,7 +905,9 @@ export default function AutomatedDispensingPanel({
 
   const proceedToRegistration = () => {
     setJobStage('dispensing');
-    runDispenseLoop(resumeFromPad);
+    localStorage.removeItem('resumeFromPad');
+    setResumeFromPad(0);
+    runDispenseLoop(0);
   };
 
   // Resume an interrupted job without preflight or board-load confirmation.
@@ -1121,36 +1129,11 @@ export default function AutomatedDispensingPanel({
       }
 
       // ── Phase 2: Build flat job plan ─────────────────────────────────────
-      // When optimizePath + multiple boards: nearest-neighbor sort ALL (board, component)
-      // pairs in machine space so the nozzle takes the globally shortest path.
-      // When single-board or optimization off: standard board-by-board order.
-      let jobPlan; // [{ bIdx, seqIdx }]
-      if (optimizePath && loopBoards.length > 1) {
-        const flatPts = [];
-        for (let bIdx = 0; bIdx < loopBoards.length; bIdx++) {
-          const board = loopBoards[bIdx];
-          const xfm = transformMap.get(bIdx);
-          for (let seqIdx = 0; seqIdx < seq.length; seqIdx++) {
-            const comp = seq[seqIdx];
-            let mx = comp.x, my = comp.y;
-            if (loopPanelXf && board.offsetX != null) {
-              const r = applyTransform(loopPanelXf, { x: comp.x + board.offsetX, y: comp.y + board.offsetY });
-              mx = r.x; my = r.y;
-              if (xfm && xfm !== loopPanelXf) { const r2 = applyTransform(xfm, { x: mx, y: my }); mx = r2.x; my = r2.y; }
-            } else if (xfm) {
-              const r = applyTransform(xfm, comp);
-              mx = r.x; my = r.y;
-            }
-            flatPts.push({ bIdx, seqIdx, x: mx, y: my });
-          }
-        }
-        jobPlan = nearestNeighborSort(flatPts);
-      } else {
-        jobPlan = [];
-        for (let bIdx = 0; bIdx < loopBoards.length; bIdx++) {
-          for (let seqIdx = 0; seqIdx < seq.length; seqIdx++) {
-            jobPlan.push({ bIdx, seqIdx });
-          }
+      // Process board-by-board in sequence. The points within each board are already optimized by the global sequencer.
+      let jobPlan = [];
+      for (let bIdx = 0; bIdx < loopBoards.length; bIdx++) {
+        for (let seqIdx = 0; seqIdx < seq.length; seqIdx++) {
+          jobPlan.push({ bIdx, seqIdx });
         }
       }
 
@@ -1185,15 +1168,20 @@ export default function AutomatedDispensingPanel({
         const origDesignY = p.y;
 
         let tp = null;
-        if (loopPanelXf && board.offsetX != null) {
-          // Global panel transform: shift pad into panel space first, then apply T_panel
-          const panelSpacePt = { x: p.x + board.offsetX, y: p.y + board.offsetY };
-          tp = applyTransform(loopPanelXf, panelSpacePt);
-          // Optional per-board local correction on top (if transform != loopPanelXf)
-          if (transform && transform !== loopPanelXf) tp = applyTransform(transform, tp);
-          p = { ...p, x: tp.x, y: tp.y };
-        } else if (transform) {
-          tp = applyTransform(transform, p);
+        const hasBoardSpecificXf = transform && transform !== loopPanelXf;
+        const effectiveXf = hasBoardSpecificXf ? transform : loopPanelXf;
+
+        if (effectiveXf) {
+          // When using the global panelXf, add board offsets before transforming
+          // because panelXf maps from panel-space (design + board offset) to machine-space.
+          // When using individual board.xf, do NOT add offsets — the board's own xf
+          // already encodes the offset in its tx/ty translation component.
+          const addOffset = !hasBoardSpecificXf;
+          const panelSpacePt = { 
+            x: p.x + (addOffset && board.offsetX != null ? board.offsetX : 0), 
+            y: p.y + (addOffset && board.offsetY != null ? board.offsetY : 0) 
+          };
+          tp = applyTransform(effectiveXf, panelSpacePt);
           p = { ...p, x: tp.x, y: tp.y };
         } else {
           // No transform: align manually using the effective origin + board offset if panel
@@ -1217,15 +1205,16 @@ export default function AutomatedDispensingPanel({
         const designToFinalXY = (dx, dy) => {
           const dp = { x: origDesignX + dx, y: origDesignY + dy };
           let mx, my;
-          if (loopPanelXf && board.offsetX != null) {
-            const ps = { x: dp.x + board.offsetX, y: dp.y + board.offsetY };
-            let r = applyTransform(loopPanelXf, ps);
-            if (transform && transform !== loopPanelXf) r = applyTransform(transform, r);
-            mx = r.x; my = r.y;
-          } else if (transform) {
-            const r = applyTransform(transform, dp);
-            mx = r.x; my = r.y;
+          if (effectiveXf) {
+            const addOffset = !hasBoardSpecificXf;
+            const panelSpacePt = { 
+              x: dp.x + (addOffset && board.offsetX != null ? board.offsetX : 0), 
+              y: dp.y + (addOffset && board.offsetY != null ? board.offsetY : 0) 
+            };
+            const mapped = applyTransform(effectiveXf, panelSpacePt);
+            mx = mapped.x; my = mapped.y;
           } else {
+            // No transform fallback
             const ox = selectedOrigin ? selectedOrigin.x : (boardOutline ? boardOutline.minX : 0);
             const oy = selectedOrigin ? selectedOrigin.y : (boardOutline ? boardOutline.minY : 0);
             const boardOffX = isPnpPanel && board.offsetX != null ? board.offsetX : 0;
