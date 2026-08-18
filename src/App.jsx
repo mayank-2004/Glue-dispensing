@@ -29,6 +29,7 @@ import { useSerialMachine } from "./hooks/useSerialMachine.js";
 import { useGerberFiles } from "./hooks/useGerberFiles.js";
 import AppHeader from "./components/AppHeader.jsx";
 import GuidedTour from "./components/GuidedTour.jsx";
+import NetworkManagerPanel from "./components/NetworkManagerPanel.jsx";
 
 function calculatePadCenter(p) {
   if (typeof p.x === "number" && typeof p.y === "number") {
@@ -1758,6 +1759,7 @@ export default function App() {
     { id: 'CameraPanel', num: '5', label: 'Camera', sub: 'Vision Servo' },
     { id: 'BedCalibration', num: '6', label: 'Calibrate', sub: 'Bed Leveling' },
     { id: 'AutomatedDispensingPanel', num: '7', label: 'Dispense', sub: 'Run Job' },
+    { id: 'NetworkManagerPanel', num: '📡', label: 'Network', sub: 'Wi-Fi / Bluetooth / Fleet' },
   ];
 
   // Step done heuristics
@@ -2341,7 +2343,14 @@ export default function App() {
                 isAdminMode={isAdminMode}
               />
             </div>
+
+            {/* ── Network Manager Panel ─────────────────────────────────── */}
+            <div style={{ display: activeComponent === 'NetworkManagerPanel' ? 'flex' : 'none', width: '100%', height: '100%', flexDirection: 'column' }}>
+              <NetworkManagerPanel />
+            </div>
+
           </div>
+
         </div>
       </div>
     </div>

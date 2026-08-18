@@ -6,7 +6,7 @@ export const defaultAxisMap = {
 };
 
 export const defaultFeeds = {
-  travel: { X: 3000, Y: 3000, Z: 600, R: 600 }, // mm/min — 50 mm/s XY, 10 mm/s Z
+  travel: { X: 2000, Y: 2000, Z: 400, R: 400 }, // mm/min — smooth travel, avoids jerk on acceleration
   work: { X: 600, Y: 600, Z: 240, R: 240 },
 };
 
@@ -59,10 +59,11 @@ export function jogRel({ dx, dy, dz, dr, feed }, axisMap = defaultAxisMap) {
   if (dr) parts.push(`${axisMap.R}${fmt(dr)}`);
   if (!parts.length) return [];
   const f = feed != null ? ` F${Math.max(1, Math.round(feed))}` : "";
-  // No G90 here — caller restores absolute mode after jog session ends (debounced).
-  // Keeping G91 between consecutive jog clicks lets Marlin's planner blend moves
-  // instead of hard-stopping between each click.
-  return [`G91\nG1 ${parts.join(" ")}${f}`];
+  // IMPORTANT: G91 and G1 are returned as SEPARATE array elements.
+  // Each element is sent as its own writeLine() call so the firmware serial
+  // parser receives them on separate lines — prevents command merging that
+  // causes sudden uncontrolled motion (jerk).
+  return ['G91', `G1 ${parts.join(" ")}${f}`];
 }
 
 export function dwell(ms = 50) {

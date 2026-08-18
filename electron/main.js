@@ -420,3 +420,227 @@ ipcMain.handle('fs:clearFaultLog', async () => {
     return { ok: false, error: err.message };
   }
 });
+
+// ── Network / OS Management ───────────────────────────────────────────────────
+// Uses child_process.exec to call standard Linux CLI tools (nmcli, bluetoothctl).
+// On Windows all handlers return { ok: false, error: 'not supported on Windows' }
+// so the app continues to work on Windows dev machines without crashing.
+const { exec } = require('child_process');
+const os       = require('os');
+
+function runCmd(cmd) {
+  return new Promise((resolve) => {
+    if (process.platform === 'win32') {
+      return resolve({ ok: false, error: 'not supported on Windows' });
+    }
+    exec(cmd, { timeout: 10000 }, (err, stdout, stderr) => {
+      if (err) resolve({ ok: false, error: stderr || err.message, stdout });
+      else     resolve({ ok: true, stdout: stdout.trim() });
+    });
+  });
+}
+
+// --- Wi-Fi (nmcli) ---
+
+// Returns list of visible Wi-Fi networks: [{ ssid, signal, security, active }]
+ipcMain.handle('network:scanWifi', async () => {
+  const r = await runCmd('nmcli -t -f SSID,SIGNAL,SECURITY,ACTIVE device wifi list');
+  if (!r.ok) return r;
+  const networks = r.stdout
+    .split('\n')
+    .map(line => {
+      const [ssid, signal, security, active] = line.split(':');
+      return ssid ? { ssid, signal: parseInt(signal) || 0, security: security || '', active: active === 'yes' } : null;
+    })
+    .filter(Boolean)
+    .filter((n, i, arr) => arr.findIndex(x => x.ssid === n.ssid) === i); // deduplicate
+  return { ok: true, networks };
+});
+
+// Connects to a given SSID with optional password
+ipcMain.handle('network:connectWifi', async (_e, { ssid, password }) => {
+  if (!ssid) return { ok: false, error: 'No SSID provided' };
+  const cmd = password
+    ? `nmcli device wifi connect "${ssid}" password "${password}"`
+    : `nmcli device wifi connect "${ssid}"`;
+  return runCmd(cmd);
+});
+
+// Disconnects the active Wi-Fi connection
+ipcMain.handle('network:disconnectWifi', async () => {
+  return runCmd('nmcli device disconnect wlan0');
+});
+
+// Returns current Wi-Fi connection info: { connected, ssid, ip }
+ipcMain.handle('network:getWifiStatus', async () => {
+  const r = await runCmd('nmcli -t -f ACTIVE,SSID,IP4.ADDRESS device show wlan0');
+  if (!r.ok) {
+    // Fallback: try to get IP via os.networkInterfaces
+    const ip = getLocalIpAddress();
+    return { ok: true, connected: !!ip, ssid: '', ip };
+  }
+  const lines  = r.stdout.split('\n');
+  const find   = (key) => (lines.find(l => l.startsWith(key)) || '').split(':').slice(1).join(':').trim();
+  const active = find('GENERAL.CONNECTION') !== '--' && find('GENERAL.CONNECTION') !== '';
+  const ssid   = find('GENERAL.CONNECTION');
+  const ip     = (find('IP4.ADDRESS[1]') || '').split('/')[0];
+  return { ok: true, connected: active, ssid, ip };
+});
+
+// --- Local IP (cross-platform fallback) ---
+function getLocalIpAddress() {
+  const ifaces = os.networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    for (const iface of ifaces[name]) {
+      if (iface.family === 'IPv4' && !iface.internal) return iface.address;
+    }
+  }
+  return null;
+}
+
+ipcMain.handle('network:getLocalIp', async () => {
+  // Try nmcli first on Linux for the wlan0 interface
+  if (process.platform !== 'win32') {
+    const r = await runCmd("nmcli -t -f IP4.ADDRESS dev show wlan0");
+    if (r.ok && r.stdout) {
+      const ip = r.stdout.split('\n')
+        .map(l => l.split(':').slice(1).join(':').trim().split('/')[0])
+        .find(s => s && s !== '--');
+      if (ip) return { ok: true, ip };
+    }
+  }
+  const ip = getLocalIpAddress();
+  return ip ? { ok: true, ip } : { ok: false, error: 'No active network interface found' };
+});
+
+// --- Bluetooth (bluetoothctl) ---
+
+// Starts a 6-second scan and returns discovered devices: [{ mac, name, paired }]
+ipcMain.handle('network:scanBluetooth', async () => {
+  // Start scan for 6 s then list devices
+  await runCmd('bluetoothctl --timeout 6 scan on');
+  const r = await runCmd('bluetoothctl devices');
+  if (!r.ok) return r;
+  const devices = r.stdout
+    .split('\n')
+    .map(line => {
+      const m = line.match(/^Device ([0-9A-F:]{17}) (.+)$/i);
+      return m ? { mac: m[1], name: m[2].trim(), paired: false } : null;
+    })
+    .filter(Boolean);
+  // Check which ones are paired
+  const pairedR = await runCmd('bluetoothctl paired-devices');
+  if (pairedR.ok) {
+    const pairedMacs = new Set(pairedR.stdout.split('\n').map(l => { const m = l.match(/([0-9A-F:]{17})/i); return m ? m[1] : null; }).filter(Boolean));
+    devices.forEach(d => { d.paired = pairedMacs.has(d.mac); });
+  }
+  return { ok: true, devices };
+});
+
+// Pairs and connects to a Bluetooth device by MAC address
+ipcMain.handle('network:connectBluetooth', async (_e, { mac }) => {
+  if (!mac) return { ok: false, error: 'No MAC address provided' };
+  const pair    = await runCmd(`bluetoothctl pair ${mac}`);
+  const connect = await runCmd(`bluetoothctl connect ${mac}`);
+  return connect.ok ? connect : pair;
+});
+
+// Returns already-paired Bluetooth devices
+ipcMain.handle('network:getPairedDevices', async () => {
+  const r = await runCmd('bluetoothctl paired-devices');
+  if (!r.ok) return r;
+  const devices = r.stdout.split('\n')
+    .map(line => { const m = line.match(/^Device ([0-9A-F:]{17}) (.+)$/i); return m ? { mac: m[1], name: m[2].trim(), paired: true } : null; })
+    .filter(Boolean);
+  return { ok: true, devices };
+});
+
+// ── Fleet HTTP Server ─────────────────────────────────────────────────────────
+// Serves the compiled React app and forwards serial data to remote browsers.
+// Port 8080. Only active in packaged production builds (not during npm run dev).
+const FLEET_PORT = 8080;
+
+function startFleetServer() {
+  const httpMod = require('http');
+  const pathMod = require('path');
+  const fsMod   = require('fs');
+  const distDir = pathMod.join(__dirname, '..', 'dist');
+
+  const mimeTypes = {
+    '.html': 'text/html', '.js': 'application/javascript',
+    '.css': 'text/css',   '.svg': 'image/svg+xml',
+    '.png': 'image/png',  '.ico': 'image/x-icon',
+    '.wasm': 'application/wasm',
+  };
+
+  // Lightweight WebSocket upgrade handler (no external deps)
+  const wsClients = new Set();
+
+  function wsHandshake(req, socket, head) {
+    const key  = req.headers['sec-websocket-key'];
+    const hash = require('crypto').createHash('sha1')
+      .update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+    socket.write([
+      'HTTP/1.1 101 Switching Protocols',
+      'Upgrade: websocket', 'Connection: Upgrade',
+      `Sec-WebSocket-Accept: ${hash}`, '', ''
+    ].join('\r\n'));
+
+    wsClients.add(socket);
+    socket.on('close', () => wsClients.delete(socket));
+    socket.on('error', () => wsClients.delete(socket));
+
+    // Forward incoming WS frames to the serial port
+    socket.on('data', (buf) => {
+      try {
+        const opcode = buf[0] & 0x0f;
+        if (opcode !== 1) return; // only text frames
+        const masked = (buf[1] & 0x80) !== 0;
+        let len = buf[1] & 0x7f;
+        let offset = 2;
+        if (len === 126) { len = buf.readUInt16BE(2); offset = 4; }
+        const mask = masked ? buf.slice(offset, offset + 4) : null;
+        if (masked) offset += 4;
+        const payload = buf.slice(offset, offset + len);
+        if (mask) for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i % 4];
+        const text = payload.toString('utf8').trim();
+        if (text && serial.port?.isOpen) serial.port.write(text + '\r\n', () => {});
+      } catch {}
+    });
+  }
+
+  function wsSend(socket, text) {
+    try {
+      const data  = Buffer.from(text, 'utf8');
+      const frame = Buffer.allocUnsafe(data.length < 126 ? 2 + data.length : 4 + data.length);
+      frame[0] = 0x81; // FIN + text opcode
+      if (data.length < 126) { frame[1] = data.length; data.copy(frame, 2); }
+      else                   { frame[1] = 126; frame.writeUInt16BE(data.length, 2); data.copy(frame, 4); }
+      socket.write(frame);
+    } catch {}
+  }
+
+  // Broadcast serial data to all connected WS clients
+  if (serial.parser) {
+    serial.parser.on('data', (line) => wsClients.forEach(s => wsSend(s, line)));
+  }
+
+  const server = httpMod.createServer((req, res) => {
+    // Serve static files from dist/
+    let filePath = pathMod.join(distDir, req.url === '/' ? 'index.html' : req.url);
+    const ext = pathMod.extname(filePath);
+    if (!fsMod.existsSync(filePath)) filePath = pathMod.join(distDir, 'index.html'); // SPA fallback
+    const mime = mimeTypes[ext] || 'application/octet-stream';
+    res.setHeader('Content-Type', mime);
+    fsMod.createReadStream(filePath).pipe(res);
+  });
+
+  server.on('upgrade', wsHandshake);
+  server.listen(FLEET_PORT, '0.0.0.0', () => {
+    console.log(`[Fleet] HTTP server running on port ${FLEET_PORT}`);
+  });
+}
+
+// Start fleet server only in production (packaged) builds
+if (!isDev) startFleetServer();
+

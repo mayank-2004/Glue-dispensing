@@ -742,3 +742,31 @@ Lead=
 Steps/mm
 Motor Steps×Microsteps
 	​
+
+
+
+
+
+
+To fix the build memory issue (choose one):
+Option 1 — Close other apps and retry: Free up RAM (close Chrome, etc.) then run:
+
+powershell
+
+
+npm run build
+Option 2 — Use lower compression (faster, less RAM): Add this to package.json inside the "build" config:
+
+json
+
+
+"compression": "store"
+This skips 7-Zip compression, produces a larger .exe but never runs out of RAM.
+
+Option 3 — Skip the installer, just package the app folder:
+
+powershell
+
+
+npx electron-builder --win --dir
+This builds dist\win-unpacked\ (a ready-to-run folder with no compression) — perfect for testing on Windows without needing an installer.

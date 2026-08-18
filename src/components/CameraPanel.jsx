@@ -1006,9 +1006,14 @@ export default function CameraPanel({
     hasJoggedInCycleRef.current = false;
     settleUntilRef.current = Date.now() + 2200; // ~2 s for machine to arrive and settle
 
-    const cmds = moveAbs({ x: camX, y: camY, feed: 3000 });
+    const cmds = moveAbs({ x: camX, y: camY, feed: 2000 });
+    // Cap travel acceleration before a large move to prevent sudden jerk on start.
+    // M204 T sets the non-printing (travel) acceleration in mm/s².
+    window.serial.writeLine('M204 T500').catch(() => { });
     window.serial.writeLine('G90').catch(() => { });
     cmds.forEach(c => window.serial.writeLine(c).catch(() => { }));
+    // Restore acceleration after move is queued
+    window.serial.writeLine('M204 T1000').catch(() => { });
 
     setAutoSearchStatus(`Moving to ${fidActiveId}…`);
     setTimeout(() => setAutoSearchStatus(''), 2500);
@@ -1214,16 +1219,11 @@ export default function CameraPanel({
   // lockedAt: machine position when converged, used to detect when user moves to new fiducial.
   const servoStateRef = useRef({ phase: 'idle', lockedAt: null });
   const settleUntilRef = useRef(0);     // suppress detection until this timestamp (ms)
-  const isJoggingRef = useRef(false);    // lock flag to prevent duplicate / stacked jog commands
-  const SERVO_FEED = 800;           // mm/min jog speed
-  const SERVO_SETTLE_MS = 1000;          // ms to wait after each jog before re-checking
-  const CONVERGE_MM = 0.05;          // crosshair within 0.05mm → declare converged & save
-  const TRULY_CENTRED_MM = 0.008;        // sub-pixel threshold — safe to skip jog requirement
-  const CONVERGE_STABLE_FRAMES = 3;      // fine-phase polls needed before saving (prevents Hough false-centre saves)
-  const convergenceCountRef = useRef(0); // consecutive fine-phase frames within CONVERGE_MM
-  // Guard: servo must have physically jogged at least once per convergence cycle before saving.
-  // Prevents saving at a visually off-centre position when the Python API happens to report
-  // a near-zero offset on the very first poll (e.g. bottom-side fiducials with different reflectance).
+  const isJoggingRef = useRef(false);   // atomic mutex — set BEFORE any await to block re-entry
+  const CONVERGE_MM = 0.03;             // save fiducial when crosshair is within 0.03mm
+  const TRULY_CENTRED_MM = 0.08;
+  const CONVERGE_STABLE_FRAMES = 1;
+  const convergenceCountRef = useRef(0);
   const hasJoggedInCycleRef = useRef(false);
 
   // Motion guard: whenever the machine position changes significantly (manual jogging between
@@ -1262,18 +1262,23 @@ export default function CameraPanel({
       fetch(`${PYTHON_URL}/api/start_detect`, { method: 'POST' }).catch(() => { });
 
       const pollId = setInterval(async () => {
+        // ── ATOMIC MUTEX ──────────────────────────────────────────────
+        // Set isJoggingRef BEFORE the first await so that a second tick
+        // firing at 300ms cannot also pass this check during the async gap.
+        if (isJoggingRef.current) return;
+        if (Date.now() < settleUntilRef.current) return;
+        if (Date.now() < saveBlockRef.current) return;
+
+        isJoggingRef.current = true; // Lock immediately
+
         try {
           const r = await fetch(`${PYTHON_URL}/api/vision_data`);
           const data = await r.json();
           setPythonVisionData(data);
 
-          if (isJoggingRef.current) return;
-          if (Date.now() < settleUntilRef.current) return;
-          if (Date.now() < saveBlockRef.current) return; // wait until operator moves to next fiducial
-
           const machPos = machinePositionRef.current || { x: 0, y: 0 };
 
-          // Reset servo if the user manually jogged to a new fiducial (> 5 mm away)
+          // Already converged — check if user moved to a new fiducial
           if (servoStateRef.current.phase === 'converged') {
             const locked = servoStateRef.current.lockedAt;
             if (locked && Math.hypot(machPos.x - locked.x, machPos.y - locked.y) > 5.0) {
@@ -1281,95 +1286,62 @@ export default function CameraPanel({
               convergenceCountRef.current = 0;
               hasJoggedInCycleRef.current = false;
             } else {
-              return; // same slot — already converged, nothing to do
+              isJoggingRef.current = false;
+              return; // same slot — already done
             }
           }
 
-          const servoPhase = servoStateRef.current.phase; // 'idle' | 'fine'
-          let dx, dy, dist;
+          // No fiducial visible
+          if (!data.best_circle) { isJoggingRef.current = false; return; }
 
-          if (servoPhase === 'fine') {
-            // Phase 2: sub-pixel centroid via fresh frame ROI — ±1px accuracy
-            try {
-              const sr = await fetch(`${PYTHON_URL}/api/snap_offset`);
-              const snap = await sr.json();
-              if (!snap.found) { servoStateRef.current = { phase: 'idle', lockedAt: null }; convergenceCountRef.current = 0; return; }
-              dx = parseFloat(snap.offset_dx.toFixed(4));
-              dy = parseFloat(snap.offset_dy.toFixed(4));
-              dist = Math.hypot(dx, dy);
-              // Sanity: sudden large offset after coarse move = false positive, restart
-              if (dist > 1.5) {
-                servoStateRef.current = { phase: 'idle', lockedAt: null };
-                convergenceCountRef.current = 0;
-                return;
-              }
-            } catch { servoStateRef.current = { phase: 'idle', lockedAt: null }; convergenceCountRef.current = 0; return; }
-          } else {
-            // Phase 1: coarse positioning via Hough circle
-            if (!data.best_circle) return;
-            dx = parseFloat(data.offset_dx.toFixed(4));
-            dy = parseFloat(data.offset_dy.toFixed(4));
-            dist = Math.hypot(dx, dy);
-            if (dist > 8.0) return; // no fiducial in view
-          }
+          const dx = parseFloat(data.offset_dx.toFixed(4));
+          const dy = parseFloat(data.offset_dy.toFixed(4));
+          const dist = Math.hypot(dx, dy);
+          if (dist > 8.0) { isJoggingRef.current = false; return; }
 
-          // Allow convergence only if the servo has jogged at least once this cycle,
-          // OR the offset is truly sub-pixel (< TRULY_CENTRED_MM). This prevents saving at
-          // a visually off-centre position when Python reports near-zero offset on the first poll.
-          const canConverge = hasJoggedInCycleRef.current || dist <= TRULY_CENTRED_MM;
-
-          if (dist <= CONVERGE_MM && canConverge) {
-            if (servoPhase !== 'fine') {
-              // Coarse phase: Hough circle centre may be off by several pixels — do NOT save yet.
-              // Upgrade to fine mode so the next poll uses the sub-pixel Otsu centroid.
-              servoStateRef.current = { ...servoStateRef.current, phase: 'fine' };
-              convergenceCountRef.current = 0;
-              console.log('[PyServo] Within coarse threshold — switching to fine phase for sub-pixel confirmation');
-            } else {
-              convergenceCountRef.current++;
-              if (convergenceCountRef.current >= CONVERGE_STABLE_FRAMES) {
-                // ✅ Sub-pixel centroid stable for N consecutive frames — truly centred on fiducial
-                servoStateRef.current = { phase: 'converged', lockedAt: { x: machPos.x, y: machPos.y } };
-                convergenceCountRef.current = 0;
-                hasJoggedInCycleRef.current = false; // reset for next fiducial
-                const camOffset  = cameraOffset || { dx: 0, dy: 0 };
-                const savedCoord = { x: machPos.x + camOffset.dx, y: machPos.y + camOffset.dy };
-                saveFiducialCoordinate(savedCoord, 1.0);
-                console.log(`[PyServo] ✅ Converged (${CONVERGE_STABLE_FRAMES} stable frames). Saved X${savedCoord.x.toFixed(3)} Y${savedCoord.y.toFixed(3)}`);
-              } else {
-                console.log(`[PyServo] Fine-phase stable ${convergenceCountRef.current}/${CONVERGE_STABLE_FRAMES} — holding...`);
-              }
-            }
+          // ── CONVERGED ─────────────────────────────────────────────
+          if (dist <= CONVERGE_MM) {
+            servoStateRef.current = { phase: 'converged', lockedAt: { x: machPos.x, y: machPos.y } };
+            convergenceCountRef.current = 0;
+            hasJoggedInCycleRef.current = false;
+            const camOffset = cameraOffset || { dx: 0, dy: 0 };
+            const savedCoord = { x: machPos.x + camOffset.dx + dx, y: machPos.y + camOffset.dy + dy };
+            saveFiducialCoordinate(savedCoord, 1.0);
+            console.log(`[PyServo] ✅ Converged X${savedCoord.x.toFixed(3)} Y${savedCoord.y.toFixed(3)}`);
+            isJoggingRef.current = false;
             return;
           }
-          convergenceCountRef.current = 0; // moved away from convergence zone — reset count
 
-          // If dist > CONVERGE_MM, OR within CONVERGE_MM but haven't jogged yet → jog toward center
-          if (dist <= CONVERGE_MM && !canConverge) {
-            // First-poll near-zero offset: treat as a residual — do a micro-jog to physically verify
-            console.log(`[PyServo] Near-zero offset (${dist.toFixed(4)}mm) but haven't jogged yet — micro-jogging to verify centring`);
-          }
+          // ── PROPORTIONAL JOG ──────────────────────────────────────
+          // Coarse phase (dist > 0.3mm): full offset, fast feed — closes gap quickly.
+          // Fine phase   (dist ≤ 0.3mm): 75% damping, slow feed — prevents overshoot.
+          const isCoarse = dist > 0.3;
+          const DAMP  = isCoarse ? 1.0 : 0.75;
+          const FEED  = isCoarse ? 3000 : 800; // mm/min
 
-          // Jog toward fiducial center. Coarse: faster + longer settle; Fine: normal.
-          const jogFeed  = servoPhase === 'idle' ? SERVO_FEED * 1.5 : SERVO_FEED;
-          const moveTimeMs = (dist / (jogFeed / 60)) * 1000;
-          const settleMs = Math.max(2500, Math.ceil(moveTimeMs + 2000));
+          const jogDx = parseFloat((dx * DAMP).toFixed(4));
+          const jogDy = parseFloat((dy * DAMP).toFixed(4));
+          const jogDist = Math.hypot(jogDx, jogDy);
+
+          // Settle = physical travel time + 500ms camera stabilisation
+          const moveTimeMs = (jogDist / (FEED / 60)) * 1000;
+          const settleMs = Math.max(500, Math.ceil(moveTimeMs + 500));
           settleUntilRef.current = Date.now() + settleMs;
-          isJoggingRef.current = true;
+          // Keep mutex locked for the full settle so no duplicate fires
           setTimeout(() => { isJoggingRef.current = false; }, settleMs);
 
-          console.log(`[PyServo] ${servoPhase === 'idle' ? 'Coarse' : 'Fine  '} jog ΔX:${dx.toFixed(3)} ΔY:${dy.toFixed(3)} mm (settle ${settleMs}ms)`);
+          console.log(`[PyServo] Jog ΔX:${jogDx.toFixed(3)} ΔY:${jogDy.toFixed(3)} | feed:${FEED} | settle:${settleMs}ms`);
           try {
-            const cmds = jogRel({ dx, dy, feed: jogFeed });
+            const cmds = jogRel({ dx: jogDx, dy: jogDy, feed: FEED });
             if (window.serial?.writeLine) for (const line of cmds) await window.serial.writeLine(line);
-            hasJoggedInCycleRef.current = true; // servo has now physically moved this cycle
-          } catch (err) { console.error('[PyServo] Jog failed:', err); }
+            hasJoggedInCycleRef.current = true;
+          } catch (err) { console.error('[PyServo] Jog failed:', err); isJoggingRef.current = false; }
 
-          // After the coarse jog, switch to fine mode for sub-pixel correction
-          if (servoPhase === 'idle') servoStateRef.current = { ...servoStateRef.current, phase: 'fine' };
-
-        } catch (err) { console.warn('[PyServo] Poll error:', err); }
-      }, 600);
+        } catch (err) {
+          console.warn('[PyServo] Poll error:', err);
+          isJoggingRef.current = false;
+        }
+      }, 300); // Poll every 300ms — mutex prevents any overlap between ticks
 
       pythonPollRef.current = pollId;
       setDetectionInterval(pollId);
@@ -1497,7 +1469,7 @@ export default function CameraPanel({
 
                 const dist = Math.hypot(dx, dy);
                 const moveTimeMs = (dist / (800 / 60)) * 1000;
-                const settleMs = Math.max(2500, Math.ceil(moveTimeMs + 2000));
+                const settleMs = Math.max(600, Math.ceil(moveTimeMs + 400));
                 settleUntilRef.current = Date.now() + settleMs;
                 isJoggingRef.current = true;
                 setTimeout(() => { isJoggingRef.current = false; }, settleMs);
@@ -1599,7 +1571,7 @@ export default function CameraPanel({
 
       const dist = Math.hypot(dx, dy);
       const moveTimeMs = (dist / (800 / 60)) * 1000;
-      const settleMs = Math.max(2500, Math.ceil(moveTimeMs + 2000));
+      const settleMs = Math.max(600, Math.ceil(moveTimeMs + 400));
       settleUntilRef.current = Date.now() + settleMs;
       isJoggingRef.current = true;
       setTimeout(() => { isJoggingRef.current = false; }, settleMs);
@@ -1872,13 +1844,13 @@ export default function CameraPanel({
       </div>
 
       {/* Video Container */}
-      <div style={{ position: 'relative', width: '100%', background: '#111', borderRadius: 8, overflow: 'hidden', pointerEvents: 'auto' }}>
+      <div style={{ position: 'relative', width: '100%', aspectRatio: '16/9', background: '#111', borderRadius: 8, overflow: 'hidden', pointerEvents: 'auto' }}>
         {pythonMode ? (
           streamOn ? (
             <img
               src={`${PYTHON_URL}/video_feed`}
               alt="Python MJPEG Stream"
-              style={{ width: '100%', height: 'auto', display: 'block', cursor: 'crosshair' }}
+              style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', cursor: 'crosshair' }}
               onError={(e) => {
                 console.warn('[CameraPanel] MJPEG stream dropped, reconnecting in 2s...');
                 setTimeout(() => {
@@ -1911,7 +1883,7 @@ export default function CameraPanel({
 
                 const dist = Math.hypot(dx, dy);
                 const moveTimeMs = (dist / (1000 / 60)) * 1000;
-                const settleMs = Math.max(2500, Math.ceil(moveTimeMs + 2000));
+                const settleMs = Math.max(600, Math.ceil(moveTimeMs + 400));
                 settleUntilRef.current = Date.now() + settleMs;
                 isJoggingRef.current = true;
                 setTimeout(() => { isJoggingRef.current = false; }, settleMs);

@@ -22,7 +22,7 @@ from pydantic import BaseModel
 # ──────────────────────────────────────────────
 # Configuration
 # ──────────────────────────────────────────────
-CAMERA_INDEX = 1          # Change to 0 if the dispensing camera is the only webcam/Pi
+CAMERA_INDEX = 1          # Machine USB webcam index — auto-scan will also try 0 and 2 if this fails
 FRAME_WIDTH  = 1280
 FRAME_HEIGHT = 720
 MJPEG_QUALITY = 85        # JPEG quality 0-100 (higher = better quality, more bandwidth)
@@ -50,6 +50,7 @@ shared_state = {
     "sharpness":     0.0,      # Laplacian variance (higher = sharper = more in-focus)
     "frame_count":   0,
     "camera_ok":     True,
+    "tried_indices": [],       # Populated if camera open failed — lists all indices tried
 }
 
 # ──────────────────────────────────────────────
@@ -104,24 +105,54 @@ def camera_loop():
     vision analysis thread.
     """
     global latest_frame, camera_cap
-    # Use DirectShow on Windows, V4L2 on Linux/Pi — backend must match the OS
     _backend = cv2.CAP_DSHOW if os.name == 'nt' else cv2.CAP_V4L2
-    cap = cv2.VideoCapture(CAMERA_INDEX, _backend)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  FRAME_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
-    cap.set(cv2.CAP_PROP_FPS, 30)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimize latency; only keep the most recent frame
 
-    if not cap.isOpened():
-        print(f"[Vision] ERROR: Could not open camera at index {CAMERA_INDEX}.")
+    # Auto-scan camera indices: try the configured index first, then scan 0→2
+    # This handles cases where Windows re-assigns the USB camera to a different index
+    indices_to_try = [CAMERA_INDEX] + [i for i in range(3) if i != CAMERA_INDEX]
+    cap = None
+    opened_index = None
+
+    for idx in indices_to_try:
+        try:
+            print(f"[Vision] Trying camera index {idx}...")
+            candidate = cv2.VideoCapture(idx, _backend)
+            if candidate is not None and candidate.isOpened():
+                # Read a test frame to confirm the camera actually works
+                ret, _ = candidate.read()
+                if ret:
+                    cap = candidate
+                    opened_index = idx
+                    print(f"[Vision] Camera found at index {idx}")
+                    break
+                else:
+                    candidate.release()
+            else:
+                if candidate is not None:
+                    candidate.release()
+        except Exception as e:
+            print(f"[Vision] Exception trying index {idx}: {e}")
+
+    if cap is None or not cap.isOpened():
+        print(f"[Vision] ERROR: No camera found on indices {indices_to_try}. Check USB connection.")
         with state_lock:
             shared_state["camera_ok"] = False
+            shared_state["tried_indices"] = indices_to_try
         return
+
+    try:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH,  FRAME_WIDTH)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+        cap.set(cv2.CAP_PROP_FPS, 30)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimize latency
+    except Exception as e:
+        print(f"[Vision] Warning: Failed to set camera properties: {e}")
 
     camera_cap = cap  # Expose to API endpoints for live property changes
     with state_lock:
         shared_state["camera_ok"] = True
-    print(f"[Vision] Camera opened on index {CAMERA_INDEX} ({FRAME_WIDTH}x{FRAME_HEIGHT})")
+    print(f"[Vision] Camera opened on index {opened_index} ({FRAME_WIDTH}x{FRAME_HEIGHT})")
+
 
     while camera_thread_running:
         ret, frame = cap.read()
@@ -333,24 +364,36 @@ def vision_loop():
                         key=lambda c: abs(c["offset_dx"]) + abs(c["offset_dy"])
                     )
 
-                    # --- ANTI-JITTER DEADBAND ---
+                    # --- ANTI-JITTER EMA FILTER ---
                     # If the machine is stopped, HoughCircles might jitter by 1-5 pixels randomly.
-                    # If the new circle is within 8 pixels of the previous one, freeze it!
+                    # Instead of freezing the coordinates (which causes the green circle to detach 
+                    # from the physical fiducial during machine motion), we use an Exponential 
+                    # Moving Average (EMA) to smooth out the jitter while keeping the overlay 
+                    # tightly glued to the moving fiducial.
                     if sticky_best_circle is not None:
                         dist = ((current_best["pixel_x"] - sticky_best_circle["pixel_x"])**2 + 
                                 (current_best["pixel_y"] - sticky_best_circle["pixel_y"])**2)**0.5
                         
-                        if dist < 8.0:
-                            # Freeze! Use the old perfectly stable coordinates
-                            best_circle = sticky_best_circle
+                        if dist < 20.0:
+                            # Smooth tracking: 50% new frame, 50% history
+                            alpha = 0.5
+                            best_circle = {
+                                "pixel_x": int(alpha * current_best["pixel_x"] + (1 - alpha) * sticky_best_circle["pixel_x"]),
+                                "pixel_y": int(alpha * current_best["pixel_y"] + (1 - alpha) * sticky_best_circle["pixel_y"]),
+                                "radius": int(alpha * current_best["radius"] + (1 - alpha) * sticky_best_circle["radius"])
+                            }
+                            # Recalculate offsets based on smoothed pixel
+                            dx_px = best_circle["pixel_x"] - cx
+                            dy_px = cy - best_circle["pixel_y"]
+                            best_circle["offset_dx"] = round(dx_px / PX_PER_MM, 4)
+                            best_circle["offset_dy"] = round(dy_px / PX_PER_MM, 4)
                         else:
-                            # Machine physically moved, update immediately
-                            sticky_best_circle = current_best
+                            # Machine moved to a totally new fiducial, update immediately
                             best_circle = current_best
                     else:
-                        sticky_best_circle = current_best
                         best_circle = current_best
 
+                    sticky_best_circle = best_circle
                     offset_dx = best_circle["offset_dx"]
                     offset_dy = best_circle["offset_dy"]
                 else:
@@ -396,14 +439,21 @@ def annotate_frame(frame: np.ndarray) -> np.ndarray:
         detecting   = shared_state["detecting"]
 
     # ── Detected Circles ──────────────────────────────────────────
+    # Draw all alternative raw circles in orange
     for c in circles:
         px, py, pr = c["pixel_x"], c["pixel_y"], c["radius"]
         is_best = (best_circle is not None and
                    px == best_circle["pixel_x"] and py == best_circle["pixel_y"])
-        color     = (0, 255, 0) if is_best else (0, 150, 255)
-        thickness = 2 if is_best else 1
-        cv2.circle(out, (px, py), pr, color, thickness)
-        cv2.circle(out, (px, py), 3, color, -1)
+        # We handle best_circle separately below so EMA smoothed coords are drawn
+        if not is_best:
+            cv2.circle(out, (px, py), pr, (0, 150, 255), 1)
+            cv2.circle(out, (px, py), 3, (0, 150, 255), -1)
+
+    # Draw the primary tracking circle in green
+    if best_circle is not None:
+        bx, by, br = best_circle["pixel_x"], best_circle["pixel_y"], best_circle["radius"]
+        cv2.circle(out, (bx, by), br, (0, 255, 0), 2)
+        cv2.circle(out, (bx, by), 3, (0, 255, 0), -1)
 
     # ── Offset HUD ───────────────────────────────────────────────
     if detecting and best_circle:
@@ -426,6 +476,42 @@ def annotate_frame(frame: np.ndarray) -> np.ndarray:
     return out
 
 
+def make_placeholder_frame():
+    """Generates a standard 1280x720 dark grey placeholder image with status text."""
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    frame[:] = (30, 30, 30) # Dark grey background
+
+    # Title text
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    title_text = "CAMERA FEED OFFLINE"
+    title_sz = cv2.getTextSize(title_text, font, 1.2, 3)[0]
+    tx = (1280 - title_sz[0]) // 2
+    ty = (720 + title_sz[1]) // 2 - 20
+    cv2.putText(frame, title_text, (tx, ty), font, 1.2, (80, 80, 240), 3, cv2.LINE_AA)
+
+    # Subtitle text — show which indices were tried
+    with state_lock:
+        tried = shared_state.get("tried_indices", [])
+    if tried:
+        indices_str = ", ".join(str(i) for i in tried)
+        sub_text = f"Tried camera indices: {indices_str}. Check USB connection."
+    else:
+        sub_text = "Waiting for camera... Check USB connection."
+    sub_sz = cv2.getTextSize(sub_text, font, 0.65, 1)[0]
+    sx = (1280 - sub_sz[0]) // 2
+    sy = ty + 45
+    cv2.putText(frame, sub_text, (sx, sy), font, 0.65, (120, 120, 120), 1, cv2.LINE_AA)
+
+    # Hint text
+    hint_text = "If camera is connected, set CAMERA_INDEX in python-vision/server.py"
+    hint_sz = cv2.getTextSize(hint_text, font, 0.5, 1)[0]
+    hx = (1280 - hint_sz[0]) // 2
+    hy = sy + 32
+    cv2.putText(frame, hint_text, (hx, hy), font, 0.5, (80, 80, 80), 1, cv2.LINE_AA)
+
+    return frame
+
+
 def generate_mjpeg():
     """
     Generator function that yields annotated JPEG frames in MJPEG multipart format.
@@ -433,13 +519,24 @@ def generate_mjpeg():
     """
     encode_params = [cv2.IMWRITE_JPEG_QUALITY, MJPEG_QUALITY]
     FRAME_DELAY = 1.0 / 30  # Cap at 30fps to prevent CPU spikes
+    placeholder_frame = make_placeholder_frame()
 
     while True:
         frame_start = time.time()
         try:
             frame = get_frame()
             if frame is None:
-                time.sleep(0.033)
+                # Instead of silently looping and freezing the UI image tag,
+                # yield a clean placeholder frame to maintain the aspect ratio.
+                ret, jpeg = cv2.imencode(".jpg", placeholder_frame, encode_params)
+                if ret and jpeg is not None:
+                    yield (
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n\r\n" +
+                        jpeg.tobytes() +
+                        b"\r\n"
+                    )
+                time.sleep(0.066) # slower refresh for placeholder to save CPU
                 continue
 
             annotated = annotate_frame(frame)
@@ -465,6 +562,7 @@ def generate_mjpeg():
         sleep_time = FRAME_DELAY - elapsed
         if sleep_time > 0:
             time.sleep(sleep_time)
+
 
 
 # ──────────────────────────────────────────────

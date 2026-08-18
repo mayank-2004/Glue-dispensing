@@ -131,6 +131,132 @@ function InlineJog({ onSend, disabled }) {
   );
 }
 
+// ─── Height Map Visualizer ───────────────────────────────────────────────────
+function HeightMapVisualizer({ mesh, boardOutline }) {
+  if (!mesh || mesh.length === 0) return null;
+  const calibrated = mesh.filter(p => p.zParam !== 0);
+  if (calibrated.length === 0) return null;
+
+  const SVG_W = 280, SVG_H = 180, PAD = 28;
+
+  // Use design-space positions for layout; fall back to machine coords
+  const pts = mesh.map(p => ({ ...p, px: p.designX ?? p.x, py: p.designY ?? p.y }));
+
+  // Board outline bounds
+  let minX, maxX, minY, maxY;
+  if (boardOutline) {
+    minX = boardOutline.minX ?? 0;
+    minY = boardOutline.minY ?? 0;
+    maxX = boardOutline.maxX ?? (minX + (boardOutline.width  ?? 100));
+    maxY = boardOutline.maxY ?? (minY + (boardOutline.height ?? 100));
+  } else {
+    minX = Math.min(...pts.map(p => p.px));
+    maxX = Math.max(...pts.map(p => p.px));
+    minY = Math.min(...pts.map(p => p.py));
+    maxY = Math.max(...pts.map(p => p.py));
+  }
+  const rangeX = maxX - minX || 1;
+  const rangeY = maxY - minY || 1;
+
+  // Convert design coords → SVG pixel coords
+  const toSvg = (px, py) => ({
+    x: PAD + ((px - minX) / rangeX) * (SVG_W - 2 * PAD),
+    y: PAD + ((py - minY) / rangeY) * (SVG_H - 2 * PAD),
+  });
+
+  // Z → colour: blue (low) → green (mid) → red (high)
+  const zVals  = calibrated.map(p => p.zParam);
+  const zMin   = Math.min(...zVals);
+  const zMax   = Math.max(...zVals);
+  const zRange = zMax - zMin || 0.001;
+  const zToColor = z => {
+    const t = Math.max(0, Math.min(1, (z - zMin) / zRange));
+    let r, g, b;
+    if (t < 0.5) {
+      const s = t * 2;
+      r = 0; g = Math.round(120 + s * 80); b = Math.round(255 - s * 155);
+    } else {
+      const s = (t - 0.5) * 2;
+      r = Math.round(s * 255); g = Math.round(200 - s * 150); b = Math.round(100 - s * 100);
+    }
+    return `rgb(${r},${g},${b})`;
+  };
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div style={{ fontSize: '0.82em', color: '#8b949e', marginBottom: 6, fontWeight: 600, letterSpacing: '0.03em' }}>
+        📊 Surface Height Map
+      </div>
+      <svg width={SVG_W} height={SVG_H}
+        style={{ background: '#0d1117', borderRadius: 8, border: '1px solid #21262d', display: 'block' }}>
+
+        {/* Board outline */}
+        <rect x={PAD} y={PAD} width={SVG_W - 2 * PAD} height={SVG_H - 2 * PAD}
+          fill="rgba(48,54,61,0.25)" stroke="#30363d" strokeWidth="1.5" strokeDasharray="5,3" rx="2" />
+
+        {/* Connecting lines between every pair of calibrated points */}
+        {calibrated.map((a, i) =>
+          calibrated.slice(i + 1).map((b, j) => {
+            const sa = toSvg(a.designX ?? a.x, a.designY ?? a.y);
+            const sb = toSvg(b.designX ?? b.x, b.designY ?? b.y);
+            const midColor = zToColor((a.zParam + b.zParam) / 2);
+            return <line key={`ln-${i}-${j}`}
+              x1={sa.x} y1={sa.y} x2={sb.x} y2={sb.y}
+              stroke={midColor} strokeWidth="1.5" strokeOpacity="0.35" />;
+          })
+        )}
+
+        {/* Probe point circles + labels */}
+        {pts.map(pt => {
+          const s   = toSvg(pt.px, pt.py);
+          const done  = pt.zParam !== 0;
+          const col   = done ? zToColor(pt.zParam) : '#30363d';
+          const shortName = pt.name
+            .replace('Bottom-Left', 'BL').replace('Bottom-Right', 'BR')
+            .replace('Top-Left',    'TL').replace('Top-Right',    'TR')
+            .replace('Center',      'CTR');
+          return (
+            <g key={pt.id}>
+              {/* Outer glow ring */}
+              <circle cx={s.x} cy={s.y} r={16} fill={col} fillOpacity={done ? 0.12 : 0.04}
+                stroke={col} strokeWidth={done ? 1.5 : 0.5} strokeOpacity={done ? 0.6 : 0.2} />
+              {/* Centre dot */}
+              <circle cx={s.x} cy={s.y} r={5} fill={done ? col : '#21262d'}
+                stroke={done ? col : '#30363d'} strokeWidth="1" />
+              {/* Point name above */}
+              <text x={s.x} y={s.y - 20} textAnchor="middle"
+                fill="#8b949e" fontSize="9" fontFamily="monospace">
+                {shortName}
+              </text>
+              {/* Z value below */}
+              {done && (
+                <text x={s.x} y={s.y + 24} textAnchor="middle"
+                  fill={col} fontSize="9" fontFamily="monospace" fontWeight="bold">
+                  {pt.zParam.toFixed(3)}
+                </text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+
+      {/* Gradient legend */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 7,
+        fontSize: '0.73em', color: '#8b949e', width: SVG_W }}>
+        <span style={{ color: 'rgb(0,120,255)', flexShrink: 0 }}>▬ Low</span>
+        <div style={{ flex: 1, height: 5, borderRadius: 3,
+          background: 'linear-gradient(to right,rgb(0,120,255),rgb(0,200,100),rgb(255,50,0))' }} />
+        <span style={{ color: 'rgb(255,50,0)', flexShrink: 0 }}>High ▬</span>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', width: SVG_W,
+        fontSize: '0.70em', color: '#555', marginTop: 2 }}>
+        <span>{zMin.toFixed(3)} mm</span>
+        <span>{zMax.toFixed(3)} mm</span>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 export default function BedCalibrationPanel({
   machinePosition = { x: 0, y: 0, z: 0 },
@@ -667,6 +793,7 @@ export default function BedCalibrationPanel({
                 </thead>
                 <tbody>{mesh.map(probePointRow)}</tbody>
               </table>
+              <HeightMapVisualizer mesh={mesh} boardOutline={boardOutline} />
             </div>
           )}
         </div>
@@ -813,7 +940,9 @@ export default function BedCalibrationPanel({
             <tbody>{mesh.map(probePointRow)}</tbody>
           </table>
 
-          <div style={{ display: 'flex', gap: 8 }}>
+          <HeightMapVisualizer mesh={mesh} boardOutline={boardOutline} />
+
+          <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
             <Btn onClick={() => setFlowStep(FLOW.IDLE)} color="#1565c0" textColor="#fff" style={{ flex: 1 }}>
               ← Back to Settings
             </Btn>
