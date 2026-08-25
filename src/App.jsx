@@ -6,7 +6,7 @@ import LayerList from "./components/LayerList.jsx";
 import Viewer from "./components/Viewer.jsx";
 import CameraPanel from "./components/CameraPanel.jsx";
 import SerialPanel from "./components/SerialPanel.jsx";
-import BedCalibrationPanel, { getZOffsetForPoint } from "./components/BedCalibrationPanel.jsx";
+import BedCalibrationPanel from "./components/BedCalibrationPanel.jsx";
 import ComponentList from "./components/ComponentList.jsx";
 import JogPanel from "./components/JogPanel.jsx";
 import FiducialPanel from "./components/FiducialPanel.jsx";
@@ -14,7 +14,6 @@ import AutomatedDispensingPanel from "./components/AutomatedDispensingPanel.jsx"
 import { analyzeFiducialsInLayers, analyzeFiducialsWithRails } from "./lib/gerber/fiducialDetection.js";
 import { detectPcbOrigins } from "./lib/gerber/originDetection.js";
 import { FiducialVisionDetector } from "./lib/vision/fiducialVision.js";
-import { zipTextFiles, downloadBlob } from "./lib/zip/zipUtils.js";
 import { fitSimilarity, fitAffine, fitTranslation, fitHomography, applyTransform, rmsError } from "./lib/utils/transform2d.js";
 import { PadDetector } from "./lib/vision/padDetection.js";
 import { QualityController } from "./lib/quality/qualityControl.js";
@@ -22,14 +21,16 @@ import { NozzleMaintenanceManager } from "./lib/maintenance/nozzleMaintenance.js
 import { generatePath } from "./lib/motion/pathGeneration.js";
 import { DispensingSequencer } from "./lib/automation/dispensingSequence.js";
 import { SafePathPlanner } from "./lib/automation/safePathPlanner.js";
-import { extractPadsMm, extractPadsWithPanel } from "./lib/gerber/extractPads.js";
-import MaintenanceManager from "./components/MaintenanceManager.jsx";
+import { extractPadsWithPanel } from "./lib/gerber/extractPads.js";
 import ToolOffsetCalibration from "./components/ToolOffsetCalibration.jsx";
 import { useSerialMachine } from "./hooks/useSerialMachine.js";
 import { useGerberFiles } from "./hooks/useGerberFiles.js";
 import AppHeader from "./components/AppHeader.jsx";
 import GuidedTour from "./components/GuidedTour.jsx";
 import NetworkManagerPanel from "./components/NetworkManagerPanel.jsx";
+import OperatorDashboard from "./components/OperatorDashboard.jsx";
+import OperatorAnalytics from "./components/OperatorAnalytics.jsx";
+import OperationResultPanel from "./components/OperationResultPanel.jsx";
 
 function calculatePadCenter(p) {
   if (typeof p.x === "number" && typeof p.y === "number") {
@@ -201,7 +202,7 @@ export default function App() {
   const [panelInfo, setPanelInfo] = useState(null);
   const [panelRailFiducials, setPanelRailFiducials] = useState([]);
   const [panelXf, setPanelXf] = useState(null);
-  const [activeComponent, setActiveComponent] = useState('SerialPanel')
+  const [activeComponent, setActiveComponent] = useState('Dashboard')
 
   // Move nozzle to the PCB's Gerber origin point in machine coordinates
   const goToPcbOrigin = useCallback(async () => {
@@ -287,6 +288,10 @@ export default function App() {
   const [safeSequence, setSafeSequence] = useState([]);
   const [jobStatistics, setJobStatistics] = useState(null);
   const [panelJobStage, setPanelJobStage] = useState('idle');
+  const [operationReport, setOperationReport] = useState(null);
+  const [operationFailure, setOperationFailure] = useState(null);
+  const [glueStatus, setGlueStatus] = useState(null);
+  const [nozzleHealth, setNozzleHealth] = useState(null);
   const [useSafePathPlanning, setUseSafePathPlanning] = useState(true);
   const [componentHeights, setComponentHeights] = useState([]);
   const [livePreview, setLivePreview] = useState({
@@ -1154,7 +1159,6 @@ export default function App() {
       // Fix: Draw the actual board outline in DESIGN SPACE (no machine transform).
       // The xf transform is design→machine. The SVG viewer is in design space.
       // Applying xf here shifts the overlay by the full machine offset (~70mm) — wrong!
-      // Instead, draw boardOutline (already in design mm) directly on the SVG.
       let boardCorners;
       if (boardOutline) {
         const { minX, minY, width, height } = boardOutline;
@@ -1575,8 +1579,6 @@ export default function App() {
   const onClearAll = () => { setFiducials(prev => prev.map(f => ({ ...f, design: null, machine: null }))); setXf(null); };
 
   // Auto-advance arm dropdown after each successful fiducial save.
-  // Sequence: rail fiducials first (R1→R2→…), then local fiducials (F1→F2→…).
-  // Skips slots that already have a machine coord; disarms when all are filled.
   const onAdvanceArmedFid = useCallback((justSavedId) => {
     setFidActiveId(currentId => {
       const sequence = [
@@ -1617,9 +1619,6 @@ export default function App() {
   };
 
   // ── Auto-solve board transform once ALL detected fiducials have machine coords ──
-  // Fires after each camera snap; only commits when every fiducial with a design
-  // coord has also been detected (machine coord present).
-  // Per user requirement: applyXf is enabled first, then the matrix is evaluated.
   useEffect(() => {
     const withDesign = fiducials.filter(f => f.design);
     if (withDesign.length < 2) return;                       // need at least 2 points
@@ -1750,7 +1749,6 @@ export default function App() {
     };
   }, [fiducials]);
 
-  // Workflow steps (replaces old componentNavItems)
   const workflowSteps = [
     { id: 'SerialPanel', num: '1', label: 'Connect', sub: 'Serial / Machine' },
     { id: 'Viewer', num: '2', label: 'Load PCB', sub: 'Gerber / Layers' },
@@ -1770,23 +1768,19 @@ export default function App() {
     return false;
   };
 
-  const mPos = livePreview.machinePosition || machinePos || { x: 0, y: 0, z: 0 };
-
   return (
     <div id="root" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
-      <GuidedTour 
-        isConnected={isSerialConnected} 
-        isHomed={isHomed} 
-        hasFileLoaded={generatedPath !== null && generatedPath.segments && generatedPath.segments.length > 0} 
-        hasFiducialsSet={panelBoards && panelBoards.length > 0 && panelBoards[0].fiducials?.every(f => f.machine)} 
-        isJobRunning={isJobRunning} 
-        jobStage={panelJobStage} 
+      <GuidedTour
+        isConnected={isSerialConnected}
+        isHomed={isHomed}
+        hasFileLoaded={generatedPath !== null && generatedPath.segments && generatedPath.segments.length > 0}
+        hasFiducialsSet={panelBoards && panelBoards.length > 0 && panelBoards[0].fiducials?.every(f => f.machine)}
+        isJobRunning={isJobRunning}
+        jobStage={panelJobStage}
       />
 
       {/* ── TOP HEADER BAR ─────────────────────────────────── */}
       <AppHeader
-        mPos={mPos}
-        isSerialConnected={isSerialConnected}
         isEmergencyStopped={isEmergencyStopped}
         onStop={triggerEmergencyStop}
         onReset={resetEmergencyStop}
@@ -1798,6 +1792,17 @@ export default function App() {
       {/* ── BODY: Sidebar + Content ─────────────────────────── */}
       <div className="app-body">
         <aside className="sidebar">
+
+          <div className="operator-nav">
+            <div className="sidebar-section-label">Operator Console</div>
+            <button
+              className={`operator-nav-btn ${activeComponent === 'Dashboard' ? 'active' : ''}`}
+              onClick={() => setActiveComponent('Dashboard')}
+            >
+              <span className="operator-nav-icon">◈</span>
+              <span><strong>Dashboard</strong><small>Control room overview</small></span>
+            </button>
+          </div>
 
           {/* Workflow Steps */}
           <div className="sidebar-workflow">
@@ -2000,7 +2005,7 @@ export default function App() {
 
           {/* Breadcrumb strip */}
           <div className="breadcrumb-bar">
-            <span className="breadcrumb-step">Workflow</span>
+            <span className="breadcrumb-step">Operator Console</span>
             <span className="breadcrumb-sep">›</span>
             <span className="breadcrumb-step active">
               {workflowSteps.find(s => s.id === activeComponent)?.label ?? activeComponent}
@@ -2011,6 +2016,49 @@ export default function App() {
           </div>
 
           <div className="content-area">
+            <div style={{ display: activeComponent === 'Dashboard' ? 'block' : 'none', width: '100%', height: '100%' }}>
+              <div className="panel full-height">
+                <div className="panel-header">
+                  <h3 className="panel-title">CONTROL ROOM OVERVIEW</h3>
+                  <span className="badge info">LIVE SYSTEM VIEW</span>
+                </div>
+                <div style={{ padding: 12, height: '100%', overflow: 'auto' }}>
+                  <OperatorDashboard
+                    isConnected={isSerialConnected}
+                    isHomed={isHomed}
+                    isJobRunning={isJobRunning}
+                    jobStage={panelJobStage}
+                    jobStatistics={jobStatistics}
+                    operationReport={operationReport}
+                    operationFailure={operationFailure}
+                    glueStatus={glueStatus}
+                    nozzleHealth={nozzleHealth}
+                    machinePosition={livePreview.machinePosition || machinePos}
+                    maintenanceAlert={maintenanceAlert}
+                    onOpen={setActiveComponent}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: activeComponent === 'Analytics' ? 'block' : 'none', width: '100%', height: '100%' }}>
+              <div className="panel full-height">
+                <div className="panel-header"><h3 className="panel-title">ANALYTICS</h3></div>
+                <div style={{ padding: 12, height: '100%', overflow: 'auto' }}>
+                  <OperatorAnalytics jobStatistics={jobStatistics} operationReport={operationReport} onOpen={setActiveComponent} />
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: activeComponent === 'OperationResult' ? 'block' : 'none', width: '100%', height: '100%' }}>
+              <div className="panel full-height">
+                <div className="panel-header"><h3 className="panel-title">SUCCESS / FAILURE</h3></div>
+                <div style={{ padding: 12, height: '100%', overflow: 'auto' }}>
+                  <OperationResultPanel jobStage={panelJobStage} jobStatistics={jobStatistics} operationReport={operationReport} operationFailure={operationFailure} onOpen={setActiveComponent} />
+                </div>
+              </div>
+            </div>
+
             <div style={{ display: activeComponent === 'SerialPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
               <div className="panel full-height">
                 <div className="panel-header">
@@ -2340,6 +2388,10 @@ export default function App() {
                 onJobComplete={() => {
                   setIsJobRunning(false);
                 }}
+                onJobReportChange={(report) => { setOperationReport(report); setOperationFailure(null); }}
+                onJobFailure={(failure) => { setOperationFailure(failure); setOperationReport(null); }}
+                onGlueStatusChange={setGlueStatus}
+                onNozzleHealthChange={setNozzleHealth}
                 isAdminMode={isAdminMode}
               />
             </div>

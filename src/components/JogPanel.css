@@ -199,11 +199,37 @@
   font-family: var(--font-mono);
   text-align: center;
   border: 1px solid var(--border-primary);
-  color: var(--accent-success);
+  color: var(--text-secondary);
   font-size: 0.82rem;
   margin-top: 8px;
   letter-spacing: 0.04em;
+  text-shadow: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+.status-display.status-ok {
+  color: var(--accent-success);
+  border-color: rgba(0,232,122,0.35);
+  background: rgba(0,232,122,0.05);
   text-shadow: 0 0 6px rgba(0,232,122,0.4);
+}
+
+.status-display.status-warning {
+  color: var(--accent-warning);
+  border-color: rgba(245,166,35,0.35);
+  background: rgba(245,166,35,0.05);
+}
+
+.status-indicator {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 8px currentColor;
+  flex-shrink: 0;
 }
 
 /* ── Keyboard Hint ───────────────────────────────────────── */

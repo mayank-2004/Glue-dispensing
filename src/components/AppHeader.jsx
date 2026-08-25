@@ -125,7 +125,7 @@ function PinModal({ title, hint, error, success, onSubmit, onCancel, onForgot })
   );
 }
 
-export default function AppHeader({ mPos, isSerialConnected, isEmergencyStopped, onStop, onReset, onQuit, isAdminMode, onToggleAdmin }) {
+export default function AppHeader({ isEmergencyStopped, onStop, onReset, onQuit, isAdminMode, onToggleAdmin }) {
   const [confirmingQuit, setConfirmingQuit] = useState(false);
   const confirmTimerRef = useRef(null);
 
@@ -244,31 +244,8 @@ export default function AppHeader({ mPos, isSerialConnected, isEmergencyStopped,
           </div>
         </div>
         <div className="header-divider" />
-        <div className="header-dro">
-          <div className="dro-axis">
-            <span className="dro-label">X</span>
-            <span className="dro-value">{mPos.x.toFixed(3)}</span>
-            <span className="dro-unit">mm</span>
-          </div>
-          <div className="dro-sep" />
-          <div className="dro-axis">
-            <span className="dro-label">Y</span>
-            <span className="dro-value">{mPos.y.toFixed(3)}</span>
-            <span className="dro-unit">mm</span>
-          </div>
-          <div className="dro-sep" />
-          <div className="dro-axis">
-            <span className="dro-label">Z</span>
-            <span className="dro-value">{(mPos.z ?? 0).toFixed(3)}</span>
-            <span className="dro-unit">mm</span>
-          </div>
-        </div>
         <div className="header-spacer" />
         <div className="header-right">
-          <div className={`status-pill ${isSerialConnected ? 'connected' : 'disconnected'}`}>
-            <span className="pill-dot" />
-            {isSerialConnected ? 'CONNECTED' : 'OFFLINE'}
-          </div>
           {/* onToggleAdmin && (
             <>
               <button

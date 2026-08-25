@@ -1,0 +1,20 @@
+.operation-result-panel { min-height: 100%; padding: 4px 2px 24px; }
+.operation-result-panel h1 { margin: 7px 0 5px; color: var(--text-bright); font-size: 2rem; }
+.operation-result-panel p { color: var(--text-secondary); font-size: 0.82rem; }
+.result-hero { display: flex; align-items: center; gap: 18px; margin: 16px 0 10px; padding: 24px; border: 1px solid currentColor; border-left: 4px solid currentColor; border-radius: var(--radius-sm); background: rgba(0,0,0,0.25); }
+.result-success { color: var(--accent-success); box-shadow: 0 0 22px rgba(0,232,122,0.1), inset 0 0 28px rgba(0,232,122,0.04); }
+.result-info { color: var(--accent-info); }
+.result-neutral { color: var(--text-secondary); }
+.result-symbol { display: flex; align-items: center; justify-content: center; width: 58px; height: 58px; border: 2px solid currentColor; border-radius: 50%; font-family: var(--font-mono); font-size: 2rem; }
+.result-label { color: currentColor; font-family: var(--font-mono); font-size: 0.62rem; letter-spacing: 0.14em; }
+.result-hero strong { display: block; margin: 4px 0; color: currentColor; font-family: var(--font-mono); font-size: 1.55rem; letter-spacing: 0.08em; }
+.result-hero small { color: var(--text-secondary); font-size: 0.72rem; }
+.result-detail-grid { display: grid; grid-template-columns: 1fr 0.8fr; gap: 10px; }
+.result-row { display: flex; justify-content: space-between; padding: 15px 4px; border-bottom: 1px solid var(--border-primary); color: var(--text-secondary); font-size: 0.75rem; }
+.result-row strong { color: var(--accent-primary); font-family: var(--font-mono); }
+.result-row .result-good { color: var(--accent-success); }
+.result-row .result-bad { color: var(--accent-danger); }
+.result-failed-pads { margin-top: 12px; padding: 9px 10px; color: var(--accent-danger); background: rgba(255,51,85,0.08); border: 1px solid rgba(255,51,85,0.35); border-radius: 4px; font-family: var(--font-mono); font-size: 0.7rem; }
+.result-action-section p { line-height: 1.5; }
+.result-action-section .btn { margin-top: 8px; }
+@media (max-width: 680px) { .result-detail-grid { grid-template-columns: 1fr; } }

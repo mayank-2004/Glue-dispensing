@@ -1,307 +1,26 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useToast } from '../Toast.jsx';
-import { header, home, moveAbs, dispensePoint, dispenseBead, jogRel } from "../lib/motion/gcode.js";
+import { dispensePoint, dispenseBead } from "../lib/motion/gcode.js";
 import { applyTransform, fitSimilarity, fitAffine } from "../lib/utils/transform2d.js";
 import "./AutomatedDispensingPanel.css";
 import { buildJobGlueSummary, GlueStore } from '../lib/glue/glueTracker.js';
 import { getZOffsetForPoint } from './BedCalibrationPanel.jsx';
-import GlueGauge from './GlueGauge.jsx';
-import MaintenanceManager from './MaintenanceManager.jsx';
 import { NozzleMaintenanceManager } from '../lib/maintenance/nozzleMaintenance.js';
+import {
+  SPC_KEY, spcLoad, spcAppend, parsePnpCsv,
+  detectDnpComponents, autoComputePnpOffset, classifyDotPattern,
+  getComponentDotOffsets, detectPanelFromFiducials,
+  nearestNeighborSort, totalTravelMm, Sparkline,
+} from './dispensingHelpers.jsx';
 
 const nozzleMaintenance = new NozzleMaintenanceManager();
-
-// IDW (Inverse Distance Weighting) interpolation for spatial correction map
-function idwCorrect(x, y, vectors, power = 2) {
-  if (!vectors || !vectors.length) return { dx: 0, dy: 0 };
-  let wdx = 0, wdy = 0, wsum = 0;
-  for (const v of vectors) {
-    const d2 = (x - v.x) * (x - v.x) + (y - v.y) * (y - v.y);
-    if (d2 < 1e-6) return { dx: v.dx, dy: v.dy };
-    const w = 1 / Math.pow(d2, power);
-    wdx += w * v.dx; wdy += w * v.dy; wsum += w;
-  }
-  return { dx: wdx / wsum, dy: wdy / wsum };
-}
-
-// ── SPC (Statistical Process Control) helpers ────────────────────────────────
-const SPC_KEY = 'spcDotQuality';
-const SPC_MAX_JOBS = 60; // rolling window — oldest entries drop off
-
-function spcLoad() {
-  try { return JSON.parse(localStorage.getItem(SPC_KEY) || '{"jobs":[]}'); }
-  catch { return { jobs: [] }; }
-}
-
-function spcAppend(dotResults, totalPads) {
-  if (!dotResults || dotResults.length === 0) return;
-  const data = spcLoad();
-  const passed = dotResults.filter(r => r.passed).length;
-  const diams = dotResults.filter(r => r.diameter_mm > 0).map(r => r.diameter_mm);
-  data.jobs = [
-    ...data.jobs,
-    {
-      jobId: new Date().toISOString(),
-      date: new Date().toLocaleDateString(),
-      totalPads,
-      checked: dotResults.length,
-      passed,
-      failed: dotResults.length - passed,
-      passRate: passed / dotResults.length,
-      avgDiameter: diams.length ? diams.reduce((a, b) => a + b, 0) / diams.length : null,
-      minDiameter: diams.length ? Math.min(...diams) : null,
-    },
-  ].slice(-SPC_MAX_JOBS);
-  localStorage.setItem(SPC_KEY, JSON.stringify(data));
-}
-
-// Parse pick-and-place CSV from KiCad or Altium export
-function parsePnpCsv(text, filename = '') {
-  const lines = text.split(/\r?\n/).filter(l => l.trim() && !l.trim().startsWith('#'));
-  if (lines.length < 2) return [];
-  const delim = lines[0].includes('\t') ? '\t' : ',';
-  const headers = lines[0].split(delim).map(h => h.trim().replace(/^"|"$/g, '').toLowerCase());
-  const findCol = (...names) => {
-    for (const name of names) {
-      const idx = headers.findIndex(h => h.includes(name));
-      if (idx >= 0) return idx;
-    }
-    return -1;
-  };
-  const colRef = findCol('ref', 'designator', 'reference');
-  const colX = findCol('pos x', 'mid x', 'posx', 'x');
-  const colY = findCol('pos y', 'mid y', 'posy', 'y');
-  const colPkg = findCol('package', 'footprint', 'value', 'val');
-  const colSide = findCol('side', 'layer');
-  const colRot = findCol('rot', 'rotation', 'angle');
-  if (colX < 0 || colY < 0) return [];
-
-  // When no Side/Layer column exists, infer default side from filename
-  // e.g. "board (BOTTOM).csv", "pcb_back.csv", "-B.csv" → bottom
-  const fn = filename.toLowerCase();
-  const filenameSide = (fn.includes('bot') || fn.includes('back') || fn.includes('-b.') || fn.includes('_b.'))
-    ? 'bottom'
-    : 'top';
-
-  const parseNum = s => parseFloat(String(s).replace(/[^\d.\-]/g, '') || '0');
-  const resolveSide = raw => {
-    if (!raw) return filenameSide;
-    const r = raw.toLowerCase().trim();
-    if (r === 'f.cu' || r === 'f' || r === 'front' || r === 'top') return 'top';
-    if (r === 'b.cu' || r === 'b' || r === 'back' || r.includes('bot')) return 'bottom';
-    return filenameSide;
-  };
-
-  return lines.slice(1).map((line, i) => {
-    const cols = line.split(delim).map(c => c.trim().replace(/^"|"$/g, ''));
-    const x = parseNum(cols[colX]);
-    const y = parseNum(cols[colY]);
-    if (isNaN(x) || isNaN(y)) return null;
-    const side = resolveSide(colSide >= 0 ? cols[colSide] : null);
-    return {
-      id: colRef >= 0 ? cols[colRef] : `C${i + 1}`,
-      x,
-      y,
-      pkg: colPkg >= 0 ? cols[colPkg] : '',
-      side,
-      rotation: colRot >= 0 ? parseNum(cols[colRot]) : 0,
-    };
-  }).filter(Boolean);
-}
-
-// Detect DNP (Do Not Place) components from parsed CSV rows.
-// Returns a Set of component IDs that should be excluded by default.
-function detectDnpComponents(comps) {
-  const dnpKeywords = ['dnp', 'do not place', 'no fit', 'not fit', 'nf', 'nc', 'nm', 'x'];
-  return new Set(
-    comps.filter(c => {
-      if (/^fid/i.test(c.id)) return true; // fiducial markers never get glue
-      const pkg = (c.pkg || '').toLowerCase().trim();
-      if (pkg === '') return true; // no footprint = likely DNP or special marker
-      if (dnpKeywords.some(kw => pkg === kw || pkg.startsWith(kw + ' '))) return true;
-      return false;
-    }).map(c => c.id)
-  );
-}
-
-// Auto-compute X/Y offset between CSV coordinate origin and Gerber coordinate origin.
-// Uses fiducial rows from the CSV (id matches /^fid/i) matched against all known app
-// fiducials (board + rail). Returns { x, y } offset or null if not enough data.
-function autoComputePnpOffset(csvComponents, appFiducials, toleranceMm = 5) {
-  const csvFids = csvComponents.filter(c => /^fid/i.test(c.id));
-  const appDesign = appFiducials.filter(f => f.design).map(f => f.design);
-  if (csvFids.length === 0 || appDesign.length === 0) return null;
-
-  let bestScore = 0;
-  let bestOffset = null;
-
-  for (const cf of csvFids) {
-    for (const af of appDesign) {
-      const candDx = af.x - cf.x;
-      const candDy = af.y - cf.y;
-
-      let sumDx = 0, sumDy = 0, matches = 0;
-      for (const cf2 of csvFids) {
-        const sx = cf2.x + candDx;
-        const sy = cf2.y + candDy;
-        let minDist = Infinity;
-        let bestAf = null;
-        for (const af2 of appDesign) {
-          const d = Math.hypot(af2.x - sx, af2.y - sy);
-          if (d < minDist) { minDist = d; bestAf = af2; }
-        }
-        if (minDist < toleranceMm) {
-          sumDx += bestAf.x - cf2.x;
-          sumDy += bestAf.y - cf2.y;
-          matches++;
-        }
-      }
-
-      if (matches > bestScore) {
-        bestScore = matches;
-        bestOffset = { x: sumDx / matches, y: sumDy / matches };
-      }
-    }
-  }
-
-  return bestOffset;
-}
-
-// Classify package string into a dot-pattern type.
-// 'single' → 1 dot at centroid
-// 'dual'   → 2 dots along component X-axis (separated by spacingMm)
-// 'quad'   → 4 dots at corners of a spacingMm × spacingMm square
-function classifyDotPattern(pkg) {
-  if (!pkg) return 'single';
-  const p = pkg.toLowerCase();
-  // IC packages — quad corners
-  if (/^(qfp|qfn|soic|sop|ssop|tssop|lqfp|plcc|bga|lga|qsop|tso)/.test(p)) return 'quad';
-  // Large passives / connectors — dual
-  // Only match standard EIA package codes (word-bounded), NOT arbitrary 4-digit numbers
-  // embedded in part names like NTC_B3950, NTC_10K_3950, C_3216_Metric, etc.
-  const EIA_LARGE = /(?:^|[_\-\s])(1206|1210|1812|2010|2512)(?:[_\-\s]|$)/;
-  if (EIA_LARGE.test(p)) return 'dual';
-  if (/conn|hdr|jst|molex|usb|hdmi|sma/.test(p)) return 'dual';
-  return 'single';
-}
-
-// Return [{dx, dy}] offsets (mm, design space) for a component, rotated by comp.rotation.
-function getComponentDotOffsets(comp, spacingMm, customPatterns = {}) {
-  const pattern = customPatterns[comp.id] || classifyDotPattern(comp.pkg);
-  const half = spacingMm / 2;
-  const angleRad = ((comp.rotation || 0) * Math.PI) / 180;
-  const cos = Math.cos(angleRad);
-  const sin = Math.sin(angleRad);
-  const rot = (dx, dy) => ({ dx: dx * cos - dy * sin, dy: dx * sin + dy * cos });
-  if (pattern === 'dual') return [rot(-half, 0), rot(half, 0)];
-  if (pattern === 'quad') return [rot(-half, -half), rot(half, -half), rot(half, half), rot(-half, half)];
-  return [{ dx: 0, dy: 0 }];
-}
-
-// Detect panel layout (rows, stepY) from repeated fiducial positions in a flat-panelized Gerber.
-// For a 3-board panel the fiducial detector finds all 6 fiducials (2 per board × 3 boards).
-// Grouping by X isolates each "column" of repeated fiducials; the Y spacing within a column = stepY.
-function detectPanelFromFiducials(fiducials) {
-  const valid = fiducials.filter(f => f.design && typeof f.design.x === 'number' && typeof f.design.y === 'number');
-  if (valid.length < 4) return null; // need ≥ 2 fids × 2 boards
-
-  // Group by X position (same fiducial repeats at the same X across boards; tol = 2 mm)
-  const X_TOL = 2;
-  const xGroups = [];
-  for (const fid of valid) {
-    const g = xGroups.find(g => Math.abs(g.cx - fid.design.x) < X_TOL);
-    if (g) g.ys.push(fid.design.y);
-    else xGroups.push({ cx: fid.design.x, ys: [fid.design.y] });
-  }
-
-  // Only use groups where Y count (= number of boards) is ≥ 2
-  const boardCounts = xGroups.map(g => g.ys.length);
-  const rows = Math.max(...boardCounts);
-  if (rows < 2) return null;
-
-  // Compute stepY: average Y spacing across all X groups that have the full board count
-  let totalStep = 0, n = 0;
-  for (const g of xGroups) {
-    if (g.ys.length !== rows) continue;
-    const sortedYs = [...g.ys].sort((a, b) => a - b);
-    for (let i = 1; i < sortedYs.length; i++) {
-      totalStep += sortedYs[i] - sortedYs[i - 1];
-      n++;
-    }
-  }
-  if (n === 0) return null;
-  const stepY = parseFloat((totalStep / n).toFixed(2));
-
-  // Validate: all Y spacings must be within 5 mm of stepY (rules out random fiducial noise)
-  for (const g of xGroups) {
-    if (g.ys.length !== rows) continue;
-    const sortedYs = [...g.ys].sort((a, b) => a - b);
-    for (let i = 1; i < sortedYs.length; i++) {
-      if (Math.abs(sortedYs[i] - sortedYs[i - 1] - stepY) > 5) return null;
-    }
-  }
-
-  return { rows, stepY };
-}
-
-// Nearest-neighbor TSP sort — greedy path starting from (startX, startY).
-// Returns a new array in visit order; original array is not mutated.
-function nearestNeighborSort(components, startX = 0, startY = 0) {
-  if (components.length <= 1) return [...components];
-  const remaining = [...components];
-  const sorted = [];
-  let cx = startX, cy = startY;
-  while (remaining.length > 0) {
-    let bestIdx = 0, bestDist = Infinity;
-    for (let i = 0; i < remaining.length; i++) {
-      const d = Math.hypot(remaining[i].x - cx, remaining[i].y - cy);
-      if (d < bestDist) { bestDist = d; bestIdx = i; }
-    }
-    const comp = remaining.splice(bestIdx, 1)[0];
-    sorted.push(comp);
-    cx = comp.x; cy = comp.y;
-  }
-  return sorted;
-}
-
-// Total XY travel distance (mm) for a component sequence from a start point.
-function totalTravelMm(components, startX = 0, startY = 0) {
-  if (components.length === 0) return 0;
-  let dist = Math.hypot(components[0].x - startX, components[0].y - startY);
-  for (let i = 1; i < components.length; i++) {
-    dist += Math.hypot(components[i].x - components[i - 1].x, components[i].y - components[i - 1].y);
-  }
-  return dist;
-}
-
-// Minimal SVG sparkline — values[] is an array of numbers
-function Sparkline({ values, color = '#58a6ff', height = 36, width = '100%' }) {
-  if (!values || values.length < 2) return null;
-  const min = Math.min(...values), max = Math.max(...values);
-  const range = max - min || 1;
-  const W = 260, H = height;
-  const pts = values.map((v, i) => {
-    const x = (i / (values.length - 1)) * W;
-    const y = H - ((v - min) / range) * (H - 4) - 2;
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
-  const last = values[values.length - 1];
-  const lx = W, ly = H - ((last - min) / range) * (H - 4) - 2;
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} style={{ width, height, display: 'block', overflow: 'visible' }}>
-      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.8" strokeLinejoin="round" />
-      <circle cx={lx} cy={ly} r="3" fill={color} />
-    </svg>
-  );
-}
 
 export default function AutomatedDispensingPanel({
   side = 'top',
   dispensingSequencer,
   dispensingSequence,
   safeSequence,
-  jobStatistics,
   referencePoint,
   selectedOrigin,
   pressureSettings,
@@ -310,16 +29,8 @@ export default function AutomatedDispensingPanel({
   useSafePathPlanning = false,
   setUseSafePathPlanning,
   onStartJob,
-  onDownloadGCode,
-  batchProcessor,
-  currentBatch,
-  onStartBatch,
   onJobComplete,
   fiducials = [],
-  onInputMachine,
-  onAutoAlign,
-  onSolve2,
-  onSolve3,
   xf,
   applyXf,
   isConnected = false,
@@ -332,6 +43,10 @@ export default function AutomatedDispensingPanel({
   toolOffset = { dx: 0, dy: 0 },
   isAdminMode = false,
   onJobStageChange,
+  onJobReportChange,
+  onJobFailure,
+  onGlueStatusChange,
+  onNozzleHealthChange,
 }) {
   const toast = useToast();
   const [isJobRunning, setIsJobRunning] = useState(false);
@@ -341,7 +56,6 @@ export default function AutomatedDispensingPanel({
   const prevConnectedRef = useRef(isConnected);
   const [autoResumeCountdown, setAutoResumeCountdown] = useState(null); // null | { padIndex, secondsLeft }
   const autoResumeCancelRef = useRef(null);
-  const [jobMode, setJobMode] = useState('single'); // 'single' or 'batch'
   const [dynamicPanelCorrection, setDynamicPanelCorrection] = useState(true); // Default to ON if panelized
 
   const [nozzleDia, setNozzleDia] = useState(() => parseFloat(localStorage.getItem('nozzleDia') || '0.6'));
@@ -355,15 +69,12 @@ export default function AutomatedDispensingPanel({
   }, [jobStage, onJobStageChange]);
   const [machineStatus, setMachineStatus] = useState('idle');
   const [jobProgress, setJobProgress] = useState({ current: 0, total: 0 });
-  const [regIndex, setRegIndex] = useState(0);
   // const [currentPos, setCurrentPos] = useState({ x: 0, y: 0, z: 0 }); // Replaced by prop
-  const [jogStep, setJogStep] = useState(1);
 
   // Pad Alignment Preview state
   const [previewPadIdx, setPreviewPadIdx] = useState(0);
 
   // Live Calibration Correction — accumulated from user's 'Capture True Center' actions
-  // Each entry: { predicted: {x,y}, actual: {x,y}, delta: {x,y} }
   const [calibCaptures, setCalibCaptures] = useState(() => {
     try { return JSON.parse(localStorage.getItem('calibCaptures') || '[]'); } catch { return []; }
   });
@@ -535,7 +246,7 @@ export default function AutomatedDispensingPanel({
     const opt = totalTravelMm(optFlat);
     const pct = orig > 0 ? Math.round((orig - opt) / orig * 100) : 0;
     return { orig: Math.round(orig), opt: Math.round(opt), pct, boards: nBoards };
-  }, [filteredPnpComponents, optimizedPnpComponents, optimizePath, isPnpMode, panelBoards, panelXf, applyXf]);
+  }, [filteredPnpComponents, optimizedPnpComponents, isPnpMode, panelBoards, panelXf, applyXf]);
 
   const effectiveSequence = isPnpMode ? optimizedPnpComponents : activeSequence;
 
@@ -578,8 +289,6 @@ export default function AutomatedDispensingPanel({
   }, [xf]);
   useEffect(() => { localStorage.setItem('nozzleDia', String(nozzleDia)); }, [nozzleDia]);
   useEffect(() => { localStorage.setItem('axisLimits', JSON.stringify(axisLimits)); }, [axisLimits]);
-  // useEffect(() => { localStorage.setItem('fineTuneX', String(fineTuneX)); }, [fineTuneX]);
-  // useEffect(() => { localStorage.setItem('fineTuneY', String(fineTuneY)); }, [fineTuneY]);
   useEffect(() => { localStorage.setItem('calibCaptures', JSON.stringify(calibCaptures)); }, [calibCaptures]);
 
   // Auto-detect PnP panel layout — three strategies in priority order
@@ -658,8 +367,30 @@ export default function AutomatedDispensingPanel({
   }, [activeSequence?.length]);
 
   useEffect(() => {
+    const publishGlueStatus = (summary) => {
+      const stock = GlueStore.getStock();
+      const used = GlueStore.getUsed();
+      const remaining = Math.max(0, stock - used);
+      const jobVolume = summary?.totalVolUl ?? 0;
+      onGlueStatusChange?.({
+        stock,
+        used,
+        remaining,
+        usedPct: stock > 0 ? (used / stock) * 100 : 0,
+        jobPads: summary?.annotated?.length ?? 0,
+        jobVolume,
+        stockAfterJob: Math.max(0, remaining - jobVolume),
+        stockAfterJobPct: stock > 0 ? Math.max(0, ((remaining - jobVolume) / stock) * 100) : 0,
+        stockRemainingPct: stock > 0 ? (remaining / stock) * 100 : 0,
+        willRunOut: summary?.willRunOut ?? false,
+        runOutAfterPad: summary?.runOutAfterPad ?? null,
+        nozzleDia,
+      });
+    };
+
     if (!activeSequence || activeSequence.length === 0) {
       setGlueSummary(null);
+      publishGlueStatus(null);
       return;
     }
     const summary = buildJobGlueSummary(
@@ -669,34 +400,32 @@ export default function AutomatedDispensingPanel({
       GlueStore.getUsed(),
     );
     setGlueSummary(summary);
-  }, [activeSequence, nozzleDia, glueStock]);
+    publishGlueStatus(summary);
+  }, [activeSequence, nozzleDia, glueStock, onGlueStatusChange]);
+
+  useEffect(() => {
+    const health = nozzleMaintenance.getNozzleHealthScore(spcData.jobs);
+    const status = nozzleMaintenance.getMaintenanceStatus();
+    onNozzleHealthChange?.({ ...health, ...status, spcJobsTracked: spcData.jobs.length });
+  }, [spcData, onNozzleHealthChange]);
 
   // Position & ACK listener
   useEffect(() => {
     const handleData = (line) => {
-      // 1. Parse Position - HANDLED BY APP.JSX NOW
-      // const match = line.match(/X:([-\d.]+)\s+Y:([-\d.]+)\s+Z:([-\d.]+)/);
-      // if (match) {
-      //   setCurrentPos({
-      //     x: parseFloat(match[1]),
-      //     y: parseFloat(match[2]),
-      //     z: parseFloat(match[3])
-      //   });
-      // }
 
-      // 2. Parse probe response [PRB:x,y,z:1] (contact=1 means probe triggered)
+      // Parse probe response [PRB:x,y,z:1] (contact=1 means probe triggered)
       const prbMatch = line.match(/\[PRB:([-\d.]+),([-\d.]+),([-\d.]+):(0|1)\]/);
       if (prbMatch && prbMatch[4] === '1') {
         probedSurfaceZRef.current = parseFloat(prbMatch[3]);
       }
 
-      // 3. Handle ACKs (Marlin/GRBL sends 'ok')
+      // Handle ACKs (Marlin/GRBL sends 'ok')
       if (line.trim().startsWith('ok')) {
         const entry = ackQueue.current.shift();
         if (entry) entry.resolve(true);
       }
 
-      // 4. Detect Marlin errors — reject all pending acks so sendGcodeWait throws immediately
+      // Detect Marlin errors — reject all pending acks so sendGcodeWait throws immediately
       const trimmed = line.trim();
       const isMarlinError = /^Error:/i.test(trimmed) || trimmed === '!!' || /^echo:Unknown command/i.test(trimmed);
       if (isMarlinError && isJobRunningRef.current) {
@@ -710,7 +439,6 @@ export default function AutomatedDispensingPanel({
     if (window.serial && window.serial.onData) window.serial.onData(handleData);
   }, []);
 
-  // Reliable Sender
   const sendGcodeWait = async (cmd) => {
     if (marlinFaultRef.current) {
       throw new Error(`Machine fault: ${marlinFaultRef.current}`);
@@ -1078,7 +806,6 @@ export default function AutomatedDispensingPanel({
             await sendGcodeWait('M204 T500');
             const fidTravelSpeed = speedSettings?.travelSpeed || 2000;
             await sendGcodeWait(`G1 X${expectedMachine.x.toFixed(3)} Y${expectedMachine.y.toFixed(3)} F${fidTravelSpeed}`);
-            // Restore higher travel accel for dispensing moves
             await sendGcodeWait('M204 T1000');
             await sendGcodeWait('M400');
             await new Promise(r => setTimeout(r, 800));
@@ -1184,14 +911,13 @@ export default function AutomatedDispensingPanel({
           // When using individual board.xf, do NOT add offsets — the board's own xf
           // already encodes the offset in its tx/ty translation component.
           const addOffset = !hasBoardSpecificXf;
-          const panelSpacePt = { 
-            x: p.x + (addOffset && board.offsetX != null ? board.offsetX : 0), 
-            y: p.y + (addOffset && board.offsetY != null ? board.offsetY : 0) 
+          const panelSpacePt = {
+            x: p.x + (addOffset && board.offsetX != null ? board.offsetX : 0),
+            y: p.y + (addOffset && board.offsetY != null ? board.offsetY : 0)
           };
           tp = applyTransform(effectiveXf, panelSpacePt);
           p = { ...p, x: tp.x, y: tp.y };
         } else {
-          // No transform: align manually using the effective origin + board offset if panel
           const ox = selectedOrigin ? selectedOrigin.x : (boardOutline ? boardOutline.minX : 0);
           const oy = selectedOrigin ? selectedOrigin.y : (boardOutline ? boardOutline.minY : 0);
           const boardOffX = isPnpPanel && board.offsetX != null ? board.offsetX : 0;
@@ -1214,9 +940,9 @@ export default function AutomatedDispensingPanel({
           let mx, my;
           if (effectiveXf) {
             const addOffset = !hasBoardSpecificXf;
-            const panelSpacePt = { 
-              x: dp.x + (addOffset && board.offsetX != null ? board.offsetX : 0), 
-              y: dp.y + (addOffset && board.offsetY != null ? board.offsetY : 0) 
+            const panelSpacePt = {
+              x: dp.x + (addOffset && board.offsetX != null ? board.offsetX : 0),
+              y: dp.y + (addOffset && board.offsetY != null ? board.offsetY : 0)
             };
             const mapped = applyTransform(effectiveXf, panelSpacePt);
             mx = mapped.x; my = mapped.y;
@@ -1360,7 +1086,7 @@ export default function AutomatedDispensingPanel({
                 }
               }
             }
-          } catch (_e) { /* vision server offline — skip silently */ }
+          } catch { /* vision server offline — skip silently */ }
         }
       }
 
@@ -1390,7 +1116,7 @@ export default function AutomatedDispensingPanel({
           ? (totalPnpDots * glueDotVolUl * loopBoards.length).toFixed(2)
           : glueSummary?.totalVolUl != null ? glueSummary.totalVolUl.toFixed(2) : '—';
         const durationStr = (jobDurationMs / 1000).toFixed(1);
-        setJobReport({
+        const completedReport = {
           totalPads: totalPoints,
           totalVolUl: volUlStr,
           jobDurationSec: durationStr,
@@ -1399,7 +1125,11 @@ export default function AutomatedDispensingPanel({
           dotsFailed: enableDotVerification ? failed : null,
           dotsChecked: enableDotVerification ? deduped.length : null,
           probedSurfaceZ: probedSurfaceZRef.current,
-        });
+          failedPads: deduped.filter(r => !r.passed).map(r => r.padIndex),
+          completedAt: new Date().toISOString(),
+        };
+        setJobReport(completedReport);
+        onJobReportChange?.(completedReport);
         // Auto-append to batch history on every job completion
         const diams = deduped.filter(r => r.diameter_mm > 0).map(r => r.diameter_mm);
         const avgDia = diams.length ? (diams.reduce((a, b) => a + b, 0) / diams.length).toFixed(3) : null;
@@ -1481,6 +1211,12 @@ export default function AutomatedDispensingPanel({
         }
       } else {
         toast.error("Job halted — " + e.message);
+        onJobFailure?.({
+          reason: e.message || 'Unknown machine error',
+          code: e.isConnectionLoss ? 'CONNECTION_LOSS' : 'JOB_HALTED',
+          completedPads: globalPointCountRef.current,
+          occurredAt: new Date().toISOString(),
+        });
       }
       setJobStage('idle');
       setMachineStatus('idle');
@@ -1560,6 +1296,12 @@ export default function AutomatedDispensingPanel({
         ? `Job stopped by operator — ${padsDone} component${padsDone !== 1 ? 's' : ''} dispensed.`
         : 'Job cancelled by operator.'
     );
+    onJobFailure?.({
+      reason: padsDone > 0 ? 'Job stopped by operator.' : 'Job cancelled by operator.',
+      code: 'OPERATOR_STOP',
+      completedPads: padsDone,
+      occurredAt: new Date().toISOString(),
+    });
     if (padsDone > 0) {
       localStorage.setItem('resumeFromPad', String(padsDone));
       setResumeFromPad(padsDone);
@@ -1568,20 +1310,12 @@ export default function AutomatedDispensingPanel({
     try {
       await window.serial.writeLine('M107');
       await window.serial.writeLine('G1 Z10 F3000');
-    } catch (e) { }
+    } catch {
+      // The stop command is best effort; the machine state is reset below.
+    }
     setJobStage('idle');
     setMachineStatus('idle');
     setCurrentPadInfo(null);
-  };
-
-  const jog = async (axis, dir) => {
-    const dist = dir * jogStep;
-    const cmds = jogRel(axis === 'X' ? { dx: dist, feed: 2000 } : { dy: dist, feed: 2000 });
-    for (const c of cmds) await sendGcodeWait(c);
-  };
-  const jogZ = async (dir) => {
-    const cmds = jogRel({ dz: dir * 0.5, feed: 500 });
-    for (const c of cmds) await sendGcodeWait(c);
   };
 
   // Move CAMERA crosshair to a pad position (no tool offset — camera is the reference)
@@ -1801,195 +1535,195 @@ export default function AutomatedDispensingPanel({
           <hr style={{ borderColor: '#444', margin: '12px 0' }} />
           <h5>G-Code Generation Config</h5>
           <div style={{ position: 'relative' }}>
-          {!isAdminMode && (
-            <div style={{
-              position: 'absolute', inset: 0, zIndex: 10, borderRadius: 6,
-              background: 'rgba(13,17,23,0.78)', backdropFilter: 'blur(2px)',
-              display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8,
-            }}>
-              <span style={{ fontSize: '1.6em' }}>🔒</span>
-              <span style={{ color: '#e3b341', fontWeight: 700, fontSize: '0.9em' }}>Settings locked</span>
-              <span style={{ color: '#8b949e', fontSize: '0.78em' }}>Log in as Admin to change parameters</span>
-            </div>
-          )}
-          <div className="grid2" style={{ gap: '8px', fontSize: '0.9em' }}>
-            <label style={{ gridColumn: '1 / -1' }}>
-              Glue Viscosity (Presets):
-              <select value={viscosity} onChange={e => setViscosity(e.target.value)} style={{ width: '100%', marginTop: '4px', padding: '4px' }}>
-                <option value="low">Thin / Low (Superglue, UV)</option>
-                <option value="medium">Medium (Standard Paste/Glue)</option>
-                <option value="high">Thick / High (Solder Paste, Thermal)</option>
-              </select>
-            </label>
-            <label>
-              Valve ON Cmd:
-              <input type="text" value={valveOnCmd} onChange={e => setValveOnCmd(e.target.value)} style={{ width: '100%', marginTop: '4px' }} />
-            </label>
-            <label>
-              Valve OFF Cmd:
-              <input type="text" value={valveOffCmd} onChange={e => setValveOffCmd(e.target.value)} style={{ width: '100%', marginTop: '4px' }} />
-            </label>
-            <label>
-              Dispense Z (mm):
-              <input type="number" step="0.1" value={dispenseHeight} onChange={e => setDispenseHeight(parseFloat(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
-            </label>
-            <label>
-              Safe Travel Z (mm):
-              <input type="number" step="1" value={safeTravelHeight} onChange={e => setSafeTravelHeight(parseFloat(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
-            </label>
-            <label style={{ gridColumn: '1 / -1' }}>
-              <span style={{ color: '#f85149', fontWeight: 600 }}>⬛ Axis Limits (mm)</span>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6, marginTop: 4 }}>
-                <label style={{ fontSize: '0.85em' }}>
-                  Max X
-                  <input type="number" step="10" min="10" value={axisLimits.maxX}
-                    onChange={e => setAxisLimits(l => ({ ...l, maxX: Number(e.target.value) }))}
-                    style={{ width: '100%', marginTop: 2 }} />
-                </label>
-                <label style={{ fontSize: '0.85em' }}>
-                  Max Y
-                  <input type="number" step="10" min="10" value={axisLimits.maxY}
-                    onChange={e => setAxisLimits(l => ({ ...l, maxY: Number(e.target.value) }))}
-                    style={{ width: '100%', marginTop: 2 }} />
-                </label>
-                <label style={{ fontSize: '0.85em' }}>
-                  Max Z
-                  <input type="number" step="5" min="5" value={axisLimits.maxZ}
-                    onChange={e => setAxisLimits(l => ({ ...l, maxZ: Number(e.target.value) }))}
-                    style={{ width: '100%', marginTop: 2 }} />
-                </label>
+            {!isAdminMode && (
+              <div style={{
+                position: 'absolute', inset: 0, zIndex: 10, borderRadius: 6,
+                background: 'rgba(13,17,23,0.78)', backdropFilter: 'blur(2px)',
+                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8,
+              }}>
+                <span style={{ fontSize: '1.6em' }}>🔒</span>
+                <span style={{ color: '#e3b341', fontWeight: 700, fontSize: '0.9em' }}>Settings locked</span>
+                <span style={{ color: '#8b949e', fontSize: '0.78em' }}>Log in as Admin to change parameters</span>
               </div>
-              <small style={{ color: '#8b949e' }}>Min is always 0. Pre-flight will fail if any pad exceeds these.</small>
-            </label>
-            <label>
-              Base Dwell (ms):
-              <input type="number" step="10" value={baseDwellTime} onChange={e => setBaseDwellTime(Number(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
-            </label>
-            <label>
-              Dispense Pressure (PSI):
-              <input type="number" step="1" min="5" max="100" value={localPressure} onChange={e => setLocalPressure(Number(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
-              <small style={{ color: '#888' }}>Match to your 983A regulator reading</small>
-            </label>
-            <label>
-              MOSFET PWM Duty (0–255):
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: '4px' }}>
-                <input
-                  type="range" min="0" max="255" step="1"
-                  defaultValue={pwmDuty}
-                  onInput={e => {
-                    const v = Number(e.target.value);
-                    const pct = (v / 255) * 100;
-                    const color = v === 255 ? '#00c49a' : v >= 128 ? '#ffa726' : '#ef5350';
-                    e.target.style.background = `linear-gradient(to right, ${color} ${pct}%, #30363d ${pct}%)`;
-                    if (pwmDisplayRef.current) {
-                      pwmDisplayRef.current.textContent = v;
-                      pwmDisplayRef.current.style.color = color;
-                    }
-                  }}
-                  onMouseUp={e => setPwmDuty(Number(e.target.value))}
-                  onTouchEnd={e => setPwmDuty(Number(e.target.value))}
-                  style={{
-                    flex: 1, height: 6, borderRadius: 3, outline: 'none', cursor: 'pointer',
-                    WebkitAppearance: 'none', appearance: 'none',
-                    background: `linear-gradient(to right, ${pwmDuty === 255 ? '#00c49a' : pwmDuty >= 128 ? '#ffa726' : '#ef5350'} ${(pwmDuty / 255) * 100}%, #30363d ${(pwmDuty / 255) * 100}%)`,
-                  }}
-                />
-                <span ref={pwmDisplayRef} style={{ minWidth: 36, textAlign: 'right', fontWeight: 600, color: pwmDuty === 255 ? '#00c49a' : pwmDuty >= 128 ? '#ffa726' : '#ef5350' }}>
-                  {pwmDuty}
-                </span>
-              </div>
-              <small style={{ color: '#888' }}>
-                255 = fully ON &nbsp;|&nbsp; 128 = 50% pulse &nbsp;|&nbsp; 0 = OFF &nbsp;—&nbsp; {Math.round(pwmDuty / 255 * 100)}% duty
-              </small>
-            </label>
-            <label>
-              Bead Threshold (mm²):
-              <input type="number" step="0.5" min="0.5" max="20" value={beadAreaThreshold} onChange={e => setBeadAreaThreshold(Number(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
-              <small style={{ color: '#888' }}>Pads above this area → bead; below → single dot</small>
-            </label>
-            <label>
-              Bead Speed (mm/min):
-              <input type="number" step="50" min="50" max="3000" value={beadFeedRate} onChange={e => setBeadFeedRate(Number(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
-            </label>
-            {purgeEnabled && (
-              <label>
-                Purge Duration (ms):
-                <input
-                  type="number"
-                  step="500"
-                  min="500"
-                  max="10000"
-                  value={purgeDurationMs}
-                  onChange={e => setPurgeDurationMs(Number(e.target.value))}
-                  style={{ width: '100%', marginTop: '4px' }}
-                />
+            )}
+            <div className="grid2" style={{ gap: '8px', fontSize: '0.9em' }}>
+              <label style={{ gridColumn: '1 / -1' }}>
+                Glue Viscosity (Presets):
+                <select value={viscosity} onChange={e => setViscosity(e.target.value)} style={{ width: '100%', marginTop: '4px', padding: '4px' }}>
+                  <option value="low">Thin / Low (Superglue, UV)</option>
+                  <option value="medium">Medium (Standard Paste/Glue)</option>
+                  <option value="high">Thick / High (Solder Paste, Thermal)</option>
+                </select>
               </label>
-            )}
-            <br />
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', gridColumn: '1 / -1' }}>
-              <input
-                type="checkbox"
-                checked={enableSurfaceProbe}
-                onChange={e => setEnableSurfaceProbe(e.target.checked)}
-                style={{ width: 'auto', marginTop: 0 }}
-              />
-              <span>Z-axis surface probe before dispensing</span>
-            </label>
-            {enableSurfaceProbe && (
-              <div style={{ gridColumn: '1 / -1', fontSize: '0.78em', color: '#8b949e', paddingLeft: 22, marginTop: -4 }}>
-                Sends <code>G38.2 Z-30 F50</code> after PCB load — detects actual PCB surface, sets Z=0 there. Dispense Z is then clearance above that surface. Requires a probe/BLTouch wired to the controller.
-              </div>
-            )}
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={enableDotVerification}
-                onChange={e => { setEnableDotVerification(e.target.checked); if (!e.target.checked) setClogDetectionEnabled(false); }}
-                style={{ width: 'auto', marginTop: 0 }}
-              />
-              <span>Verify glue dot after each pad</span>
-            </label>
-            {enableDotVerification && (
-              <div style={{ marginLeft: 24, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer', fontSize: '0.88em' }}>
-                  <input
-                    type="checkbox"
-                    checked={clogDetectionEnabled}
-                    onChange={e => setClogDetectionEnabled(e.target.checked)}
-                    style={{ width: 'auto', marginTop: 2, flexShrink: 0 }}
-                  />
-                  <span>
-                    Auto-pause on clog
-                    <span style={{ display: 'block', fontSize: '0.82em', color: '#8b949e', marginTop: 1 }}>
-                      Pause the job after N consecutive failed dot checks
-                    </span>
-                  </span>
-                </label>
-                {clogDetectionEnabled && (
-                  <label style={{ fontSize: '0.85em', display: 'flex', alignItems: 'center', gap: 8 }}>
-                    Consecutive failures to trigger:
-                    <input
-                      type="number"
-                      min="1"
-                      max="10"
-                      value={clogThreshold}
-                      onChange={e => setClogThreshold(Math.max(1, parseInt(e.target.value) || 1))}
-                      style={{ width: 52, marginTop: 0 }}
-                    />
+              <label>
+                Valve ON Cmd:
+                <input type="text" value={valveOnCmd} onChange={e => setValveOnCmd(e.target.value)} style={{ width: '100%', marginTop: '4px' }} />
+              </label>
+              <label>
+                Valve OFF Cmd:
+                <input type="text" value={valveOffCmd} onChange={e => setValveOffCmd(e.target.value)} style={{ width: '100%', marginTop: '4px' }} />
+              </label>
+              <label>
+                Dispense Z (mm):
+                <input type="number" step="0.1" value={dispenseHeight} onChange={e => setDispenseHeight(parseFloat(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
+              </label>
+              <label>
+                Safe Travel Z (mm):
+                <input type="number" step="1" value={safeTravelHeight} onChange={e => setSafeTravelHeight(parseFloat(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
+              </label>
+              <label style={{ gridColumn: '1 / -1' }}>
+                <span style={{ color: '#f85149', fontWeight: 600 }}>⬛ Axis Limits (mm)</span>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6, marginTop: 4 }}>
+                  <label style={{ fontSize: '0.85em' }}>
+                    Max X
+                    <input type="number" step="10" min="10" value={axisLimits.maxX}
+                      onChange={e => setAxisLimits(l => ({ ...l, maxX: Number(e.target.value) }))}
+                      style={{ width: '100%', marginTop: 2 }} />
                   </label>
-                )}
-              </div>
-            )}
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={purgeEnabled}
-                onChange={e => setPurgeEnabled(e.target.checked)}
-                style={{ width: 'auto', marginTop: 0 }}
-              />
-              <span>Purge nozzle before job</span>
-            </label>
-          </div>
+                  <label style={{ fontSize: '0.85em' }}>
+                    Max Y
+                    <input type="number" step="10" min="10" value={axisLimits.maxY}
+                      onChange={e => setAxisLimits(l => ({ ...l, maxY: Number(e.target.value) }))}
+                      style={{ width: '100%', marginTop: 2 }} />
+                  </label>
+                  <label style={{ fontSize: '0.85em' }}>
+                    Max Z
+                    <input type="number" step="5" min="5" value={axisLimits.maxZ}
+                      onChange={e => setAxisLimits(l => ({ ...l, maxZ: Number(e.target.value) }))}
+                      style={{ width: '100%', marginTop: 2 }} />
+                  </label>
+                </div>
+                <small style={{ color: '#8b949e' }}>Min is always 0. Pre-flight will fail if any pad exceeds these.</small>
+              </label>
+              <label>
+                Base Dwell (ms):
+                <input type="number" step="10" value={baseDwellTime} onChange={e => setBaseDwellTime(Number(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
+              </label>
+              <label>
+                Dispense Pressure (PSI):
+                <input type="number" step="1" min="5" max="100" value={localPressure} onChange={e => setLocalPressure(Number(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
+                <small style={{ color: '#888' }}>Match to your 983A regulator reading</small>
+              </label>
+              <label>
+                MOSFET PWM Duty (0–255):
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: '4px' }}>
+                  <input
+                    type="range" min="0" max="255" step="1"
+                    defaultValue={pwmDuty}
+                    onInput={e => {
+                      const v = Number(e.target.value);
+                      const pct = (v / 255) * 100;
+                      const color = v === 255 ? '#00c49a' : v >= 128 ? '#ffa726' : '#ef5350';
+                      e.target.style.background = `linear-gradient(to right, ${color} ${pct}%, #30363d ${pct}%)`;
+                      if (pwmDisplayRef.current) {
+                        pwmDisplayRef.current.textContent = v;
+                        pwmDisplayRef.current.style.color = color;
+                      }
+                    }}
+                    onMouseUp={e => setPwmDuty(Number(e.target.value))}
+                    onTouchEnd={e => setPwmDuty(Number(e.target.value))}
+                    style={{
+                      flex: 1, height: 6, borderRadius: 3, outline: 'none', cursor: 'pointer',
+                      WebkitAppearance: 'none', appearance: 'none',
+                      background: `linear-gradient(to right, ${pwmDuty === 255 ? '#00c49a' : pwmDuty >= 128 ? '#ffa726' : '#ef5350'} ${(pwmDuty / 255) * 100}%, #30363d ${(pwmDuty / 255) * 100}%)`,
+                    }}
+                  />
+                  <span ref={pwmDisplayRef} style={{ minWidth: 36, textAlign: 'right', fontWeight: 600, color: pwmDuty === 255 ? '#00c49a' : pwmDuty >= 128 ? '#ffa726' : '#ef5350' }}>
+                    {pwmDuty}
+                  </span>
+                </div>
+                <small style={{ color: '#888' }}>
+                  255 = fully ON &nbsp;|&nbsp; 128 = 50% pulse &nbsp;|&nbsp; 0 = OFF &nbsp;—&nbsp; {Math.round(pwmDuty / 255 * 100)}% duty
+                </small>
+              </label>
+              <label>
+                Bead Threshold (mm²):
+                <input type="number" step="0.5" min="0.5" max="20" value={beadAreaThreshold} onChange={e => setBeadAreaThreshold(Number(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
+                <small style={{ color: '#888' }}>Pads above this area → bead; below → single dot</small>
+              </label>
+              <label>
+                Bead Speed (mm/min):
+                <input type="number" step="50" min="50" max="3000" value={beadFeedRate} onChange={e => setBeadFeedRate(Number(e.target.value))} style={{ width: '100%', marginTop: '4px' }} />
+              </label>
+              {purgeEnabled && (
+                <label>
+                  Purge Duration (ms):
+                  <input
+                    type="number"
+                    step="500"
+                    min="500"
+                    max="10000"
+                    value={purgeDurationMs}
+                    onChange={e => setPurgeDurationMs(Number(e.target.value))}
+                    style={{ width: '100%', marginTop: '4px' }}
+                  />
+                </label>
+              )}
+              <br />
+              {/* <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', gridColumn: '1 / -1' }}>
+                <input
+                  type="checkbox"
+                  checked={enableSurfaceProbe}
+                  onChange={e => setEnableSurfaceProbe(e.target.checked)}
+                  style={{ width: 'auto', marginTop: 0 }}
+                />
+                <span>Z-axis surface probe before dispensing</span>
+              </label> */}
+              {enableSurfaceProbe && (
+                <div style={{ gridColumn: '1 / -1', fontSize: '0.78em', color: '#8b949e', paddingLeft: 22, marginTop: -4 }}>
+                  Sends <code>G38.2 Z-30 F50</code> after PCB load — detects actual PCB surface, sets Z=0 there. Dispense Z is then clearance above that surface. Requires a probe/BLTouch wired to the controller.
+                </div>
+              )}
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={enableDotVerification}
+                  onChange={e => { setEnableDotVerification(e.target.checked); if (!e.target.checked) setClogDetectionEnabled(false); }}
+                  style={{ width: 'auto', marginTop: 0 }}
+                />
+                <span>Verify glue dot after each pad</span>
+              </label>
+              {enableDotVerification && (
+                <div style={{ marginLeft: 24, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer', fontSize: '0.88em' }}>
+                    <input
+                      type="checkbox"
+                      checked={clogDetectionEnabled}
+                      onChange={e => setClogDetectionEnabled(e.target.checked)}
+                      style={{ width: 'auto', marginTop: 2, flexShrink: 0 }}
+                    />
+                    <span>
+                      Auto-pause on clog
+                      <span style={{ display: 'block', fontSize: '0.82em', color: '#8b949e', marginTop: 1 }}>
+                        Pause the job after N consecutive failed dot checks
+                      </span>
+                    </span>
+                  </label>
+                  {clogDetectionEnabled && (
+                    <label style={{ fontSize: '0.85em', display: 'flex', alignItems: 'center', gap: 8 }}>
+                      Consecutive failures to trigger:
+                      <input
+                        type="number"
+                        min="1"
+                        max="10"
+                        value={clogThreshold}
+                        onChange={e => setClogThreshold(Math.max(1, parseInt(e.target.value) || 1))}
+                        style={{ width: 52, marginTop: 0 }}
+                      />
+                    </label>
+                  )}
+                </div>
+              )}
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={purgeEnabled}
+                  onChange={e => setPurgeEnabled(e.target.checked)}
+                  style={{ width: 'auto', marginTop: 0 }}
+                />
+                <span>Purge nozzle before job</span>
+              </label>
+            </div>
           </div>{/* end settings lock wrapper */}
           {/* ── Recipe Manager ──────────────────────────────────────────── */}
           <details open style={{ marginTop: 14 }}>
@@ -2106,9 +1840,6 @@ export default function AutomatedDispensingPanel({
                     setPnpComponents(comps);
                     setPnpFile(file.name);
                     setPnpExcluded(detectDnpComponents(comps));
-
-                    // Auto-compute origin offset using fiducial rows in the CSV matched
-                    // against all known Gerber fiducials (board + panel rail)
                     const allAppFiducials = [
                       ...fiducials,
                       ...panelRailFiducials,
@@ -2446,25 +2177,6 @@ export default function AutomatedDispensingPanel({
           })()}
 
           {/* Fine-Tune XY Correction UI disabled — fineTuneX and fineTuneY state removed */}
-          <div style={{ marginTop: 14 }}>
-            <GlueGauge
-              summary={isPnpMode
-                ? { totalVolUl: totalPnpDots * glueDotVolUl }
-                : glueSummary}
-              nozzleDia={nozzleDia}
-              onNozzleDia={setNozzleDia}
-              onStockChange={(v) => { setGlueStock(v); }}
-              onRefill={(v) => { setGlueStock(v); }}
-            />
-          </div>
-
-          <MaintenanceManager
-            manager={nozzleMaintenance}
-            onPurge={purgeNozzle}
-            isPurging={isPurging}
-            spcJobs={spcData.jobs}
-            machinePosition={machinePosition}
-          />
         </div>
 
         {/* Dispense Sequence Preview & Board Info */}
@@ -2541,7 +2253,7 @@ export default function AutomatedDispensingPanel({
                       </tr>
                     </thead>
                     <tbody>
-                      {sideFilteredComponents.map((comp, idx) => {
+                      {sideFilteredComponents.map(comp => {
                         const excluded = pnpExcluded.has(comp.id);
                         const dotCount = getComponentDotOffsets(comp, dotSpacingMm, customDotPatterns).length;
                         return (
@@ -2888,7 +2600,6 @@ export default function AutomatedDispensingPanel({
                 </div>
               )}
 
-              {jobMode === 'batch' && <p>Batch mode not supported in new flow yet</p>}
             </div>
           )}
 

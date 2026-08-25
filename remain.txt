@@ -642,18 +642,18 @@ Wiring — Arduino Mega Pins to 2DM556
 The simplest approach: use the same pin numbers that RAMPS uses so you don't need to change any Marlin pin configuration. Just wire those Arduino Mega pins directly to each 2DM556.
 
 Signal	             Arduino Mega Pin	           Wire to 2DM556
-X STEP	               Pin D2 	                  PUL+ (via 1kΩ resistor)
-X DIR	                 Pin D5 	                  DIR+ (via 1kΩ resistor)
-X ENABLE	             Pin D8	                    ENA+ (via 1kΩ resistor)
-Y STEP	               Pin D3	                    PUL+
-Y DIR	                 Pin D6	                    DIR+
-Y ENABLE	             Pin D9	                    ENA+
-Z STEP	               Pin D4	                    PUL+
-Z DIR	                 Pin D7	                    DIR+
-Z ENABLE	             Pin D10                     ENA+
-X limit switch	       Pin D22	                  signal wire
-Y limit switch	       Pin D23	                  signal wire
-Z limit switch	       Pin D24	                  signal wire
+X STEP	               Pin D22	                  PUL+ (via 1kΩ resistor)
+X DIR	                 Pin D24 	                  DIR+ (via 1kΩ resistor)
+X ENABLE	             Pin D26	                    ENA+ (via 1kΩ resistor)
+Y STEP	               Pin D28                    PUL+
+Y DIR	                 Pin D30	                    DIR+
+Y ENABLE	             Pin D32	                    ENA+
+Z STEP	               Pin D34	                    PUL+
+Z DIR	                 Pin D36                    DIR+
+Z ENABLE	             Pin D38                     ENA+
+X limit switch	       Pin D40	                  signal wire
+Y limit switch	       Pin D42	                  signal wire
+Z limit switch	       Pin D44	                  signal wire
 All PUL−, DIR−, ENA− → common GND (Arduino GND and power supply GND joined)
 
 

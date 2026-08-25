@@ -308,9 +308,27 @@ export function analyzeFiducialsWithRails(layers, side = 'top') {
       }
     }
 
-    if (fidCandidates.length >= 2) {
-      console.log(`[FidAnalyze] Cross-correlation found ${fidCandidates.length} fiducial matches!`);
-      return buildResult(fidCandidates, copperLayers[0]);
+    // Test points can also have an oversized mask opening. Fiducials normally
+    // use one repeated copper aperture and are isolated from nearby copper.
+    // Apply those constraints before accepting cross-correlated matches.
+    const copperNearestDist = (candidate) => copperFlashes
+      .filter(f => !(Math.abs(f.x - candidate.x) < 0.01 && Math.abs(f.y - candidate.y) < 0.01))
+      .reduce((minD, f) => Math.min(minD, Math.hypot(f.x - candidate.x, f.y - candidate.y)), Infinity);
+
+    const isolatedCandidates = fidCandidates.filter(c => copperNearestDist(c) >= 2.0);
+    const diameterGroups = new Map();
+    for (const candidate of isolatedCandidates) {
+      const key = Math.round(candidate.diameter * 20) / 20;
+      if (!diameterGroups.has(key)) diameterGroups.set(key, []);
+      diameterGroups.get(key).push(candidate);
+    }
+    const repeatedGroup = [...diameterGroups.values()]
+      .filter(group => group.length >= 2)
+      .sort((a, b) => b.length - a.length)[0];
+
+    if (repeatedGroup) {
+      console.log(`[FidAnalyze] Cross-correlation found ${repeatedGroup.length} isolated repeated-aperture fiducials.`);
+      return buildResult(repeatedGroup, copperLayers[0]);
     } else {
       console.log('[FidAnalyze] Cross-correlation insufficient, falling back...');
     }

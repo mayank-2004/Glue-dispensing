@@ -52,23 +52,23 @@ export default function JogPanel({
         }
     };
 
-    const moveToSafeZ = async () => {
-        if (isBusy) return;
-        if (!confirm(`Move Z to absolute position ${safeZ}mm? Ensure path is clear.`)) return;
+    // const moveToSafeZ = async () => {
+    //     if (isBusy) return;
+    //     if (!confirm(`Move Z to absolute position ${safeZ}mm? Ensure path is clear.`)) return;
 
-        setIsBusy(true);
-        try {
-            const cmd = `G53 G0 Z${safeZ}`;
-            console.log("Safe Z:", cmd);
-            if (window.serial?.writeLine) {
-                await window.serial.writeLine(cmd);
-            }
-        } catch (e) {
-            console.error("Safe Z failed:", e);
-        } finally {
-            setIsBusy(false);
-        }
-    };
+    //     setIsBusy(true);
+    //     try {
+    //         const cmd = `G53 G0 Z${safeZ}`;
+    //         console.log("Safe Z:", cmd);
+    //         if (window.serial?.writeLine) {
+    //             await window.serial.writeLine(cmd);
+    //         }
+    //     } catch (e) {
+    //         console.error("Safe Z failed:", e);
+    //     } finally {
+    //         setIsBusy(false);
+    //     }
+    // };
 
     const handleHomeClick = async () => {
         if (!isConnected) { toast.warning("Please connect to machine first!"); return; }
@@ -154,14 +154,15 @@ export default function JogPanel({
                         <label>Safe Z Height (Abs)</label>
                         <div className="flex-row">
                             <input type="number" value={safeZ} onChange={(e) => setSafeZ(Number(e.target.value))} style={{ width: 60 }} />
-                            <button className="btn secondary sm" onClick={moveToSafeZ} disabled={isBusy}>Go Safe Z</button>
+                            {/* <button className="btn secondary sm" onClick={moveToSafeZ} disabled={isBusy}>Go Safe Z</button> */}
                         </div>
                         <small>Uses G53 (Machine Coords)</small>
                     </div>
                 </div>
             </div>
 
-            <div className="status-display">
+            <div className={`status-display ${machinePosition ? 'status-ok' : 'status-warning'}`}>
+                <span className="status-indicator" />
                 <strong>Current Pos:</strong>
                 {machinePosition ?
                     ` X:${machinePosition.x.toFixed(2)} Y:${machinePosition.y.toFixed(2)} Z:${machinePosition.z.toFixed(2)}`

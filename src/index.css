@@ -28,6 +28,7 @@
   --text-primary: #c4ccde;
   --text-secondary: #60708a;
   --text-muted: #323850;
+  --text-used: #838999;
   --text-bright: #edf0ff;
 
   /* Accents */
@@ -73,6 +74,34 @@
 .text-success, .text-success * { color: var(--status-ok) !important; }
 .text-error, .text-error * { color: var(--status-err) !important; }
 .text-warning, .text-warning * { color: var(--status-warn) !important; }
+
+/* Semantic machine-state surfaces */
+.status-surface,
+.info,
+.toast-item {
+  position: relative;
+  overflow: hidden;
+}
+
+.status-surface::before,
+.info::before,
+.toast-item::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: currentColor;
+  opacity: 0.9;
+}
+
+.status-success,
+.toast-success { color: var(--status-ok); }
+.status-warning,
+.toast-warning { color: var(--status-warn); }
+.status-error,
+.toast-error { color: var(--status-err); }
+.status-info,
+.toast-info { color: var(--accent-info); }
 
 /* ── Reset ───────────────────────────────────────────────── */
 *,
@@ -493,6 +522,17 @@ input[type="checkbox"] {
   flex-shrink: 0;
 }
 
+/* Radio button */
+input[type="radio"] {
+  width: 16px;
+  height: 16px;
+  min-height: unset;
+  padding: 0;
+  accent-color: var(--accent-primary);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
 label {
   color: var(--text-secondary);
   font-size: 0.85rem;
@@ -686,6 +726,10 @@ label:has(input[type="checkbox"]) {
 
 .status-pill.disconnected .pill-dot {
   background: var(--accent-danger);
+}
+
+.status-pill.disconnected {
+  box-shadow: 0 0 12px rgba(255, 51, 85, 0.14);
 }
 
 .status-pill.busy {
@@ -937,18 +981,21 @@ label:has(input[type="checkbox"]) {
   background: rgba(0, 232, 122, 0.06);
   border-color: rgba(0, 232, 122, 0.3);
   color: var(--accent-success);
+  box-shadow: inset 0 0 18px rgba(0, 232, 122, 0.04);
 }
 
 .info.warning {
   background: rgba(245, 166, 35, 0.06);
   border-color: rgba(245, 166, 35, 0.3);
   color: var(--accent-warning);
+  box-shadow: inset 0 0 18px rgba(245, 166, 35, 0.05);
 }
 
 .info.error {
   background: rgba(255, 51, 85, 0.06);
   border-color: rgba(255, 51, 85, 0.3);
   color: var(--accent-danger);
+  box-shadow: inset 0 0 18px rgba(255, 51, 85, 0.05);
 }
 
 .info.info {
@@ -1124,4 +1171,21 @@ table.kv tr:hover td {
 .batch-item strong {
   color: var(--accent-primary);
   font-family: var(--font-mono);
+}
+
+.toast-item {
+  box-shadow: 0 6px 22px rgba(0,0,0,0.58), inset 0 0 18px rgba(255,255,255,0.025) !important;
+  backdrop-filter: blur(8px);
+}
+
+.toast-item > span {
+  position: relative;
+  z-index: 1;
+}
+
+@media (max-width: 640px) {
+  .toast-stack {
+    top: 140px !important;
+    right: 12px !important;
+  }
 }

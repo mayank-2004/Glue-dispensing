@@ -1,8 +1,9 @@
 .guided-tour-overlay {
   position: fixed;
-  bottom: 24px;
+  top: 88px;
   right: 24px;
-  width: 320px;
+  width: min(250px, calc(100vw - 48px));
+  margin: 0;
   background: rgba(12, 14, 20, 0.85);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
@@ -11,15 +12,15 @@
   border-right: 1px solid rgba(255, 255, 255, 0.1);
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: var(--radius-md);
-  padding: 16px;
+  padding: 5px 12px;
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 10px;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.05);
   z-index: 9999;
   transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-  transform: translateY(120%);
-  opacity: 0;
+  transform: none;
+  opacity: 1;
   pointer-events: none; /* It shouldn't block clicks underneath generally, though it could if wanted */
 }
 
@@ -50,8 +51,8 @@
 }
 
 .tour-icon-box {
-  width: 44px;
-  height: 44px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -68,20 +69,29 @@
 
 .tour-title {
   font-weight: 700;
-  font-size: 0.9em;
+  font-size: 0.75em;
   color: var(--text-bright);
   letter-spacing: 0.03em;
   text-transform: uppercase;
 }
 
 .tour-desc {
-  font-size: 0.8em;
+  font-size: 0.68em;
   color: var(--text-primary);
   line-height: 1.4;
 }
 
 .spin-fast {
   animation: spin 1s linear infinite;
+}
+
+@media (max-width: 640px) {
+  .guided-tour-overlay {
+    top: 74px;
+    right: 12px;
+    width: min(250px, calc(100vw - 24px));
+    padding: 9px 10px;
+  }
 }
 
 @keyframes spin {

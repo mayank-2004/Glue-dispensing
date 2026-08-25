@@ -15,14 +15,15 @@ function ToastItem({ id, message, type, onDismiss }) {
   const s = TYPE_STYLES[type] || TYPE_STYLES.info;
   return (
     <div
+      className={`toast-item toast-${type}`}
       onClick={() => onDismiss(id)}
       style={{
         display: 'flex', alignItems: 'flex-start', gap: 8,
-        padding: '10px 14px', borderRadius: 7, cursor: 'pointer',
+        width: '250px', padding: '5px 12px', borderRadius: 7, cursor: 'pointer',
         background: s.bg, border: `1px solid ${s.border}`,
         boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
-        fontSize: '0.84em', lineHeight: 1.45,
-        maxWidth: 360, wordBreak: 'break-word',
+        fontSize: '0.68em', lineHeight: 1.4,
+        maxWidth: 'calc(100vw - 48px)', wordBreak: 'break-word',
         animation: 'toast-slide-in 0.18s ease',
       }}
     >
@@ -63,8 +64,8 @@ export function ToastProvider({ children }) {
     <ToastContext.Provider value={toast}>
       {children}
       <style>{`@keyframes toast-slide-in { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: none; } }`}</style>
-      <div style={{
-        position: 'fixed', bottom: 120, right: 24, zIndex: 99999,
+      <div className="toast-stack" style={{
+        position: 'fixed', top: 160, right: 24, zIndex: 99999,
         display: 'flex', flexDirection: 'column', gap: 8, pointerEvents: 'none',
       }}>
         {toasts.map(t => (
