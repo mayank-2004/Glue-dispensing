@@ -35,6 +35,9 @@ import { usePayloadManager } from "./hooks/usePayloadManager.js";
 import HeadConfigPanel from "./components/HeadConfigPanel.jsx";
 import { useMotionManager } from "./hooks/useMotionManager.js";
 import MotionConfigPanel from "./components/MotionConfigPanel.jsx";
+import { useCameraSystem } from "./hooks/useCameraSystem.js";
+import { useTipManager } from "./hooks/useTipManager.js";
+import TipManagementPanel from "./components/TipManagementPanel.jsx";
 
 function calculatePadCenter(p) {
   if (typeof p.x === "number" && typeof p.y === "number") {
@@ -290,6 +293,8 @@ export default function App() {
   const [safePathPlanner] = useState(() => new SafePathPlanner());
   const payloadManager = usePayloadManager();
   const motionManager = useMotionManager(payloadManager.payloadStatus, isEmergencyStopped);
+  const cameraSystem = useCameraSystem();
+  const tipManager = useTipManager();
 
   const [showPasteDots, setShowPasteDots] = useState(false);
   const [dispensingSequence, setDispensingSequence] = useState([]);
@@ -1767,6 +1772,7 @@ export default function App() {
     { id: 'AutomatedDispensingPanel', num: '7', label: 'Dispense', sub: 'Run Job' },
     { id: 'HeadConfig', num: '⚙', label: 'Head Config', sub: 'Payload & Settings' },
     { id: 'MotionConfig', num: '🏃', label: 'Motion', sub: 'Speed Profiles' },
+    { id: 'TipManagement', num: '🔧', label: 'Tip Change', sub: 'Tip Manager' },
     { id: 'NetworkManagerPanel', num: '📡', label: 'Network', sub: 'Wi-Fi / Bluetooth / Fleet' },
   ];
 
@@ -2047,6 +2053,9 @@ export default function App() {
                     maintenanceAlert={maintenanceAlert}
                     payloadStatus={payloadManager.payloadStatus}
                     motionManager={motionManager}
+                    cameraSystem={cameraSystem}
+                    alignmentInfo={alignment}
+                    tipManager={tipManager}
                     onOpen={setActiveComponent}
                   />
                 </div>
@@ -2067,6 +2076,19 @@ export default function App() {
                 <div className="panel-header"><h3 className="panel-title">MOTION CONFIGURATION</h3></div>
                 <div style={{ padding: 12, height: '100%', overflow: 'auto' }}>
                   <MotionConfigPanel motionManager={motionManager} />
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: activeComponent === 'TipManagement' ? 'block' : 'none', width: '100%', height: '100%' }}>
+              <div className="panel full-height">
+                <div className="panel-header"><h3 className="panel-title">TIP MANAGEMENT</h3></div>
+                <div style={{ padding: 12, height: '100%', overflow: 'auto' }}>
+                  <TipManagementPanel
+                    tipManager={tipManager}
+                    machinePosition={machinePos}
+                    isConnected={isSerialConnected}
+                  />
                 </div>
               </div>
             </div>
@@ -2383,6 +2405,7 @@ export default function App() {
                 pressureSettings={pressureSettings}
                 speedSettings={speedSettings}
                 motionManager={motionManager}
+                tipManager={tipManager}
                 boardOutline={boardOutline}
                 useSafePathPlanning={useSafePathPlanning}
                 setUseSafePathPlanning={setUseSafePathPlanning}

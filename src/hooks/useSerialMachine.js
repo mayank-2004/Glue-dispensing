@@ -80,6 +80,25 @@ export function useSerialMachine() {
              } 
            }));
         }
+
+        // Parse Tip Status  (e.g. "TIP_STATUS:PRESENT SLOT:0")
+        const tipStatusMatch = line.match(/TIP_STATUS:(PRESENT|ABSENT)\s+SLOT:(\d+)/i);
+        if (tipStatusMatch) {
+          window.dispatchEvent(new CustomEvent('tip-status', {
+            detail: {
+              present:   tipStatusMatch[1].toUpperCase() === 'PRESENT',
+              slotIndex: parseInt(tipStatusMatch[2], 10),
+            }
+          }));
+        }
+
+        // Parse tip-change result events from embedded
+        if (/TIP_CHANGE_OK/i.test(line)) {
+          window.dispatchEvent(new CustomEvent('tip-change-ok'));
+        }
+        if (/TIP_CHANGE_FAIL/i.test(line)) {
+          window.dispatchEvent(new CustomEvent('tip-change-fail'));
+        }
       });
     }
     return () => { if (statusIntervalRef.current) clearInterval(statusIntervalRef.current); };

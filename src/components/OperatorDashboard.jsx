@@ -39,6 +39,9 @@ export default function OperatorDashboard({
   maintenanceAlert,
   payloadStatus,
   motionManager,
+  cameraSystem,
+  alignmentInfo,
+  tipManager,
   onOpen,
 }) {
   const position = machinePosition || { x: 0, y: 0, z: 0 };
@@ -50,6 +53,14 @@ export default function OperatorDashboard({
   const motionState = motionManager?.activeProfileName || 'Unknown';
   const currentSpeed = motionManager?.getActiveSettings()?.speed || 0;
   const isSpeedRestricted = !motionManager?.isSafeToMoveFast;
+
+  const activeTip = tipManager?.activeTip;
+  const tipVerify = tipManager?.verificationState;
+  const tipTone = tipVerify === 'VERIFIED' ? 'success' : tipVerify === 'FAILED' ? 'danger' : 'warning';
+  const tipValue = activeTip ? activeTip.name : 'None';
+  const tipDetail = activeTip
+    ? `${activeTip.type} — ${tipVerify}`
+    : 'No tip configured';
 
   return (
     <section className="operator-dashboard">
@@ -76,6 +87,30 @@ export default function OperatorDashboard({
           value={payloadStatus ? payloadStatus.replace('_', ' ') : 'UNKNOWN'} 
           detail={payloadStatus === 'NORMAL' ? 'Within capacity limits' : payloadStatus === 'OVER_LIMIT' ? 'Exceeds 2kg max capacity' : 'Approaching max limit'} 
           tone={payloadStatus === 'OVER_LIMIT' ? 'danger' : payloadStatus === 'NEAR_LIMIT' ? 'warning' : 'success'} 
+        />
+        <Metric
+          label="Soldering Tip"
+          value={tipValue}
+          detail={tipDetail}
+          tone={activeTip ? tipTone : 'neutral'}
+        />
+        <Metric
+          label="Camera System"
+          value={!cameraSystem?.pythonServerOk ? 'OFFLINE' : cameraSystem?.hasCriticalError ? 'ERROR' : alignmentInfo?.pass ? 'ALIGNED' : 'STANDBY'}
+          detail={
+            !cameraSystem?.pythonServerOk ? 'Vision server unreachable' :
+            cameraSystem?.cameraErrors?.camera_disconnected ? 'USB Camera Disconnected' :
+            cameraSystem?.cameraErrors?.unavailable_frames ? 'No video frames received' :
+            cameraSystem?.cameraErrors?.poor_lighting ? 'Poor Lighting' :
+            cameraSystem?.cameraErrors?.focus_problem ? 'Lens Focus Problem' :
+            cameraSystem?.cameraErrors?.low_resolution ? 'Low Resolution Mode' :
+            alignmentInfo?.pass ? 'Calibration valid, transform solved' : 'Awaiting fiducial alignment'
+          }
+          tone={
+            !cameraSystem?.pythonServerOk || cameraSystem?.cameraErrors?.camera_disconnected ? 'neutral' :
+            cameraSystem?.hasCriticalError ? 'danger' :
+            alignmentInfo?.pass ? 'success' : 'info'
+          }
         />
       </div>
 

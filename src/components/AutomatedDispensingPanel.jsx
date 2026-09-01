@@ -47,6 +47,7 @@ export default function AutomatedDispensingPanel({
   onJobFailure,
   onGlueStatusChange,
   onNozzleHealthChange,
+  tipManager,
 }) {
   const toast = useToast();
   const [isJobRunning, setIsJobRunning] = useState(false);
@@ -546,6 +547,15 @@ export default function AutomatedDispensingPanel({
         critical: false,
         passed: false, // always amber — we can't verify probe wiring from software
         detail: 'Surface probe enabled — ensure probe/BLTouch is wired to controller. If no contact is detected, the job will continue with your manually-set Z (no G92 Z0 applied). Disable this setting if no probe is connected.',
+      }] : []),
+      ...(tipManager ? [{
+        id: 'tip',
+        label: 'Soldering tip verified',
+        critical: false,
+        passed: tipManager.validateForRun().valid,
+        detail: tipManager.validateForRun().valid
+          ? `Tip "${tipManager.activeTip?.name}" verified and offsets valid`
+          : tipManager.validateForRun().issues.join(' | '),
       }] : []),
       {
         id: 'board',
@@ -1533,7 +1543,7 @@ export default function AutomatedDispensingPanel({
         document.body
       )}
 
-      <h3 style={{ marginLeft: '10px' }}>🤖 Automated Dispensing</h3>
+      <h3 style={{ marginLeft: '10px', padding: '16px' }}>🤖 Automated Dispensing</h3>
       <div className='panel-data'>
         <div className="box">
           <h4>Settings</h4>
