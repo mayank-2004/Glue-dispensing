@@ -770,3 +770,22 @@ powershell
 
 npx electron-builder --win --dir
 This builds dist\win-unpacked\ (a ready-to-run folder with no compression) — perfect for testing on Windows without needing an installer.
+
+
+
+
+
+
+
+
+Step-by-Step Fixes (Ranked by Ease)Fix 1: Relax Your Feedrate and Acceleration (No Hardware Changes)Your current values are optimized for small, integrated desktop drivers rather than an industrial external driver like the 2DM556. Lowering the processing load will fix the stutter instantly.Change these definitions in your Configuration.h:cpp// Lower X and Y feedrate to 80-90 mm/s, lower Z to 15-20 mm/s
+#define DEFAULT_MAX_FEEDRATE          { 90, 90, 20 }        
+
+// Drop acceleration to give the 8-bit board more room to calculate steps
+#define DEFAULT_MAX_ACCELERATION      { 300, 300, 50 }
+Use code with caution.Fix 2: Drop X/Y Microstepping to 1/8Dropping your physical DIP switches on the 2DM556 from 1/16 to 1/8 will instantly cut the processor load in half.Look at the switch matrix printed on the side of your 2DM556 Driver. Adjust the physical switches (typically SW5 to SW8) to select 1600 steps/revolution (which corresponds to 1/8 microstepping).Remember to update your firmware in Configuration.h to reflect the new steps per mm (halve your current X and Y axis values):cpp// Example: If it was {80, 80, 100, 93}, change to:
+#define DEFAULT_AXIS_STEPS_PER_UNIT   { 40, 40, 100, 93 } 
+Use code with caution.Note: At 1/8 microstepping, your motor will still run exceptionally smoothly on a 2DM556 because it uses internal multi-stepping algorithms to fill in the gaps.Fix 3: Implement External Driver Software DelaysAs noted previously, the optocouplers inside the 2DM556 are electrically "heavy" and require wider pulses to trigger properly. Open Configuration_adv.h and force Marlin to hold the pulse lines open longer:cpp#define MINIMUM_STEPPER_PULSE 4       // Increases pulse width to 4µs 
+#define MINIMUM_STEPPER_POST_DIR_DELAY 6 
+#define MINIMUM_STEPPER_PRE_DIR_DELAY 6  
+Use code with caution.Recommended Testing PlanFlash the firmware changes from Fix 1 and Fix 3 first. Test a long, high-speed move via G-code.If the stutter is completely gone, you can gradually increase the feedrates slightly until you find your 8-bit board's precise breaking point.If it still stutters, apply Fix 2 to drop down to 1/8 microstepping. This frees up enough processing headroom to solve the issue permanently on 8-bit architecture.If you make these adjustments and still encounter issues, tell me:What are your current DEFAULT_AXIS_STEPS_PER_UNIT values?What voltage is your power supply delivering to the 2DM556 (e.g., 24V, 36V, or 48V)?

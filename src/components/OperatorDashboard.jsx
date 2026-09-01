@@ -37,6 +37,7 @@ export default function OperatorDashboard({
   nozzleHealth,
   machinePosition,
   maintenanceAlert,
+  payloadStatus,
   onOpen,
 }) {
   const position = machinePosition || { x: 0, y: 0, z: 0 };
@@ -64,6 +65,12 @@ export default function OperatorDashboard({
         <Metric label="Active Operation" value={operationStatus} detail={jobStage || 'No active cycle'} tone={operationTone} />
         <Metric label="Production Count" value={operationReport?.totalPads ?? jobStatistics?.totalPads ?? '—'} detail={operationReport ? 'Pads completed in last cycle' : jobStatistics ? 'Pads in current recipe' : 'Load a paste layer to calculate'} tone="info" />
         <Metric label="Cycle Time" value={operationReport?.jobDurationSec ? `${operationReport.jobDurationSec}s` : jobStatistics?.estimatedTime ? `${jobStatistics.estimatedTime}s` : '—'} detail={operationFailure ? 'Last cycle ended with a fault' : operationReport ? 'Last completed cycle' : 'Waiting for job data'} tone={operationFailure ? 'danger' : 'neutral'} />
+        <Metric 
+          label="Head Payload" 
+          value={payloadStatus ? payloadStatus.replace('_', ' ') : 'UNKNOWN'} 
+          detail={payloadStatus === 'NORMAL' ? 'Within capacity limits' : payloadStatus === 'OVER_LIMIT' ? 'Exceeds 2kg max capacity' : 'Approaching max limit'} 
+          tone={payloadStatus === 'OVER_LIMIT' ? 'danger' : payloadStatus === 'NEAR_LIMIT' ? 'warning' : 'success'} 
+        />
       </div>
 
       <div className="operator-main-grid">

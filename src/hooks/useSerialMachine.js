@@ -69,6 +69,17 @@ export function useSerialMachine() {
           }
         }
         if (x !== null && y !== null && z !== null) setMachinePos({ x, y, z });
+
+        // Parse Payload Status
+        const payloadMatch = line.match(/PAYLOAD_KG:([-\d.]+)\s+STATUS:([A-Z_]+)/);
+        if (payloadMatch) {
+           window.dispatchEvent(new CustomEvent('payload-sync', { 
+             detail: { 
+               kg: parseFloat(payloadMatch[1]), 
+               status: payloadMatch[2].toLowerCase() 
+             } 
+           }));
+        }
       });
     }
     return () => { if (statusIntervalRef.current) clearInterval(statusIntervalRef.current); };

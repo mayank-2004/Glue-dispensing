@@ -69,7 +69,6 @@ export default function AutomatedDispensingPanel({
   }, [jobStage, onJobStageChange]);
   const [machineStatus, setMachineStatus] = useState('idle');
   const [jobProgress, setJobProgress] = useState({ current: 0, total: 0 });
-  // const [currentPos, setCurrentPos] = useState({ x: 0, y: 0, z: 0 }); // Replaced by prop
 
   // Pad Alignment Preview state
   const [previewPadIdx, setPreviewPadIdx] = useState(0);
@@ -1054,6 +1053,7 @@ export default function AutomatedDispensingPanel({
             const res = await fetch('http://localhost:8000/api/check_glue_dot');
             if (res.ok) {
               const dot = await res.json();
+              console.log("dot verified", dot);
               const result = { padIndex: globalPointCount, passed: dot.found, diameter_mm: dot.diameter_mm ?? 0, confidence: dot.confidence ?? 0 };
               setDotCheckResults(prev => [...prev, result]);
               // Backfill dot result into the log entry for this pad

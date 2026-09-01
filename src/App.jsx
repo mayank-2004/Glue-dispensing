@@ -11,7 +11,7 @@ import ComponentList from "./components/ComponentList.jsx";
 import JogPanel from "./components/JogPanel.jsx";
 import FiducialPanel from "./components/FiducialPanel.jsx";
 import AutomatedDispensingPanel from "./components/AutomatedDispensingPanel.jsx";
-import { analyzeFiducialsInLayers, analyzeFiducialsWithRails } from "./lib/gerber/fiducialDetection.js";
+import { analyzeFiducialsWithRails } from "./lib/gerber/fiducialDetection.js";
 import { detectPcbOrigins } from "./lib/gerber/originDetection.js";
 import { FiducialVisionDetector } from "./lib/vision/fiducialVision.js";
 import { fitSimilarity, fitAffine, fitTranslation, fitHomography, applyTransform, rmsError } from "./lib/utils/transform2d.js";
@@ -31,6 +31,8 @@ import NetworkManagerPanel from "./components/NetworkManagerPanel.jsx";
 import OperatorDashboard from "./components/OperatorDashboard.jsx";
 import OperatorAnalytics from "./components/OperatorAnalytics.jsx";
 import OperationResultPanel from "./components/OperationResultPanel.jsx";
+import { usePayloadManager } from "./hooks/usePayloadManager.js";
+import HeadConfigPanel from "./components/HeadConfigPanel.jsx";
 
 function calculatePadCenter(p) {
   if (typeof p.x === "number" && typeof p.y === "number") {
@@ -47,9 +49,11 @@ function padCenter(p) {
 function processPads(points) {
   return points.map((pad, idx) => {
     const c = calculatePadCenter(pad);
-    return { ...pad, x: c.x, y: c.y, id: pad.componentIdentifier || `P${idx + 1}`,
+    return {
+      ...pad, x: c.x, y: c.y, id: pad.componentIdentifier || `P${idx + 1}`,
       width: pad.width || c.width || 1, height: pad.height || c.height || 1,
-      centerValid: c.valid, centerMethod: c.method, originalPad: pad };
+      centerValid: c.valid, centerMethod: c.method, originalPad: pad
+    };
   });
 }
 
@@ -70,7 +74,7 @@ export default function App() {
   } = useSerialMachine();
 
   // Connection toast tracking
-  const hasConnectedRef        = useRef(false);  // true after first-ever connect this session
+  const hasConnectedRef = useRef(false);  // true after first-ever connect this session
   const prevSerialConnectedRef = useRef(false);
   const intentionalDisconnectRef = useRef(false);
 
@@ -108,7 +112,7 @@ export default function App() {
   useEffect(() => {
     if (!window.vision) return;
     // Register listeners for future events
-    const offReady   = window.vision.onReady(() => toast.success("Vision server ready — camera online."));
+    const offReady = window.vision.onReady(() => toast.success("Vision server ready — camera online."));
     const offStopped = window.vision.onStopped(({ code, error } = {}) => {
       if (error) toast.error(`Vision server failed to start: ${error}`);
       else toast.warning("Vision server stopped — camera offline.");
@@ -282,6 +286,7 @@ export default function App() {
   const [fiducialVisionDetector] = useState(() => new FiducialVisionDetector());
   const [dispensingSequencer] = useState(() => new DispensingSequencer());
   const [safePathPlanner] = useState(() => new SafePathPlanner());
+  const payloadManager = usePayloadManager();
 
   const [showPasteDots, setShowPasteDots] = useState(false);
   const [dispensingSequence, setDispensingSequence] = useState([]);
@@ -458,7 +463,7 @@ export default function App() {
     return transformed;
   }, [xf, applyXf]);
 
-  const FID_COLORS  = ["#2ea8ff", "#8e2bff", "#b7c400", "#ff6b35", "#9c27b0", "#25d9be"];
+  const FID_COLORS = ["#2ea8ff", "#8e2bff", "#b7c400", "#ff6b35", "#9c27b0", "#25d9be"];
   const RAIL_COLORS = ["#ff9800", "#ff5722", "#ffc107", "#ff6d00"];
 
   // Full re-initialisation for a given side: re-detects fiducials, replaces the fiducial
@@ -474,14 +479,14 @@ export default function App() {
     const makeBoardFids = (offsetX = 0, offsetY = 0) =>
       detected.length > 0
         ? detected.map((fid, idx) => ({
-            id: fid.id || `F${idx + 1}`,
-            design: { x: parseFloat((fid.x + offsetX).toFixed(4)), y: parseFloat((fid.y + offsetY).toFixed(4)) },
-            machine: null, color: FID_COLORS[idx % FID_COLORS.length], confidence: fid.confidence,
-          }))
+          id: fid.id || `F${idx + 1}`,
+          design: { x: parseFloat((fid.x + offsetX).toFixed(4)), y: parseFloat((fid.y + offsetY).toFixed(4)) },
+          machine: null, color: FID_COLORS[idx % FID_COLORS.length], confidence: fid.confidence,
+        }))
         : [
-            { id: 'F1', design: null, machine: null, color: '#2ea8ff' },
-            { id: 'F2', design: null, machine: null, color: '#8e2bff' },
-          ];
+          { id: 'F1', design: null, machine: null, color: '#2ea8ff' },
+          { id: 'F2', design: null, machine: null, color: '#8e2bff' },
+        ];
 
     const newRailFids = detectedRail.map((fid, idx) => ({
       id: fid.id || `R${idx + 1}`,
@@ -526,14 +531,14 @@ export default function App() {
     const makeBoardFiducials = (offsetX = 0, offsetY = 0) =>
       detectedFiducials.length > 0
         ? detectedFiducials.map((fid, idx) => ({
-            id: fid.id || `F${idx + 1}`,
-            design: { x: parseFloat((fid.x + offsetX).toFixed(4)), y: parseFloat((fid.y + offsetY).toFixed(4)) },
-            machine: null, color: fidColors[idx % fidColors.length], confidence: fid.confidence,
-          }))
+          id: fid.id || `F${idx + 1}`,
+          design: { x: parseFloat((fid.x + offsetX).toFixed(4)), y: parseFloat((fid.y + offsetY).toFixed(4)) },
+          machine: null, color: fidColors[idx % fidColors.length], confidence: fid.confidence,
+        }))
         : [
-            { id: "F1", design: null, machine: null, color: "#2ea8ff" },
-            { id: "F2", design: null, machine: null, color: "#8e2bff" },
-          ];
+          { id: "F1", design: null, machine: null, color: "#2ea8ff" },
+          { id: "F2", design: null, machine: null, color: "#8e2bff" },
+        ];
 
     const autoRailFids = detectedRailFiducials.map((fid, idx) => ({
       id: fid.id || `R${idx + 1}`,
@@ -1703,7 +1708,7 @@ export default function App() {
       setSelectedOrigin(null);
     }
   };
-  
+
   useEffect(() => {
     window.updateFiducialsFromCamera = (detectedFiducials) => {
       const colors = ["#2ea8ff", "#8e2bff", "#00c49a", "#ff6b35", "#9c27b0", "#4caf50"];
@@ -1757,6 +1762,7 @@ export default function App() {
     { id: 'CameraPanel', num: '5', label: 'Camera', sub: 'Vision Servo' },
     { id: 'BedCalibration', num: '6', label: 'Calibrate', sub: 'Bed Leveling' },
     { id: 'AutomatedDispensingPanel', num: '7', label: 'Dispense', sub: 'Run Job' },
+    { id: 'HeadConfig', num: '⚙', label: 'Head Config', sub: 'Payload & Settings' },
     { id: 'NetworkManagerPanel', num: '📡', label: 'Network', sub: 'Wi-Fi / Bluetooth / Fleet' },
   ];
 
@@ -2035,8 +2041,18 @@ export default function App() {
                     nozzleHealth={nozzleHealth}
                     machinePosition={livePreview.machinePosition || machinePos}
                     maintenanceAlert={maintenanceAlert}
+                    payloadStatus={payloadManager.payloadStatus}
                     onOpen={setActiveComponent}
                   />
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: activeComponent === 'HeadConfig' ? 'block' : 'none', width: '100%', height: '100%' }}>
+              <div className="panel full-height">
+                <div className="panel-header"><h3 className="panel-title">HEAD CONFIGURATION</h3></div>
+                <div style={{ padding: 12, height: '100%', overflow: 'auto' }}>
+                  <HeadConfigPanel payloadManager={payloadManager} />
                 </div>
               </div>
             </div>

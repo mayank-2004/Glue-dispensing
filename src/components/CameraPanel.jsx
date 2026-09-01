@@ -85,85 +85,6 @@ function predictFidMachinePos(fid, allFiducials, xf, effectiveOrigin) {
   return null;
 }
 
-// function LensDistortionCalibration() {
-//   const toast = useToast();
-//   const [status, setStatus] = useState(null);
-//   const [busy, setBusy] = useState(false);
-//   const [expanded, setExpanded] = useState(false);
-
-//   const BASE = 'http://localhost:8000/api/calibration';
-
-//   const refreshStatus = async () => {
-//     try {
-//       const r = await fetch(`${BASE}/status`);
-//       if (r.ok) setStatus(await r.json());
-//     } catch { setStatus(null); }
-//   };
-
-//   const capture = async () => {
-//     setBusy(true);
-//     try {
-//       const r = await fetch(`${BASE}/capture`, { method: 'POST' });
-//       const d = await r.json();
-//       if (d.ok) { toast.success(`Frame ${d.captures} captured — pattern found!`); await refreshStatus(); }
-//       else toast.error(`Not captured: ${d.error}`);
-//     } catch { toast.error('Vision server offline'); }
-//     finally { setBusy(false); }
-//   };
-
-//   const compute = async () => {
-//     setBusy(true);
-//     try {
-//       const r = await fetch(`${BASE}/compute`, { method: 'POST' });
-//       const d = await r.json();
-//       if (d.ok) { toast.success(`Calibration done — RMS=${d.rms_error} using ${d.frames_used} frames`); await refreshStatus(); }
-//       else toast.error(`Compute failed: ${d.error}`);
-//     } catch { toast.error('Vision server offline'); }
-//     finally { setBusy(false); }
-//   };
-
-//   const reset = async () => {
-//     if (!confirm('Delete all calibration data?')) return;
-//     setBusy(true);
-//     try { await fetch(`${BASE}/reset`, { method: 'POST' }); await refreshStatus(); }
-//     catch { toast.error('Vision server offline'); }
-//     finally { setBusy(false); }
-//   };
-
-//   return (
-//     <div style={{ border: '1px solid #444', borderRadius: 4, marginBottom: 12 }}>
-//       <div
-//         style={{ padding: '8px 12px', background: '#2c2e33', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
-//         onClick={() => { setExpanded(e => !e); if (!expanded) refreshStatus(); }}
-//       >
-//         <strong style={{ color: '#4fc3f7', fontSize: '0.9em' }}>Lens Distortion Calibration</strong>
-//         <span style={{ color: '#888', fontSize: '0.8em' }}>{expanded ? '▼' : '▶'}</span>
-//       </div>
-//       {expanded && (
-//         <div style={{ padding: 12, background: '#1d1f24', fontSize: '0.82em' }}>
-//           <p style={{ color: '#9aa0a6', margin: '0 0 10px' }}>
-//             Print a 9×6 inner-corner chessboard. Hold it at various angles in front of the camera.
-//             Click <em>Capture</em> ≥10 times, then <em>Compute</em>.
-//           </p>
-//           {status && (
-//             <div style={{ marginBottom: 10, padding: '6px 10px', background: status.calibrated ? 'rgba(0,196,154,0.1)' : '#222', borderRadius: 4, borderLeft: `3px solid ${status.calibrated ? '#00c49a' : '#888'}` }}>
-//               {status.calibrated
-//                 ? <span style={{ color: '#00c49a' }}>Active — RMS: {status.rms_error}  ({status.captures} frames)</span>
-//                 : <span style={{ color: '#888' }}>Not calibrated — {status.captures} frame(s) captured</span>}
-//             </div>
-//           )}
-//           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-//             <button className="btn sm" onClick={capture} disabled={busy}>Capture</button>
-//             <button className="btn sm primary" onClick={compute} disabled={busy}>Compute</button>
-//             <button className="btn sm danger" onClick={reset} disabled={busy}>Reset</button>
-//             <button className="btn sm" onClick={refreshStatus} disabled={busy}>Status</button>
-//           </div>
-//         </div>
-//       )}
-//     </div>
-//   );
-// }
-
 export default function CameraPanel({
   fiducials = [],
   xf,
@@ -1645,20 +1566,6 @@ export default function CameraPanel({
       console.error('Quality analysis failed:', error);
     }
   };
-
-  // Jog nozzle by the camera-to-nozzle offset so it aligns over the fiducial center.
-  // Called once after a successful one-shot fiducial detection.
-  // const jogCameraToNozzle = async (offset) => {
-  //   if (!offset || (offset.dx === 0 && offset.dy === 0)) return;
-  //   // console.log("Offset:", offset);
-  //   const cmds = jogRel({ dx: offset.dx, dy: offset.dy, feed: 1000 });
-  //   if (window.serial && window.serial.writeLine) {
-  //     for (const cmd of cmds) await window.serial.writeLine(cmd);
-  //     console.log(`[FiducialOffset] Nozzle jogged ΔX:${offset.dx.toFixed(3)} ΔY:${offset.dy.toFixed(3)} mm → nozzle now over fiducial center`);
-  //   } else {
-  //     console.warn('[FiducialOffset] Serial not connected — offset jog skipped. Would have jogged:', offset);
-  //   }
-  // };
 
   const jogCameraToNozzle = async (offset) => {
     if (!offset || (offset.dx === 0 && offset.dy === 0)) return;

@@ -10,9 +10,85 @@ export default function OperationResultPanel({ jobStage, jobStatistics, operatio
 
   return (
     <section className="operation-result-panel">
-      <div className="operator-page-heading"><div><div className="operator-eyebrow">QUALITY GATE / CYCLE OUTCOME</div><h1>Operation Result</h1><p>Review the last dispensing operation and decide the next operator action.</p></div><span className={`badge ${success ? 'active' : 'info'}`}>{success ? 'CYCLE VERIFIED' : 'AWAITING CYCLE'}</span></div>
-      <div className={`result-hero result-${tone}`}><div className="result-symbol">{success ? '✓' : failure ? '✗' : active ? '◌' : '—'}</div><div><div className="result-label">OPERATION STATUS</div><strong>{status}</strong><small>{success ? 'The last dispensing cycle completed successfully.' : failure ? `${operationFailure.code}: ${operationFailure.reason}` : active ? `Controller stage: ${jobStage}` : 'Complete a dispensing cycle to generate an outcome.'}</small></div></div>
-      <div className="result-detail-grid"><div className="operator-section"><div className="operator-section-heading"><span>OPERATION DETAILS</span><span className="section-live">REAL CYCLE REPORT</span></div><div className="result-row"><span>Components dispensed</span><strong>{operationReport?.totalPads ?? operationFailure?.completedPads ?? '—'}</strong></div><div className="result-row"><span>Total glue used</span><strong>{operationReport?.totalVolUl ? `${operationReport.totalVolUl} µL` : '—'}</strong></div><div className="result-row"><span>Cycle duration</span><strong>{operationReport?.jobDurationSec ? `${operationReport.jobDurationSec}s` : '—'}</strong></div><div className="result-row"><span>Average dwell</span><strong>{operationReport?.avgDwellMs ? `${operationReport.avgDwellMs}ms` : '—'}</strong></div><div className="result-row"><span>Base pressure</span><strong>{operationReport?.basePressure ? `${operationReport.basePressure} PSI` : '—'}</strong></div><div className="result-row"><span>Dot verification</span><strong className={operationReport?.dotsFailed > 0 ? 'result-bad' : 'result-good'}>{operationReport?.dotsChecked != null ? `${operationReport.dotsFailed || 0} failed / ${operationReport.dotsChecked} checked` : 'Not enabled'}</strong></div>{operationReport?.failedPads?.length > 0 && <div className="result-failed-pads"><strong>Failed pads:</strong> {operationReport.failedPads.map(pad => `#${pad}`).join(', ')}</div>}</div><div className="operator-section result-action-section"><div className="operator-section-heading"><span>NEXT ACTION</span></div><p>{success ? 'Review the completed report, then start another controlled cycle when ready.' : failure ? 'Correct the reported issue, inspect the machine, and retry from the operation monitor.' : 'Check machine readiness, load a job, and run the operation monitor.'}</p><button className="btn primary full-width" onClick={() => onOpen('AutomatedDispensingPanel')}>{success || failure ? '↻ OPEN OPERATION MONITOR' : '▶ OPEN OPERATION MONITOR'}</button><button className="btn secondary full-width" onClick={() => onOpen('Dashboard')}>RETURN TO DASHBOARD</button></div></div>
+      <div className="operator-page-heading">
+        <div>
+          <div className="operator-eyebrow">
+            QUALITY GATE / CYCLE OUTCOME
+          </div>
+          <h1>Operation Result</h1>
+          <p>Review the last dispensing operation and decide the next operator action.</p>
+        </div>
+        <span className={`badge ${success ? 'active' : 'info'}`}>
+          {success ? 'CYCLE VERIFIED' : 'AWAITING CYCLE'}
+        </span>
+      </div>
+      <div className={`result-hero result-${tone}`}>
+        <div className="result-symbol">
+          {success ? '✓' : failure ? '✗' : active ? '◌' : '—'}
+        </div>
+        <div>
+          <div className="result-label">
+            OPERATION STATUS
+          </div>
+          <strong>{status}</strong>
+          <small>
+            {success ? 'The last dispensing cycle completed successfully.' : failure ? `${operationFailure.code}: ${operationFailure.reason}` : active ? `Controller stage: ${jobStage}` : 'Complete a dispensing cycle to generate an outcome.'}
+          </small>
+        </div>
+      </div>
+      <div className="result-detail-grid">
+        <div className="operator-section">
+          <div className="operator-section-heading">
+            <span>OPERATION DETAILS</span>
+            <span className="section-live">REAL CYCLE REPORT</span>
+          </div>
+          <div className="result-row">
+            <span>Components dispensed</span>
+            <strong>{operationReport?.totalPads ?? operationFailure?.completedPads ?? '—'}</strong>
+          </div>
+          <div className="result-row">
+            <span>Total glue used</span>
+            <strong>{operationReport?.totalVolUl ? `${operationReport.totalVolUl} µL` : '—'}</strong>
+          </div>
+          <div className="result-row">
+            <span>Cycle duration</span>
+            <strong>{operationReport?.jobDurationSec ? `${operationReport.jobDurationSec}s` : '—'}</strong>
+          </div>
+          <div className="result-row">
+            <span>Average dwell</span>
+            <strong>{operationReport?.avgDwellMs ? `${operationReport.avgDwellMs}ms` : '—'}</strong>
+          </div>
+          <div className="result-row">
+            <span>Base pressure</span>
+            <strong>{operationReport?.basePressure ? `${operationReport.basePressure} PSI` : '—'}</strong>
+          </div>
+          <div className="result-row">
+            <span>Dot verification</span>
+            <strong className={operationReport?.dotsFailed > 0 ? 'result-bad' : 'result-good'}>
+              {operationReport?.dotsChecked != null ? `${operationReport.dotsFailed || 0} failed / ${operationReport.dotsChecked} checked` : 'Not enabled'}
+            </strong>
+          </div>
+          {operationReport?.failedPads?.length > 0 &&
+            <div className="result-failed-pads">
+              <strong>Failed pads:</strong>
+              {operationReport.failedPads.map(pad => `#${pad}`).join(', ')}
+            </div>}
+        </div>
+        <div className="operator-section result-action-section">
+          <div className="operator-section-heading">
+            <span>NEXT ACTION</span>
+          </div>
+          <p>
+            {success ? 'Review the completed report, then start another controlled cycle when ready.' : failure ? 'Correct the reported issue, inspect the machine, and retry from the operation monitor.' : 'Check machine readiness, load a job, and run the operation monitor.'}
+          </p>
+          <button className="btn primary full-width" onClick={() => onOpen('AutomatedDispensingPanel')}>
+            {success || failure ? '↻ OPEN OPERATION MONITOR' : '▶ OPEN OPERATION MONITOR'}
+          </button>
+          <button className="btn secondary full-width" onClick={() => onOpen('Dashboard')}>
+            RETURN TO DASHBOARD
+          </button>
+        </div>
+      </div>
     </section>
   );
 }
