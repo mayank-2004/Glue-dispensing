@@ -33,6 +33,8 @@ import OperatorAnalytics from "./components/OperatorAnalytics.jsx";
 import OperationResultPanel from "./components/OperationResultPanel.jsx";
 import { usePayloadManager } from "./hooks/usePayloadManager.js";
 import HeadConfigPanel from "./components/HeadConfigPanel.jsx";
+import { useMotionManager } from "./hooks/useMotionManager.js";
+import MotionConfigPanel from "./components/MotionConfigPanel.jsx";
 
 function calculatePadCenter(p) {
   if (typeof p.x === "number" && typeof p.y === "number") {
@@ -287,6 +289,7 @@ export default function App() {
   const [dispensingSequencer] = useState(() => new DispensingSequencer());
   const [safePathPlanner] = useState(() => new SafePathPlanner());
   const payloadManager = usePayloadManager();
+  const motionManager = useMotionManager(payloadManager.payloadStatus, isEmergencyStopped);
 
   const [showPasteDots, setShowPasteDots] = useState(false);
   const [dispensingSequence, setDispensingSequence] = useState([]);
@@ -1763,6 +1766,7 @@ export default function App() {
     { id: 'BedCalibration', num: '6', label: 'Calibrate', sub: 'Bed Leveling' },
     { id: 'AutomatedDispensingPanel', num: '7', label: 'Dispense', sub: 'Run Job' },
     { id: 'HeadConfig', num: '⚙', label: 'Head Config', sub: 'Payload & Settings' },
+    { id: 'MotionConfig', num: '🏃', label: 'Motion', sub: 'Speed Profiles' },
     { id: 'NetworkManagerPanel', num: '📡', label: 'Network', sub: 'Wi-Fi / Bluetooth / Fleet' },
   ];
 
@@ -2042,6 +2046,7 @@ export default function App() {
                     machinePosition={livePreview.machinePosition || machinePos}
                     maintenanceAlert={maintenanceAlert}
                     payloadStatus={payloadManager.payloadStatus}
+                    motionManager={motionManager}
                     onOpen={setActiveComponent}
                   />
                 </div>
@@ -2053,6 +2058,15 @@ export default function App() {
                 <div className="panel-header"><h3 className="panel-title">HEAD CONFIGURATION</h3></div>
                 <div style={{ padding: 12, height: '100%', overflow: 'auto' }}>
                   <HeadConfigPanel payloadManager={payloadManager} />
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: activeComponent === 'MotionConfig' ? 'block' : 'none', width: '100%', height: '100%' }}>
+              <div className="panel full-height">
+                <div className="panel-header"><h3 className="panel-title">MOTION CONFIGURATION</h3></div>
+                <div style={{ padding: 12, height: '100%', overflow: 'auto' }}>
+                  <MotionConfigPanel motionManager={motionManager} />
                 </div>
               </div>
             </div>
@@ -2085,6 +2099,7 @@ export default function App() {
                     isConnected={isSerialConnected}
                     skipHome={isHomed}
                     isHomed={isHomed}
+                    motionManager={motionManager}
                     onConnect={() => {
                       handleSerialConnect(true);
                       setIsHomed(false); // always re-home on connect; onHomingComplete sets it true
@@ -2138,6 +2153,7 @@ export default function App() {
                   <JogPanel
                     isConnected={isSerialConnected}
                     machinePosition={livePreview.machinePosition}
+                    motionManager={motionManager}
                   />
                 </div>
               </div>
@@ -2366,6 +2382,7 @@ export default function App() {
                 selectedOrigin={effectiveOrigin}
                 pressureSettings={pressureSettings}
                 speedSettings={speedSettings}
+                motionManager={motionManager}
                 boardOutline={boardOutline}
                 useSafePathPlanning={useSafePathPlanning}
                 setUseSafePathPlanning={setUseSafePathPlanning}
@@ -2416,9 +2433,7 @@ export default function App() {
             <div style={{ display: activeComponent === 'NetworkManagerPanel' ? 'flex' : 'none', width: '100%', height: '100%', flexDirection: 'column' }}>
               <NetworkManagerPanel />
             </div>
-
           </div>
-
         </div>
       </div>
     </div>

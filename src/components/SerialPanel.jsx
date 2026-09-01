@@ -5,6 +5,7 @@ import { useToast } from '../Toast.jsx';
 export default function SerialPanel({
   onMachinePositionUpdate = null,
   isConnected = false,
+  motionManager,
   onConnect,
   onDisconnect,
   onUnexpectedDisconnect,  // called when cable is pulled / port closes unexpectedly
@@ -214,6 +215,7 @@ export default function SerialPanel({
             await new Promise(r => setTimeout(r, 3000));
 
             setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} Starting Auto-Home (G28)...`].slice(-500));
+            if (motionManager) await motionManager.applyProfileToMachine('Homing');
             await window.serial.writeLine('G90');
             await window.serial.writeLine('G28');
             await window.serial.writeLine('M400');

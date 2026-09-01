@@ -38,13 +38,18 @@ export default function OperatorDashboard({
   machinePosition,
   maintenanceAlert,
   payloadStatus,
+  motionManager,
   onOpen,
 }) {
   const position = machinePosition || { x: 0, y: 0, z: 0 };
-  const machineTone = isConnected ? (isHomed ? 'success' : 'warning') : 'danger';
+  const machineTone = !isConnected ? 'neutral' : !isHomed ? 'warning' : 'success';
   const machineStatus = isConnected ? (isHomed ? 'READY' : 'HOME REQUIRED') : 'OFFLINE';
   const operationStatus = isJobRunning ? 'RUNNING' : jobStage === 'finished' ? 'COMPLETE' : 'STANDBY';
-  const operationTone = isJobRunning ? 'info' : jobStage === 'finished' ? 'success' : 'neutral';
+  const operationTone = operationFailure ? 'danger' : jobStage === 'running' ? 'info' : 'neutral';
+  
+  const motionState = motionManager?.activeProfileName || 'Unknown';
+  const currentSpeed = motionManager?.getActiveSettings()?.speed || 0;
+  const isSpeedRestricted = !motionManager?.isSafeToMoveFast;
 
   return (
     <section className="operator-dashboard">
@@ -63,6 +68,7 @@ export default function OperatorDashboard({
       <div className="operator-metrics">
         <Metric label="Machine State" value={machineStatus} detail={isHomed ? 'Axes referenced' : 'Safety interlock: motion limited'} tone={machineTone} />
         <Metric label="Active Operation" value={operationStatus} detail={jobStage || 'No active cycle'} tone={operationTone} />
+        <Metric label="Motion State" value={motionState} detail={isSpeedRestricted ? `RESTRICTED (${currentSpeed.toFixed(1)} mm/s)` : `Speed: ${currentSpeed.toFixed(1)} mm/s`} tone={isSpeedRestricted ? 'warning' : 'info'} />
         <Metric label="Production Count" value={operationReport?.totalPads ?? jobStatistics?.totalPads ?? '—'} detail={operationReport ? 'Pads completed in last cycle' : jobStatistics ? 'Pads in current recipe' : 'Load a paste layer to calculate'} tone="info" />
         <Metric label="Cycle Time" value={operationReport?.jobDurationSec ? `${operationReport.jobDurationSec}s` : jobStatistics?.estimatedTime ? `${jobStatistics.estimatedTime}s` : '—'} detail={operationFailure ? 'Last cycle ended with a fault' : operationReport ? 'Last completed cycle' : 'Waiting for job data'} tone={operationFailure ? 'danger' : 'neutral'} />
         <Metric 

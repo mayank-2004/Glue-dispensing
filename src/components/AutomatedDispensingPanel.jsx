@@ -603,6 +603,7 @@ export default function AutomatedDispensingPanel({
 
     try {
       window.pauseSerialPolling = true;
+      if (motionManager) await motionManager.applyProfileToMachine('Rapid');
       await sendGcodeWait('M400');
       setJobStage('loading');
     } catch (e) {
@@ -630,10 +631,11 @@ export default function AutomatedDispensingPanel({
     return true;
   };
 
-  const proceedToRegistration = () => {
+  const proceedToRegistration = async () => {
     setJobStage('dispensing');
     localStorage.removeItem('resumeFromPad');
     setResumeFromPad(0);
+    if (motionManager) await motionManager.applyProfileToMachine('Soldering');
     runDispenseLoop(0);
   };
 
@@ -648,6 +650,7 @@ export default function AutomatedDispensingPanel({
       window.pauseSerialPolling = true;
       await sendGcodeWait('M400');
       setJobStage('dispensing');
+      if (motionManager) await motionManager.applyProfileToMachine('Soldering');
       runDispenseLoop(resumeFromPad);
     } catch (e) {
       window.pauseSerialPolling = false;
@@ -999,6 +1002,9 @@ export default function AutomatedDispensingPanel({
         if (dotOffsets.length === 1) {
           // ── Single-dot path — unchanged behaviour (Gerber pads + 1-dot PnP) ──
           let cmds;
+          const activeSpeedMmMin = (motionManager?.getActiveSettings()?.speed || 100) * 60;
+          const activeZSpeedMmMin = Math.min(activeSpeedMmMin * 0.2, 500);
+
           if (dispenseMode.mode === 'bead') {
             cmds = dispenseBead({
               x: finalX, y: finalY,
@@ -1006,8 +1012,8 @@ export default function AutomatedDispensingPanel({
               beadAxis: dispenseMode.axis,
               zWork,
               zSafe: safeTravelHeight,
-              feedXY: speedSettings.travelSpeed || 6000,
-              feedZ: speedSettings.dispenseSpeed || 300,
+              feedXY: activeSpeedMmMin,
+              feedZ: activeZSpeedMmMin,
               feedBead: beadFeedRate,
               pressure,
               pwmDuty,
@@ -1017,8 +1023,8 @@ export default function AutomatedDispensingPanel({
               x: finalX, y: finalY,
               zWork,
               zSafe: safeTravelHeight,
-              feedXY: speedSettings.travelSpeed || 6000,
-              feedZ: speedSettings.dispenseSpeed || 300,
+              feedXY: activeSpeedMmMin,
+              feedZ: activeZSpeedMmMin,
               pressure,
               dwellMs: dwell,
               pwmDuty,
@@ -1028,6 +1034,9 @@ export default function AutomatedDispensingPanel({
           nozzleMaintenance.recordDispense();
         } else {
           // ── Multi-dot path — PnP dual/quad pattern ───────────────────────────
+          const activeSpeedMmMin = (motionManager?.getActiveSettings()?.speed || 100) * 60;
+          const activeZSpeedMmMin = Math.min(activeSpeedMmMin * 0.2, 500);
+          
           for (const dot of dotOffsets) {
             const { finalX: dfx, finalY: dfy } = designToFinalXY(dot.dx, dot.dy);
             const dotZWork = dispenseHeight + getZOffsetForPoint(dfx, dfy);
@@ -1036,8 +1045,8 @@ export default function AutomatedDispensingPanel({
               x: dfx, y: dfy,
               zWork: dotZWork,
               zSafe: safeTravelHeight,
-              feedXY: speedSettings.travelSpeed || 6000,
-              feedZ: speedSettings.dispenseSpeed || 300,
+              feedXY: activeSpeedMmMin,
+              feedZ: activeZSpeedMmMin,
               pressure,
               dwellMs: dwell,
               pwmDuty,
