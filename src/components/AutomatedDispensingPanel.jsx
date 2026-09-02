@@ -48,6 +48,7 @@ export default function AutomatedDispensingPanel({
   onGlueStatusChange,
   onNozzleHealthChange,
   tipManager,
+  safetySystem,
 }) {
   const toast = useToast();
   const [isJobRunning, setIsJobRunning] = useState(false);
@@ -359,6 +360,18 @@ export default function AutomatedDispensingPanel({
     return boardOutline;
   }, [fiducials, boardOutline]);
 
+  const cancelJobRef = useRef(null);
+  useEffect(() => {
+    const handleSafetyHalt = () => {
+      if (isJobRunningRef.current && cancelJobRef.current) {
+        toast.error("Safety Halt Triggered — Job Aborted.");
+        cancelJobRef.current();
+      }
+    };
+    window.addEventListener('safety-halt', handleSafetyHalt);
+    return () => window.removeEventListener('safety-halt', handleSafetyHalt);
+  }, [toast]);
+
   // Clamp previewPadIdx when the sequence shrinks
   useEffect(() => {
     if (activeSequence && activeSequence.length > 0 && previewPadIdx >= activeSequence.length) {
@@ -476,6 +489,15 @@ export default function AutomatedDispensingPanel({
       ? totalPnpDots * glueDotVolUl
       : (glueSummary?.totalVolUl ?? 0);
     const checks = [
+      {
+        id: 'safety',
+        label: 'Safety system ready',
+        critical: true,
+        passed: safetySystem ? safetySystem.isJobExecutionPermitted : true,
+        detail: safetySystem && !safetySystem.isJobExecutionPermitted
+          ? 'CRITICAL FAULT ACTIVE — Resolve faults and clear to resume'
+          : 'Safety checks clear',
+      },
       {
         id: 'serial',
         label: 'Serial port connected',
@@ -1302,6 +1324,7 @@ export default function AutomatedDispensingPanel({
   };
 
   const cancelJob = async () => {
+    cancelJobRef.current = cancelJob;
     operatorPausedRef.current = false;
     setIsOperatorPaused(false);
     const padsDone = globalPointCountRef.current;
@@ -1334,8 +1357,9 @@ export default function AutomatedDispensingPanel({
     }
     setJobStage('idle');
     setMachineStatus('idle');
-    setCurrentPadInfo(null);
   };
+
+  useEffect(() => { cancelJobRef.current = cancelJob; }, [cancelJob]);
 
   // Move CAMERA crosshair to a pad position (no tool offset — camera is the reference)
   // Applies the live calibration correction so the crosshair lands precisely on-center

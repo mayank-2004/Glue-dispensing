@@ -42,11 +42,13 @@ export default function OperatorDashboard({
   cameraSystem,
   alignmentInfo,
   tipManager,
+  safetySystem,
   onOpen,
 }) {
   const position = machinePosition || { x: 0, y: 0, z: 0 };
-  const machineTone = !isConnected ? 'neutral' : !isHomed ? 'warning' : 'success';
-  const machineStatus = isConnected ? (isHomed ? 'READY' : 'HOME REQUIRED') : 'OFFLINE';
+  const hasCriticalSafety = safetySystem?.isCritical;
+  const machineTone = !isConnected ? 'neutral' : hasCriticalSafety ? 'danger' : !isHomed ? 'warning' : 'success';
+  const machineStatus = !isConnected ? 'OFFLINE' : hasCriticalSafety ? 'SAFETY HALT' : isHomed ? 'READY' : 'HOME REQUIRED';
   const operationStatus = isJobRunning ? 'RUNNING' : jobStage === 'finished' ? 'COMPLETE' : 'STANDBY';
   const operationTone = operationFailure ? 'danger' : jobStage === 'running' ? 'info' : 'neutral';
   
@@ -77,7 +79,7 @@ export default function OperatorDashboard({
       </div>
 
       <div className="operator-metrics">
-        <Metric label="Machine State" value={machineStatus} detail={isHomed ? 'Axes referenced' : 'Safety interlock: motion limited'} tone={machineTone} />
+        <Metric label="Machine State" value={machineStatus} detail={safetySystem?.isCritical ? `FAULT: ${safetySystem.activeFaults[0]?.message}` : isHomed ? 'Axes referenced' : 'Safety interlock: motion limited'} tone={machineTone} />
         <Metric label="Active Operation" value={operationStatus} detail={jobStage || 'No active cycle'} tone={operationTone} />
         <Metric label="Motion State" value={motionState} detail={isSpeedRestricted ? `RESTRICTED (${currentSpeed.toFixed(1)} mm/s)` : `Speed: ${currentSpeed.toFixed(1)} mm/s`} tone={isSpeedRestricted ? 'warning' : 'info'} />
         <Metric label="Production Count" value={operationReport?.totalPads ?? jobStatistics?.totalPads ?? '—'} detail={operationReport ? 'Pads completed in last cycle' : jobStatistics ? 'Pads in current recipe' : 'Load a paste layer to calculate'} tone="info" />

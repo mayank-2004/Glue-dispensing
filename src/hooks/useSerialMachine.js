@@ -99,6 +99,23 @@ export function useSerialMachine() {
         if (/TIP_CHANGE_FAIL/i.test(line)) {
           window.dispatchEvent(new CustomEvent('tip-change-fail'));
         }
+        // Parse Hardware Faults
+        if (/ALARM:|Error:|E-STOP:|FUME_FAIL:|CURTAIN_TRIP:|LOW_WIRE:|HEATER_FAULT:|DRIVER_FAULT:|TOUCH_FAULT:/i.test(line)) {
+          let code = 'E000';
+          let level = 'CRITICAL';
+          let msg = line.trim();
+          
+          if (/E-STOP:/i.test(line)) { code = 'E001'; level = 'EMERGENCY'; msg = 'Emergency Stop Activated'; }
+          else if (/FUME_FAIL:/i.test(line)) { code = 'E002'; level = 'CRITICAL'; msg = 'Fume Extraction Failure'; }
+          else if (/CURTAIN_TRIP:/i.test(line)) { code = 'E003'; level = 'EMERGENCY'; msg = 'Light Curtain Triggered'; }
+          else if (/ALARM:.*(Hard limit|Soft limit)/i.test(line)) { code = 'E004'; level = 'CRITICAL'; msg = 'Axis Travel Limit Reached'; }
+          else if (/DRIVER_FAULT:/i.test(line)) { code = 'E005'; level = 'CRITICAL'; msg = 'Motor/Driver Fault'; }
+          else if (/HEATER_FAULT:|Error:.*(Thermal|Heater)/i.test(line)) { code = 'E006'; level = 'CRITICAL'; msg = 'Soldering Heater Fault'; }
+          else if (/LOW_WIRE:/i.test(line)) { code = 'E007'; level = 'WARNING'; msg = 'Solder Wire Spool Low'; }
+          else if (/TOUCH_FAULT:/i.test(line)) { code = 'E008'; level = 'CRITICAL'; msg = 'Unwanted Touch Detected'; }
+          
+          window.dispatchEvent(new CustomEvent('hardware-fault', { detail: { code, level, message: msg } }));
+        }
       });
     }
     return () => { if (statusIntervalRef.current) clearInterval(statusIntervalRef.current); };

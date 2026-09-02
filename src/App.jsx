@@ -38,6 +38,8 @@ import MotionConfigPanel from "./components/MotionConfigPanel.jsx";
 import { useCameraSystem } from "./hooks/useCameraSystem.js";
 import { useTipManager } from "./hooks/useTipManager.js";
 import TipManagementPanel from "./components/TipManagementPanel.jsx";
+import { useSafetySystem, FAULT_LEVEL } from "./hooks/useSafetySystem.js";
+import SafetyBanner from "./components/SafetyBanner.jsx";
 
 function calculatePadCenter(p) {
   if (typeof p.x === "number" && typeof p.y === "number") {
@@ -295,6 +297,22 @@ export default function App() {
   const motionManager = useMotionManager(payloadManager.payloadStatus, isEmergencyStopped);
   const cameraSystem = useCameraSystem();
   const tipManager = useTipManager();
+  
+  const serialWriteWrapper = useCallback(async (cmd) => {
+    if (window.serial?.writeLine) await window.serial.writeLine(cmd);
+    else if (window.serial?.write) await window.serial.write(cmd);
+  }, []);
+  const safetySystem = useSafetySystem(serialWriteWrapper);
+
+  useEffect(() => {
+    const handleFault = (e) => {
+      console.log("[Hardware Fault Event] Received:", e);
+      const { code, message, level } = e.detail;
+      safetySystem.triggerFault(code, message, level);
+    };
+    window.addEventListener('hardware-fault', handleFault);
+    return () => window.removeEventListener('hardware-fault', handleFault);
+  }, [safetySystem]);
 
   const [showPasteDots, setShowPasteDots] = useState(false);
   const [dispensingSequence, setDispensingSequence] = useState([]);
@@ -1804,6 +1822,7 @@ export default function App() {
         isAdminMode={isAdminMode}
         onToggleAdmin={setIsAdminMode}
       />
+      <SafetyBanner safetySystem={safetySystem} />
 
       {/* ── BODY: Sidebar + Content ─────────────────────────── */}
       <div className="app-body">
@@ -2406,6 +2425,7 @@ export default function App() {
                 speedSettings={speedSettings}
                 motionManager={motionManager}
                 tipManager={tipManager}
+                safetySystem={safetySystem}
                 boardOutline={boardOutline}
                 useSafePathPlanning={useSafePathPlanning}
                 setUseSafePathPlanning={setUseSafePathPlanning}
