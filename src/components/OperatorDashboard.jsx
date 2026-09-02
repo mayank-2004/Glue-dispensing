@@ -43,6 +43,7 @@ export default function OperatorDashboard({
   alignmentInfo,
   tipManager,
   safetySystem,
+  fluxManager,
   onOpen,
 }) {
   const position = machinePosition || { x: 0, y: 0, z: 0 };
@@ -63,6 +64,21 @@ export default function OperatorDashboard({
   const tipDetail = activeTip
     ? `${activeTip.type} — ${tipVerify}`
     : 'No tip configured';
+
+  // Flux metric
+  const fluxLevel = fluxManager?.levelState ?? 'UNKNOWN';
+  const fluxPct = fluxManager?.levelPct ?? 0;
+  const fluxTone = fluxLevel === 'NORMAL' ? 'success' : fluxLevel === 'LOW' ? 'warning' : fluxLevel === 'EMPTY' || fluxLevel === 'REFILL_REQUIRED' ? 'danger' : 'neutral';
+  const fluxValue = fluxLevel === 'UNKNOWN' ? '—' : fluxLevel === 'NORMAL' ? `${fluxPct}%` : fluxLevel.replace('_', ' ');
+  const fluxDetail = fluxManager?.dispenseState === 'DISPENSING' ? 'Dispensing active'
+    : fluxManager?.cleanState === 'RUNNING' ? 'Cleaning cycle running'
+    : fluxManager?.lastSprayStatus === 'FAILED' ? 'Last spray failed!'
+    : fluxLevel === 'CLEANING_REQUIRED' ? 'Clean cycle due before next job'
+    : fluxLevel === 'EMPTY' ? 'Tank empty — refill required'
+    : fluxLevel === 'LOW' ? `Only ${fluxPct}% remaining — plan refill`
+    : fluxManager?.lastSprayStatus === 'SUCCESS' ? 'Last spray successful'
+    : fluxManager?.sourceIsReliable ? 'Encoder feedback active'
+    : 'Software estimate (no encoder)';
 
   return (
     <section className="operator-dashboard">
@@ -95,6 +111,12 @@ export default function OperatorDashboard({
           value={tipValue}
           detail={tipDetail}
           tone={activeTip ? tipTone : 'neutral'}
+        />
+        <Metric
+          label="Flux Level"
+          value={fluxValue}
+          detail={fluxDetail}
+          tone={fluxTone}
         />
         <Metric
           label="Camera System"

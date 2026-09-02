@@ -1,0 +1,86 @@
+.flux-panel { display: flex; flex-direction: column; gap: 16px; padding: 16px; }
+
+/* Status Bar */
+.flux-status-bar {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 12px 16px; background: rgba(0,0,0,0.25);
+  border-radius: 6px; border: 1px solid var(--border-color);
+}
+.flux-status-bar .flux-label { font-size: 0.8em; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+.flux-status-bar .flux-value { font-size: 1.05em; font-weight: 700; color: var(--text-primary); }
+
+/* Level gauge */
+.flux-gauge-wrap { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 120px; }
+.flux-gauge-bar {
+  height: 8px; border-radius: 4px; background: rgba(255,255,255,0.08);
+  overflow: hidden; position: relative;
+}
+.flux-gauge-fill {
+  height: 100%; border-radius: 4px;
+  transition: width 0.5s ease, background 0.3s ease;
+}
+.flux-gauge-fill.level-normal  { background: #28a745; }
+.flux-gauge-fill.level-low     { background: #ffc107; }
+.flux-gauge-fill.level-empty   { background: #dc3545; }
+
+/* State badge */
+.flux-state-badge {
+  padding: 3px 12px; border-radius: 10px; font-size: 0.78em; font-weight: 700; letter-spacing: 0.5px;
+}
+.flux-state-badge.NORMAL           { background: rgba(40,167,69,0.15);  color: #28a745; border: 1px solid #28a745; }
+.flux-state-badge.LOW              { background: rgba(255,193,7,0.15);  color: #ffc107; border: 1px solid #ffc107; }
+.flux-state-badge.EMPTY            { background: rgba(220,53,69,0.15);  color: #dc3545; border: 1px solid #dc3545; }
+.flux-state-badge.REFILL_REQUIRED  { background: rgba(220,53,69,0.15);  color: #dc3545; border: 1px solid #dc3545; }
+.flux-state-badge.CLEANING_REQUIRED{ background: rgba(255,193,7,0.15);  color: #ffc107; border: 1px solid #ffc107; }
+.flux-state-badge.UNKNOWN          { background: rgba(139,147,158,0.15);color: #8b949e; border: 1px solid #8b949e; }
+
+/* Dispense / Clean state badge */
+.flux-activity-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px; border-radius: 10px; font-size: 0.78em; font-weight: 600;
+}
+.flux-activity-badge.DISPENSING { background: rgba(88,166,255,0.15); color: #58a6ff; border: 1px solid #58a6ff; }
+.flux-activity-badge.CLEANING   { background: rgba(63,185,80,0.15);  color: #3fb950; border: 1px solid #3fb950; }
+.flux-activity-badge.IDLE       { background: rgba(139,147,158,0.1); color: #8b949e; border: 1px solid #8b949e; }
+.flux-activity-badge.PAUSED     { background: rgba(255,193,7,0.15);  color: #ffc107; border: 1px solid #ffc107; }
+
+/* Sections */
+.flux-section {
+  padding: 14px 16px; background: rgba(0,0,0,0.2);
+  border-radius: 6px; border: 1px solid var(--border-color);
+}
+.flux-section h4 { margin: 0 0 10px; font-size: 0.88em; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
+
+/* Controls row */
+.flux-controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.flux-controls .btn { min-width: 130px; }
+
+/* Clean history */
+.flux-clean-meta { font-size: 0.82em; color: var(--text-secondary); margin-top: 6px; display: flex; gap: 4px; flex-direction: column; }
+.flux-clean-meta span { color: var(--text-primary); }
+
+/* Config grid */
+.flux-config-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+.flux-config-item { display: flex; flex-direction: column; gap: 4px; }
+.flux-config-item label { font-size: 0.82em; color: var(--text-secondary); }
+.flux-config-item input {
+  padding: 4px 8px; border-radius: 4px; border: 1px solid var(--border-color);
+  background: var(--bg-tertiary); color: var(--text-primary);
+  font-size: 0.88em; height: 28px;
+}
+
+/* Instructions accordion */
+.flux-instructions { margin-top: 6px; }
+.flux-instructions summary {
+  cursor: pointer; font-size: 0.85em; color: var(--accent-primary);
+  padding: 6px 0; user-select: none; list-style: none;
+}
+.flux-instructions summary::before { content: "▶ "; font-size: 0.75em; }
+.flux-instructions[open] summary::before { content: "▼ "; }
+.flux-instructions-body {
+  margin-top: 8px; padding: 10px 12px;
+  background: rgba(0,0,0,0.2); border-radius: 4px;
+  font-size: 0.83em; line-height: 1.7; color: var(--text-secondary);
+}
+.flux-instructions-body ol { margin: 0; padding-left: 18px; }
+.flux-instructions-body li { margin-bottom: 4px; }

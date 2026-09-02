@@ -49,6 +49,7 @@ export default function AutomatedDispensingPanel({
   onNozzleHealthChange,
   tipManager,
   safetySystem,
+  fluxManager,
 }) {
   const toast = useToast();
   const [isJobRunning, setIsJobRunning] = useState(false);
@@ -615,7 +616,21 @@ export default function AutomatedDispensingPanel({
             : `${outCount} pad(s) out of bounds — first: ${firstOut}. Check transform or increase axis limits in Settings.`,
         };
       })(),
-    ];
+      (() => {
+        if (!fluxManager) return null;
+        const v = fluxManager.validateForRun();
+        const levelState = fluxManager.levelState;
+        return {
+          id: 'flux',
+          label: 'Flux System Ready',
+          critical: levelState === 'EMPTY',
+          passed: v.valid,
+          detail: v.valid 
+            ? 'Flux level normal, cleaning not due' 
+            : v.issues.join(' | ')
+        };
+      })(),
+    ].filter(Boolean);
     return checks;
   };
 
@@ -913,6 +928,13 @@ export default function AutomatedDispensingPanel({
       for (let fi = 0; fi < jobPlan.length; fi++) {
         if (!isJobRunningRef.current) throw new Error("Job Aborted");
 
+        // Flux Check
+        if (fluxManager && fluxManager.levelState === 'EMPTY') {
+          toast.error("Job paused — Flux tank is empty! Please refill to continue.");
+          setIsOperatorPaused(true);
+          operatorPausedRef.current = true;
+        }
+
         if (operatorPausedRef.current) {
           while (operatorPausedRef.current && isJobRunningRef.current) {
             await new Promise(r => setTimeout(r, 300));
@@ -1064,6 +1086,7 @@ export default function AutomatedDispensingPanel({
           }
           for (const c of cmds) await sendGcodeWait(c);
           nozzleMaintenance.recordDispense();
+          fluxManager?.recordDispense();
         } else {
           // ── Multi-dot path — PnP dual/quad pattern ───────────────────────────
           const activeSpeedMmMin = (motionManager?.getActiveSettings()?.speed || 100) * 60;
@@ -1085,6 +1108,7 @@ export default function AutomatedDispensingPanel({
             });
             for (const c of dotCmds) await sendGcodeWait(c);
             nozzleMaintenance.recordDispense();
+            fluxManager?.recordDispense();
           }
         }
 

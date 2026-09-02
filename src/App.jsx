@@ -40,6 +40,8 @@ import { useTipManager } from "./hooks/useTipManager.js";
 import TipManagementPanel from "./components/TipManagementPanel.jsx";
 import { useSafetySystem, FAULT_LEVEL } from "./hooks/useSafetySystem.js";
 import SafetyBanner from "./components/SafetyBanner.jsx";
+import { useFluxManager } from "./hooks/useFluxManager.js";
+import FluxPanel from "./components/FluxPanel.jsx";
 
 function calculatePadCenter(p) {
   if (typeof p.x === "number" && typeof p.y === "number") {
@@ -313,6 +315,18 @@ export default function App() {
     window.addEventListener('hardware-fault', handleFault);
     return () => window.removeEventListener('hardware-fault', handleFault);
   }, [safetySystem]);
+
+  const handleEmergencyStop = useCallback(() => {
+    triggerEmergencyStop();
+    safetySystem.triggerFault('E001', 'Emergency Stop Activated', FAULT_LEVEL.EMERGENCY);
+  }, [triggerEmergencyStop, safetySystem]);
+
+  const handleResetEmergencyStop = useCallback(() => {
+    resetEmergencyStop();
+    safetySystem.clearAllFaults();
+  }, [resetEmergencyStop, safetySystem]);
+
+  const fluxManager = useFluxManager();
 
   const [showPasteDots, setShowPasteDots] = useState(false);
   const [dispensingSequence, setDispensingSequence] = useState([]);
@@ -1791,6 +1805,7 @@ export default function App() {
     { id: 'HeadConfig', num: '⚙', label: 'Head Config', sub: 'Payload & Settings' },
     { id: 'MotionConfig', num: '🏃', label: 'Motion', sub: 'Speed Profiles' },
     { id: 'TipManagement', num: '🔧', label: 'Tip Change', sub: 'Tip Manager' },
+    { id: 'FluxPanel', num: '🧪', label: 'Flux', sub: 'Spraying System' },
     { id: 'NetworkManagerPanel', num: '📡', label: 'Network', sub: 'Wi-Fi / Bluetooth / Fleet' },
   ];
 
@@ -1816,8 +1831,8 @@ export default function App() {
       {/* ── TOP HEADER BAR ─────────────────────────────────── */}
       <AppHeader
         isEmergencyStopped={isEmergencyStopped}
-        onStop={triggerEmergencyStop}
-        onReset={resetEmergencyStop}
+        onStop={handleEmergencyStop}
+        onReset={handleResetEmergencyStop}
         onQuit={window.appControl ? () => window.appControl.quit() : null}
         isAdminMode={isAdminMode}
         onToggleAdmin={setIsAdminMode}
@@ -2075,6 +2090,8 @@ export default function App() {
                     cameraSystem={cameraSystem}
                     alignmentInfo={alignment}
                     tipManager={tipManager}
+                    safetySystem={safetySystem}
+                    fluxManager={fluxManager}
                     onOpen={setActiveComponent}
                   />
                 </div>
@@ -2108,6 +2125,15 @@ export default function App() {
                     machinePosition={machinePos}
                     isConnected={isSerialConnected}
                   />
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: activeComponent === 'FluxPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
+              <div className="panel full-height">
+                <div className="panel-header"><h3 className="panel-title">FLUX SPRAYING SYSTEM</h3></div>
+                <div style={{ padding: 12, height: '100%', overflow: 'auto' }}>
+                  <FluxPanel fluxManager={fluxManager} />
                 </div>
               </div>
             </div>
@@ -2426,6 +2452,7 @@ export default function App() {
                 motionManager={motionManager}
                 tipManager={tipManager}
                 safetySystem={safetySystem}
+                fluxManager={fluxManager}
                 boardOutline={boardOutline}
                 useSafePathPlanning={useSafePathPlanning}
                 setUseSafePathPlanning={setUseSafePathPlanning}

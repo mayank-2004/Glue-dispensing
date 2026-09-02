@@ -99,6 +99,27 @@ export function useSerialMachine() {
         if (/TIP_CHANGE_FAIL/i.test(line)) {
           window.dispatchEvent(new CustomEvent('tip-change-fail'));
         }
+
+        // Parse Flux Level (e.g. "FLUX_LEVEL:75 STATUS:NORMAL")
+        const fluxLevelMatch = line.match(/FLUX_LEVEL:([\d.]+)\s+STATUS:([A-Z_]+)/i);
+        if (fluxLevelMatch) {
+          window.dispatchEvent(new CustomEvent('flux-level', {
+            detail: { levelPct: parseFloat(fluxLevelMatch[1]), status: fluxLevelMatch[2].toUpperCase() }
+          }));
+        }
+
+        // Parse Flux Dispense events (e.g. "FLUX_DISPENSE:START", "FLUX_DISPENSE:DONE", or "FLUX_DISPENSE:FAIL")
+        const fluxDispMatch = line.match(/FLUX_DISPENSE:(START|DONE|FAIL)/i);
+        if (fluxDispMatch) {
+          window.dispatchEvent(new CustomEvent('flux-dispense', { detail: { phase: fluxDispMatch[1].toUpperCase() } }));
+        }
+
+        // Parse Flux Clean events (e.g. "FLUX_CLEAN:START", "FLUX_CLEAN:DONE", "FLUX_CLEAN:FAIL")
+        const fluxCleanMatch = line.match(/FLUX_CLEAN:(START|DONE|FAIL)/i);
+        if (fluxCleanMatch) {
+          window.dispatchEvent(new CustomEvent('flux-clean', { detail: { phase: fluxCleanMatch[1].toUpperCase() } }));
+        }
+
         // Parse Hardware Faults
         if (/ALARM:|Error:|E-STOP:|FUME_FAIL:|CURTAIN_TRIP:|LOW_WIRE:|HEATER_FAULT:|DRIVER_FAULT:|TOUCH_FAULT:/i.test(line)) {
           let code = 'E000';

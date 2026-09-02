@@ -1,4 +1,4 @@
-﻿import React from 'react';
+import React from 'react';
 import { FAULT_LEVEL } from '../hooks/useSafetySystem.js';
 
 export default function SafetyBanner({ safetySystem }) {
@@ -11,7 +11,7 @@ export default function SafetyBanner({ safetySystem }) {
       display: 'flex', flexDirection: 'column', gap: 6,
       padding: '12px 16px', background: isEmergency ? '#4a0000' : isCritical ? '#5a2a00' : '#4b3e00',
       color: '#fff', borderBottom: `2px solid ${isEmergency ? '#ff0000' : isCritical ? '#ff7f00' : '#ffc107'}`,
-      zIndex: 9000
+      zIndex: 9000, flexShrink: 0
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <strong style={{ fontSize: '1.1em', letterSpacing: '1px' }}>
