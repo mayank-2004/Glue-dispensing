@@ -51,6 +51,8 @@ export default function AutomatedDispensingPanel({
   safetySystem,
   fluxManager,
   fumeManager,
+  tipCleanerManager,
+  tipRotationManager,
 }) {
   const toast = useToast();
   const [isJobRunning, setIsJobRunning] = useState(false);
@@ -655,6 +657,19 @@ export default function AutomatedDispensingPanel({
           detail: v.valid ? 'Cleaning mechanism nominal' : v.issues.join(' | ')
         };
       })(),
+      (() => {
+        if (!tipRotationManager) return null;
+        const v = tipRotationManager.validateForRun();
+        return {
+          id: 'tipRotation',
+          label: 'Tip Rotation Ready',
+          critical: tipRotationManager.status === 'FAULT',
+          passed: v.valid,
+          detail: v.valid
+            ? `Homed at 0° — ready to command ${tipRotationManager.defaultSolderAngle}°`
+            : v.issues.join(' | ')
+        };
+      })(),
     ].filter(Boolean);
     return checks;
   };
@@ -780,6 +795,20 @@ export default function AutomatedDispensingPanel({
     retryCurrentPadRef.current = false;
     setClogNotification(null);
     fumeManager?.startExtraction(); // Start fume extraction for the soldering cycle
+    // Rotate tip to recipe angle before job starts
+    if (tipRotationManager?.isHomed && tipRotationManager?.status !== 'FAULT') {
+      try {
+        await tipRotationManager.rotateTo(tipRotationManager.defaultSolderAngle, 'Job start — recipe angle');
+      } catch (err) {
+        toast.error(`Tip rotation failed: ${err.message}. Job aborted.`);
+        setIsJobRunning(false);
+        isJobRunningRef.current = false;
+        setJobStage('idle');
+        setMachineStatus('idle');
+        fumeManager?.stopExtraction();
+        return;
+      }
+    }
     try {
       if (!panelBoards || panelBoards.length === 0) {
         throw new Error("No boards defined in panel configuration.");

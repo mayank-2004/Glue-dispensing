@@ -46,6 +46,7 @@ export default function OperatorDashboard({
   fluxManager,
   fumeManager,
   tipCleanerManager,
+  tipRotationManager,
   onOpen,
 }) {
   const position = machinePosition || { x: 0, y: 0, z: 0 };
@@ -147,6 +148,22 @@ export default function OperatorDashboard({
             : status === 'CLEANING_REQUIRED' ? 'Mandatory cleaning required'
             : `${tipCleanerManager.cleanIntervalPads - tipCleanerManager.padsSinceLastClean} pads until next clean`;
           return <Metric label="Tip Cleaner" value={value} detail={detail} tone={tone} />;
+        })()}
+        {tipRotationManager && (() => {
+          const rStatus = tipRotationManager.status;
+          const rTone = rStatus === 'FAULT' ? 'danger'
+            : rStatus === 'ROTATING' || rStatus === 'HOMING' ? 'info'
+            : rStatus === 'TARGET_REACHED' ? 'success'
+            : tipRotationManager.isHomed ? 'neutral' : 'warning';
+          const rValue = rStatus.replace('_', ' ');
+          const curAngle = tipRotationManager.currentAngle;
+          const rDetail = rStatus === 'FAULT' ? `Stepper fault — check motor driver`
+            : !tipRotationManager.isHomed ? 'Not homed — position unknown'
+            : rStatus === 'ROTATING' ? `Moving to ${tipRotationManager.targetAngle}°…`
+            : rStatus === 'HOMING' ? 'Finding zero reference position…'
+            : curAngle != null ? `At ${curAngle.toFixed(1)}° / target ${tipRotationManager.defaultSolderAngle}°`
+            : 'Homed — angle ready';
+          return <Metric label="Tip Rotation" value={rValue} detail={rDetail} tone={rTone} />;
         })()}
         <Metric
           label="Camera System"

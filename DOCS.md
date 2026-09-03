@@ -25,6 +25,7 @@
    - [Fume Extraction System](#511-fume-extraction-system)
    - [Automatic Tip Changing](#512-automatic-tip-changing)
    - [Automatic Tip Cleaning Mechanism](#513-automatic-tip-cleaning-mechanism)
+   - [Quick Tip Rotation Mechanism](#514-quick-tip-rotation-mechanism)
 6. [Component Reference](#6-component-reference)
 7. [State Architecture](#7-state-architecture)
 8. [Electron IPC API](#8-electron-ipc-api)
@@ -540,6 +541,23 @@ Manages a servo-actuated bucket and air jet system to clean the dispensing tip.
 - **Interval Tracking:** Tracks pads dispensed during jobs against a configurable threshold. When the limit is reached, it automatically interrupts the job, dispatches a tip clean sequence (via M-code), and resumes the job.
 - **Preflight & Safety:** Blocks the job start if a mandatory clean is pending or if the mechanical servo/air-jet system reports a fault.
 - **Telemetry:** Parses `TIP_CLEAN:START/DONE/FAIL` events to sync state and record detailed event logs.
+
+---
+
+### 5.14 Quick Tip Rotation Mechanism
+
+**File:** `hooks/useTipRotationManager.js` & `components/TipRotationPanel.jsx`
+
+Controls a small stepper motor that rotates the soldering iron tip from 0° to 180° to achieve the optimal soldering angle for each operation.
+
+- **Homing & Zero Reference:** Before any angle command can be accepted, the axis must be homed (`M731`). Homing establishes the physical 0° position using the embedded endstop, after which the motor encoder tracks all subsequent movements. The UI shows a persistent "Not Homed" warning until this is done and provides a recalibration button (Home → move to default recipe angle) for when the angle drifts.
+- **Recipe Angle Storage:** A `defaultSolderAngle` setting is persisted in `localStorage`. When a job starts, `AutomatedDispensingPanel` reads this value and automatically commands `M730 R{angle}`, rotating the tip to the configured recipe angle before the first pad is dispensed.
+- **Status Visibility:** The Dashboard metric card and the panel badge reflect the live state — `IDLE`, `HOMING`, `ROTATING`, `TARGET_REACHED`, or `FAULT` — so operators always understand why a job may be waiting for the mechanism.
+- **Preflight Guard:** Jobs are blocked if the axis is in FAULT state or has not been homed.
+- **Serial Protocol:**
+  - `M730 R{angle}` — command rotation to `angle` degrees (0–180)
+  - `M731` — home the rotation axis to 0°
+  - Firmware replies: `TIP_ROT:HOMING`, `TIP_ROT:HOMED`, `TIP_ROT:MOVING R45`, `TIP_ROT:REACHED R45`, `TIP_ROT:FAULT {reason}`
 
 ---
 

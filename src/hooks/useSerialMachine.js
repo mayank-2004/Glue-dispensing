@@ -140,6 +140,16 @@ export function useSerialMachine() {
             detail: { phase: tipCleanMatch[1].toUpperCase(), message: tipCleanMatch[2]?.trim() } 
           }));
         }
+        // Parse Tip Rotation events
+        // Format: "TIP_ROT:HOMING" | "TIP_ROT:HOMED" | "TIP_ROT:MOVING R45" | "TIP_ROT:REACHED R45" | "TIP_ROT:FAULT Motor stall"
+        const tipRotMatch = line.match(/TIP_ROT:(HOMING|HOMED|MOVING|REACHED|FAULT)(?:\s+R?([0-9.]+))?(?:\s+(.*))?/i);
+        if (tipRotMatch) {
+          const angle = tipRotMatch[2] ? parseFloat(tipRotMatch[2]) : undefined;
+          const message = tipRotMatch[3]?.trim() || undefined;
+          window.dispatchEvent(new CustomEvent('tip-rotation-event', {
+            detail: { phase: tipRotMatch[1].toUpperCase(), angle, message }
+          }));
+        }
 
         // Parse Hardware Faults
         if (/ALARM:|Error:|E-STOP:|FUME_FAIL:|CURTAIN_TRIP:|LOW_WIRE:|HEATER_FAULT:|DRIVER_FAULT:|TOUCH_FAULT:/i.test(line)) {
