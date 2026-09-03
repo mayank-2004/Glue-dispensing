@@ -45,6 +45,7 @@ export default function OperatorDashboard({
   safetySystem,
   fluxManager,
   fumeManager,
+  tipCleanerManager,
   onOpen,
 }) {
   const position = machinePosition || { x: 0, y: 0, z: 0 };
@@ -133,6 +134,19 @@ export default function OperatorDashboard({
             : fumeStatus === 'RUNNING' ? `Airflow: ${fumeManager.airflowLpm.toFixed(1)} LPM`
             : `Filter: ${filterPct.toFixed(0)}% life remaining`;
           return <Metric label="Fume Extractor" value={fumeValue} detail={fumeDetail} tone={fumeTone} />;
+        })()}
+        {tipCleanerManager && (() => {
+          const status = tipCleanerManager.status;
+          const tone = status === 'FAULT' ? 'danger' 
+            : status === 'CLEANING_REQUIRED' ? 'warning'
+            : status === 'CLEANING' ? 'success'
+            : 'neutral';
+          const value = status.replace('_', ' ');
+          const detail = status === 'FAULT' ? 'Fault reported by cleaner mechanism'
+            : status === 'CLEANING' ? 'Air jet and servo active...'
+            : status === 'CLEANING_REQUIRED' ? 'Mandatory cleaning required'
+            : `${tipCleanerManager.cleanIntervalPads - tipCleanerManager.padsSinceLastClean} pads until next clean`;
+          return <Metric label="Tip Cleaner" value={value} detail={detail} tone={tone} />;
         })()}
         <Metric
           label="Camera System"

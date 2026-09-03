@@ -20,6 +20,11 @@
    - [Serial Communication](#56-serial-communication-ipc)
    - [Glue Tracking](#57-glue-tracking)
    - [Nozzle Maintenance](#58-nozzle-maintenance)
+   - [Safety Interlock System](#59-safety-interlock-system)
+   - [Flux Spraying Mechanism](#510-flux-spraying-mechanism)
+   - [Fume Extraction System](#511-fume-extraction-system)
+   - [Automatic Tip Changing](#512-automatic-tip-changing)
+   - [Automatic Tip Cleaning Mechanism](#513-automatic-tip-cleaning-mechanism)
 6. [Component Reference](#6-component-reference)
 7. [State Architecture](#7-state-architecture)
 8. [Electron IPC API](#8-electron-ipc-api)
@@ -478,6 +483,63 @@ class NozzleMaintenanceManager {
 ```
 
 The `MaintenanceManager` component renders a color ring (green → amber → red) around the nozzle icon in the dispensing panel, and triggers a toast alert when cleaning is required.
+
+---
+
+### 5.9 Safety Interlock System
+
+**File:** `hooks/useSafetySystem.js`
+
+A centralized emergency halt and fault tracking system. It listens for hardware faults emitted by `useSerialMachine` (e.g., `ALARM:`, `E-STOP:`, `FUME_FAIL:`) and maps them to severity levels (`INFO`, `WARNING`, `CRITICAL`, `EMERGENCY`).
+
+When a `CRITICAL` or `EMERGENCY` fault occurs:
+- The UI injects a persistent `SafetyBanner` at the top of the app.
+- A `safety-halt` event is dispatched.
+- `AutomatedDispensingPanel` listens for this event, unwinds the dispensing loop instantly via `cancelJobRef`, and saves the current pad count so the job can be safely resumed later.
+
+---
+
+### 5.10 Flux Spraying Mechanism
+
+**File:** `hooks/useFluxManager.js` & `components/FluxPanel.jsx`
+
+Manages a secondary flux spray mechanism attached to the CNC head, communicating via custom serial telemetry.
+- **Telemetry Parsing:** Parses `FLUX_LEVEL:*` and `FLUX_DISPENSE:*` events from the embedded controller to track tank levels and spray success/failure.
+- **Job Integration:** Evaluates flux levels during the job preflight checks. If the tank is empty, the job is blocked. If it empties mid-job, the operator is paused.
+- **Maintenance:** Tracks dispensing cycles and prompts the operator to perform a nozzle flush/clean sequence via M-codes (`M700`/`M710`) to prevent clogging.
+
+---
+
+### 5.11 Fume Extraction System
+
+**File:** `hooks/useFumeManager.js` & `components/FumePanel.jsx`
+
+Manages a 24V DC HEPA-filtered vacuum extraction system.
+- **Auto-Start/Stop:** Extracts fumes automatically when a job starts, and runs a configurable "post-run" cooldown timer to clear residual fumes after the job ends.
+- **Monitoring:** Parses `FUME_STATUS:*` serial telemetry to track airflow (LPM), pump load, and filter lifespan (operating hours).
+- **Fault Handling:** Ties into the safety system. If the extraction fails or the HEPA filter is fully blocked, dispensing is prevented.
+
+---
+
+### 5.12 Automatic Tip Changing
+
+**File:** `hooks/useTipManager.js` & `components/TipManagementPanel.jsx`
+
+Allows the machine to swap tool heads automatically.
+- **Calibration:** Uses `G10 L2 P1` workspace offsets (or `M218` tool offsets) to account for differing tip lengths and X/Y offsets, ensuring the needle tip always aligns exactly with the camera-calibrated origin.
+- **Rack Management:** Manages an array of slots (4–8 slots) in a physical tip rack.
+- **Tool Change Sequence:** Dispatches G-code macros (`T0`, `T1`, etc.) to physically park the old tip and pick up the new one, verifying success via `TIP_STATUS` feedback from the embedded controller.
+
+---
+
+### 5.13 Automatic Tip Cleaning Mechanism
+
+**File:** `hooks/useTipCleanerManager.js` & `components/TipCleanerPanel.jsx`
+
+Manages a servo-actuated bucket and air jet system to clean the dispensing tip.
+- **Interval Tracking:** Tracks pads dispensed during jobs against a configurable threshold. When the limit is reached, it automatically interrupts the job, dispatches a tip clean sequence (via M-code), and resumes the job.
+- **Preflight & Safety:** Blocks the job start if a mandatory clean is pending or if the mechanical servo/air-jet system reports a fault.
+- **Telemetry:** Parses `TIP_CLEAN:START/DONE/FAIL` events to sync state and record detailed event logs.
 
 ---
 

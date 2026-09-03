@@ -133,6 +133,14 @@ export function useSerialMachine() {
           window.dispatchEvent(new CustomEvent('flux-clean', { detail: { phase: fluxCleanMatch[1].toUpperCase() } }));
         }
 
+        // Parse Tip Clean events
+        const tipCleanMatch = line.match(/TIP_CLEAN:(START|DONE|FAIL)(?:\s+(.*))?/i);
+        if (tipCleanMatch) {
+          window.dispatchEvent(new CustomEvent('tip-clean-event', { 
+            detail: { phase: tipCleanMatch[1].toUpperCase(), message: tipCleanMatch[2]?.trim() } 
+          }));
+        }
+
         // Parse Hardware Faults
         if (/ALARM:|Error:|E-STOP:|FUME_FAIL:|CURTAIN_TRIP:|LOW_WIRE:|HEATER_FAULT:|DRIVER_FAULT:|TOUCH_FAULT:/i.test(line)) {
           let code = 'E000';

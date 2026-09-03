@@ -644,6 +644,17 @@ export default function AutomatedDispensingPanel({
             : v.issues.join(' | ')
         };
       })(),
+      (() => {
+        if (!tipCleanerManager) return null;
+        const v = tipCleanerManager.validateForRun();
+        return {
+          id: 'tipCleaner',
+          label: 'Tip Cleaner Ready',
+          critical: true,
+          passed: v.valid,
+          detail: v.valid ? 'Cleaning mechanism nominal' : v.issues.join(' | ')
+        };
+      })(),
     ].filter(Boolean);
     return checks;
   };
@@ -950,6 +961,18 @@ export default function AutomatedDispensingPanel({
           operatorPausedRef.current = true;
         }
 
+        // Tip Cleaner Auto-Cycle
+        if (tipCleanerManager && tipCleanerManager.status === 'CLEANING_REQUIRED') {
+          toast.info(`Mid-job tip cleaning required (${tipCleanerManager.padsSinceLastClean} pads reached). Running auto-clean...`);
+          try {
+            await tipCleanerManager.triggerClean('Mid-job auto threshold reached');
+          } catch (err) {
+            toast.error("Auto tip-clean failed mid-job. Pausing for operator.");
+            setIsOperatorPaused(true);
+            operatorPausedRef.current = true;
+          }
+        }
+
         if (operatorPausedRef.current) {
           while (operatorPausedRef.current && isJobRunningRef.current) {
             await new Promise(r => setTimeout(r, 300));
@@ -1102,6 +1125,7 @@ export default function AutomatedDispensingPanel({
           for (const c of cmds) await sendGcodeWait(c);
           nozzleMaintenance.recordDispense();
           fluxManager?.recordDispense();
+          tipCleanerManager?.recordPadDispensed();
         } else {
           // ── Multi-dot path — PnP dual/quad pattern ───────────────────────────
           const activeSpeedMmMin = (motionManager?.getActiveSettings()?.speed || 100) * 60;
@@ -1124,6 +1148,7 @@ export default function AutomatedDispensingPanel({
             for (const c of dotCmds) await sendGcodeWait(c);
             nozzleMaintenance.recordDispense();
             fluxManager?.recordDispense();
+            tipCleanerManager?.recordPadDispensed();
           }
         }
 

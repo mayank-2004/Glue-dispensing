@@ -44,6 +44,8 @@ import { useFluxManager } from "./hooks/useFluxManager.js";
 import FluxPanel from "./components/FluxPanel.jsx";
 import { useFumeManager } from "./hooks/useFumeManager.js";
 import FumePanel from "./components/FumePanel.jsx";
+import { useTipCleanerManager } from "./hooks/useTipCleanerManager.js";
+import TipCleanerPanel from "./components/TipCleanerPanel.jsx";
 
 function calculatePadCenter(p) {
   if (typeof p.x === "number" && typeof p.y === "number") {
@@ -330,6 +332,7 @@ export default function App() {
 
   const fluxManager = useFluxManager();
   const fumeManager = useFumeManager();
+  const tipCleanerManager = useTipCleanerManager();
 
   const [showPasteDots, setShowPasteDots] = useState(false);
   const [dispensingSequence, setDispensingSequence] = useState([]);
@@ -1810,6 +1813,7 @@ export default function App() {
     { id: 'TipManagement', num: '🔧', label: 'Tip Change', sub: 'Tip Manager' },
     { id: 'FluxPanel', num: '🧪', label: 'Flux', sub: 'Spraying System' },
     { id: 'FumePanel', num: '💨', label: 'Fumes', sub: 'Extraction System' },
+    { id: 'TipCleanerPanel', num: '🧹', label: 'Tip Cleaner', sub: 'Auto Cleaning' },
     { id: 'NetworkManagerPanel', num: '📡', label: 'Network', sub: 'Wi-Fi / Bluetooth / Fleet' },
   ];
 
@@ -2097,6 +2101,7 @@ export default function App() {
                     safetySystem={safetySystem}
                     fluxManager={fluxManager}
                     fumeManager={fumeManager}
+                    tipCleanerManager={tipCleanerManager}
                     onOpen={setActiveComponent}
                   />
                 </div>
@@ -2147,6 +2152,14 @@ export default function App() {
                 <div className="panel-header"><h3 className="panel-title">FUME EXTRACTION SYSTEM</h3></div>
                 <div style={{ padding: 12, height: '100%', overflow: 'auto' }}>
                   <FumePanel fumeManager={fumeManager} />
+                </div>
+              </div>
+            </div>
+            <div style={{ display: activeComponent === 'TipCleanerPanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
+              <div className="panel full-height">
+                <div className="panel-header"><h3 className="panel-title">AUTOMATIC TIP CLEANER</h3></div>
+                <div style={{ padding: 12, height: '100%', overflow: 'auto' }}>
+                  <TipCleanerPanel tipCleanerManager={tipCleanerManager} />
                 </div>
               </div>
             </div>
