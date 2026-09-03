@@ -44,6 +44,7 @@ export default function OperatorDashboard({
   tipManager,
   safetySystem,
   fluxManager,
+  fumeManager,
   onOpen,
 }) {
   const position = machinePosition || { x: 0, y: 0, z: 0 };
@@ -118,6 +119,21 @@ export default function OperatorDashboard({
           detail={fluxDetail}
           tone={fluxTone}
         />
+        {fumeManager && (() => {
+          const fumeStatus = fumeManager.status;
+          const filterPct = Math.max(0, 100 - (fumeManager.operatingHours / fumeManager.serviceThresholdHours) * 100);
+          const fumeTone = fumeStatus === 'FAULT' ? 'danger'
+            : fumeStatus === 'SERVICE_REQUIRED' ? 'warning'
+            : fumeStatus === 'RUNNING' || fumeStatus === 'POST_RUN' ? 'success'
+            : 'neutral';
+          const fumeValue = fumeStatus.replace('_', ' ');
+          const fumeDetail = fumeStatus === 'FAULT' ? 'Critical fault — soldering blocked'
+            : fumeStatus === 'SERVICE_REQUIRED' ? `Filter at ${filterPct.toFixed(0)}% — replacement needed`
+            : fumeStatus === 'POST_RUN' ? 'Clearing residual fumes…'
+            : fumeStatus === 'RUNNING' ? `Airflow: ${fumeManager.airflowLpm.toFixed(1)} LPM`
+            : `Filter: ${filterPct.toFixed(0)}% life remaining`;
+          return <Metric label="Fume Extractor" value={fumeValue} detail={fumeDetail} tone={fumeTone} />;
+        })()}
         <Metric
           label="Camera System"
           value={!cameraSystem?.pythonServerOk ? 'OFFLINE' : cameraSystem?.hasCriticalError ? 'ERROR' : alignmentInfo?.pass ? 'ALIGNED' : 'STANDBY'}

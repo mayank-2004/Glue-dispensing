@@ -50,6 +50,7 @@ export default function AutomatedDispensingPanel({
   tipManager,
   safetySystem,
   fluxManager,
+  fumeManager,
 }) {
   const toast = useToast();
   const [isJobRunning, setIsJobRunning] = useState(false);
@@ -630,6 +631,19 @@ export default function AutomatedDispensingPanel({
             : v.issues.join(' | ')
         };
       })(),
+      (() => {
+        if (!fumeManager) return null;
+        const v = fumeManager.validateForRun();
+        return {
+          id: 'fume',
+          label: 'Fume Extraction Ready',
+          critical: fumeManager.status === 'FAULT',
+          passed: v.valid,
+          detail: v.valid
+            ? (fumeManager.status === 'SERVICE_REQUIRED' ? 'Running — HEPA filter service is overdue' : 'Extractor nominal')
+            : v.issues.join(' | ')
+        };
+      })(),
     ].filter(Boolean);
     return checks;
   };
@@ -754,6 +768,7 @@ export default function AutomatedDispensingPanel({
     clogPausedRef.current = false;
     retryCurrentPadRef.current = false;
     setClogNotification(null);
+    fumeManager?.startExtraction(); // Start fume extraction for the soldering cycle
     try {
       if (!panelBoards || panelBoards.length === 0) {
         throw new Error("No boards defined in panel configuration.");
@@ -1261,6 +1276,7 @@ export default function AutomatedDispensingPanel({
       setMachineStatus('idle');
       isJobRunningRef.current = false;
       setIsJobRunning(false);
+      fumeManager?.stopExtraction(); // Post-run extraction continues for configured duration
 
     } catch (e) {
       console.error(e);
@@ -1379,6 +1395,7 @@ export default function AutomatedDispensingPanel({
     } catch {
       // The stop command is best effort; the machine state is reset below.
     }
+    fumeManager?.stopExtraction(); // Keep extracting post-run after cancel/stop
     setJobStage('idle');
     setMachineStatus('idle');
   };

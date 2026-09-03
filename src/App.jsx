@@ -42,6 +42,8 @@ import { useSafetySystem, FAULT_LEVEL } from "./hooks/useSafetySystem.js";
 import SafetyBanner from "./components/SafetyBanner.jsx";
 import { useFluxManager } from "./hooks/useFluxManager.js";
 import FluxPanel from "./components/FluxPanel.jsx";
+import { useFumeManager } from "./hooks/useFumeManager.js";
+import FumePanel from "./components/FumePanel.jsx";
 
 function calculatePadCenter(p) {
   if (typeof p.x === "number" && typeof p.y === "number") {
@@ -327,6 +329,7 @@ export default function App() {
   }, [resetEmergencyStop, safetySystem]);
 
   const fluxManager = useFluxManager();
+  const fumeManager = useFumeManager();
 
   const [showPasteDots, setShowPasteDots] = useState(false);
   const [dispensingSequence, setDispensingSequence] = useState([]);
@@ -1806,6 +1809,7 @@ export default function App() {
     { id: 'MotionConfig', num: '🏃', label: 'Motion', sub: 'Speed Profiles' },
     { id: 'TipManagement', num: '🔧', label: 'Tip Change', sub: 'Tip Manager' },
     { id: 'FluxPanel', num: '🧪', label: 'Flux', sub: 'Spraying System' },
+    { id: 'FumePanel', num: '💨', label: 'Fumes', sub: 'Extraction System' },
     { id: 'NetworkManagerPanel', num: '📡', label: 'Network', sub: 'Wi-Fi / Bluetooth / Fleet' },
   ];
 
@@ -2092,6 +2096,7 @@ export default function App() {
                     tipManager={tipManager}
                     safetySystem={safetySystem}
                     fluxManager={fluxManager}
+                    fumeManager={fumeManager}
                     onOpen={setActiveComponent}
                   />
                 </div>
@@ -2134,6 +2139,14 @@ export default function App() {
                 <div className="panel-header"><h3 className="panel-title">FLUX SPRAYING SYSTEM</h3></div>
                 <div style={{ padding: 12, height: '100%', overflow: 'auto' }}>
                   <FluxPanel fluxManager={fluxManager} />
+                </div>
+              </div>
+            </div>
+            <div style={{ display: activeComponent === 'FumePanel' ? 'block' : 'none', width: '100%', height: '100%' }}>
+              <div className="panel full-height">
+                <div className="panel-header"><h3 className="panel-title">FUME EXTRACTION SYSTEM</h3></div>
+                <div style={{ padding: 12, height: '100%', overflow: 'auto' }}>
+                  <FumePanel fumeManager={fumeManager} />
                 </div>
               </div>
             </div>
@@ -2453,6 +2466,7 @@ export default function App() {
                 tipManager={tipManager}
                 safetySystem={safetySystem}
                 fluxManager={fluxManager}
+                fumeManager={fumeManager}
                 boardOutline={boardOutline}
                 useSafePathPlanning={useSafePathPlanning}
                 setUseSafePathPlanning={setUseSafePathPlanning}

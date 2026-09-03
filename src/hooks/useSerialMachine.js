@@ -114,6 +114,19 @@ export function useSerialMachine() {
           window.dispatchEvent(new CustomEvent('flux-dispense', { detail: { phase: fluxDispMatch[1].toUpperCase() } }));
         }
 
+        // Parse Fume Telemetry (e.g. "FUME_STATUS:RUNNING AIRFLOW:18.5 LOAD:45 HOURS:120.5")
+        const fumeMatch = line.match(/FUME_STATUS:([A-Z_]+)(?:\s+AIRFLOW:([\d.]+))?(?:\s+LOAD:([\d.]+))?(?:\s+HOURS:([\d.]+))?/i);
+        if (fumeMatch) {
+          window.dispatchEvent(new CustomEvent('fume-telemetry', {
+            detail: {
+              status: fumeMatch[1].toUpperCase(),
+              airflow: fumeMatch[2] ? parseFloat(fumeMatch[2]) : undefined,
+              pumpLoad: fumeMatch[3] ? parseFloat(fumeMatch[3]) : undefined,
+              hours: fumeMatch[4] ? parseFloat(fumeMatch[4]) : undefined
+            }
+          }));
+        }
+
         // Parse Flux Clean events (e.g. "FLUX_CLEAN:START", "FLUX_CLEAN:DONE", "FLUX_CLEAN:FAIL")
         const fluxCleanMatch = line.match(/FLUX_CLEAN:(START|DONE|FAIL)/i);
         if (fluxCleanMatch) {
