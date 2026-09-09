@@ -23,6 +23,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { applyTransform } from '../lib/utils/transform2d.js';
 import { useToast } from '../Toast.jsx';
+import { fw } from '../lib/firmware/grblCommands.js';
 
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
@@ -464,7 +465,7 @@ export default function BedCalibrationPanel({
 
     // Confirm endstop open at start height
     setStatus(`[${ptName}] Checking sensor state at Z=${probeStartZ}…`);
-    await send('M119');
+    await send(fw.probeQuery); // '?'
     const alreadyHit = await pollEndstop(700);
     if (alreadyHit) {
       setStatus(`⚠️ [${ptName}] Sensor already triggered at Z=${probeStartZ} — increase Start Z.`);
@@ -479,7 +480,7 @@ export default function BedCalibrationPanel({
       z = parseFloat((z - stepSize).toFixed(4));
       await send(`G1 Z${z} F${probeSpeed}`);
       await delay(msPerStep);
-      await send('M119');
+      await send(fw.probeQuery); // '?'
       const hit = await pollEndstop(500);
       if (hit) {
         console.log(`✅ Contact at Z=${z} for ${ptName}`);
@@ -504,7 +505,6 @@ export default function BedCalibrationPanel({
 
     try {
       await send('G90');      // absolute
-      await send('M211 S0'); // disable soft endstops
 
       for (let i = 0; i < pts.length; i++) {
         if (abortRef.current) break;
@@ -552,7 +552,6 @@ export default function BedCalibrationPanel({
       setStatus('❌ Error: ' + err.message);
       setFlowStep(FLOW.IDLE);
     } finally {
-      await send('M211 S1'); // always re-enable soft endstops
       setCurrentPtIdx(-1);
     }
   }, [probeStartZ, liftHeight, dispensingGap, probeOnePoint, send]);
@@ -562,7 +561,6 @@ export default function BedCalibrationPanel({
   // ─────────────────────────────────────────────────────────────────────────────
   const runManualProbe = useCallback(async (pts, idx) => {
     if (idx >= pts.length) {
-      await send('M211 S1');
       await send(`G1 Z${liftHeight} F600`);
       setFlowStep(FLOW.DONE);
       setStatus('✅ Manual leveling complete!');
@@ -573,7 +571,6 @@ export default function BedCalibrationPanel({
     setManualIdx(idx);
     setCurrentPtIdx(idx);
     setManualStatus(`Moving to ${pt.name}…`);
-    await send('M211 S0');
     await send(`G1 Z${probeStartZ} F600`);
     await delay(1500);
     await send(`G1 X${pt.x.toFixed(3)} Y${pt.y.toFixed(3)} F3000`);

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+﻿import { useEffect, useRef, useState } from "react";
+import { fw, parseGrblStatus, parseGrblError } from "../lib/firmware/grblCommands.js";
 
 export function useSerialMachine() {
   const [isSerialConnected, setIsSerialConnected] = useState(false);
@@ -8,8 +9,6 @@ export function useSerialMachine() {
 
   // Throttled position update: buffer raw parsed position in a ref,
   // and flush it to React state at most once per animation frame (~60fps cap).
-  // This prevents serial position lines (which can arrive 10-20x/s during a job)
-  // from causing excessive re-renders of the entire component tree.
   const pendingPosRef = useRef(null);
   const posRafRef = useRef(null);
 
@@ -30,9 +29,8 @@ export function useSerialMachine() {
 
   const handleSerialConnect = (status) => {
     setIsSerialConnected(status);
-    // M114 polling is handled exclusively by SerialPanel's startStatusQuery,
-    // which also detects cable-pull via consecutive write failures.
-    // Do not start a second competing interval here.
+    // Status-query ('?') polling is handled exclusively by SerialPanel's
+    // startStatusQuery. Do not start a competing interval here.
     if (!status && statusIntervalRef.current) {
       clearInterval(statusIntervalRef.current);
       statusIntervalRef.current = null;
@@ -47,18 +45,21 @@ export function useSerialMachine() {
     }
   };
 
+  // GRBL Emergency Stop sequence:
+  //   1. fw.reset (\x18) — instant soft reset, clears planner & stops motion
+  //   2. fw.pause ('!')  — feed hold as belt-and-suspenders
+  //   3. Lift Z in relative mode, restore absolute
+  //   Note: fw.unlock ('$X') is called separately in resetEmergencyStop
   const triggerEmergencyStop = async () => {
     setIsEmergencyStopped(true);
     console.error('[E-STOP] Emergency Stop Triggered!');
     try {
       if (window.serial?.writeLine) {
-        if (window.serial.write) await window.serial.write('\x18');
-        await window.serial.writeLine('M112');
-        await window.serial.writeLine('!');
-        await window.serial.writeLine('M0');
-        await window.serial.writeLine('G91');
+        if (window.serial.write) await window.serial.write(fw.reset); // Ctrl-X byte
+        await window.serial.writeLine(fw.pause);                      // '!'
+        await window.serial.writeLine(fw.relMode);                    // G91
         await window.serial.writeLine('G0 Z10 F300');
-        await window.serial.writeLine('G90');
+        await window.serial.writeLine(fw.absMode);                    // G90
       }
     } catch (err) { console.error('[E-STOP] Failed to send stop commands:', err); }
   };
@@ -67,8 +68,7 @@ export function useSerialMachine() {
     setIsEmergencyStopped(false);
     try {
       if (window.serial?.writeLine) {
-        await window.serial.writeLine('$X');
-        await window.serial.writeLine('M999');
+        await window.serial.writeLine(fw.unlock); // '$X' — kill GRBL alarm lock
       }
     } catch (err) { console.error('[E-STOP] Failed to send reset commands:', err); }
   };
@@ -76,51 +76,36 @@ export function useSerialMachine() {
   useEffect(() => {
     if (window.serial?.onData) {
       window.serial.onData((line) => {
-        let x = null, y = null, z = null;
-        const marlinMatch = line.match(/X\s*:\s*([-\d.]+).*?Y\s*:\s*([-\d.]+).*?Z\s*:\s*([-\d.]+)/i);
-        if (marlinMatch) {
-          x = parseFloat(marlinMatch[1]);
-          y = parseFloat(marlinMatch[2]);
-          z = parseFloat(marlinMatch[3]);
-        } else {
-          const grblMatch = line.match(/MPos:([-\d.]+),([-\d.]+),([-\d.]+)/);
-          if (grblMatch) {
-            x = parseFloat(grblMatch[1]);
-            y = parseFloat(grblMatch[2]);
-            z = parseFloat(grblMatch[3]);
+        // ── GRBL real-time status: <Idle|MPos:x,y,z|...> ──────────────────
+        const grbl = parseGrblStatus(line);
+        if (grbl) {
+          scheduleMachinePosUpdate({ x: grbl.x, y: grbl.y, z: grbl.z });
+          // Fire probe DOM events from GRBL Pn:Z pin flag
+          if (grbl.probeTriggered) {
+            window.dispatchEvent(new CustomEvent('endstop-z-probe-triggered'));
+          } else if (line.startsWith('<')) {
+            window.dispatchEvent(new CustomEvent('endstop-z-probe-open'));
           }
         }
-        if (x !== null && y !== null && z !== null) scheduleMachinePosUpdate({ x, y, z });
 
         // Parse Payload Status
         const payloadMatch = line.match(/PAYLOAD_KG:([-\d.]+)\s+STATUS:([A-Z_]+)/);
         if (payloadMatch) {
-           window.dispatchEvent(new CustomEvent('payload-sync', { 
-             detail: { 
-               kg: parseFloat(payloadMatch[1]), 
-               status: payloadMatch[2].toLowerCase() 
-             } 
+           window.dispatchEvent(new CustomEvent('payload-sync', {
+             detail: { kg: parseFloat(payloadMatch[1]), status: payloadMatch[2].toLowerCase() }
            }));
         }
 
-        // Parse Tip Status  (e.g. "TIP_STATUS:PRESENT SLOT:0")
+        // Parse Tip Status (e.g. "TIP_STATUS:PRESENT SLOT:0")
         const tipStatusMatch = line.match(/TIP_STATUS:(PRESENT|ABSENT)\s+SLOT:(\d+)/i);
         if (tipStatusMatch) {
           window.dispatchEvent(new CustomEvent('tip-status', {
-            detail: {
-              present:   tipStatusMatch[1].toUpperCase() === 'PRESENT',
-              slotIndex: parseInt(tipStatusMatch[2], 10),
-            }
+            detail: { present: tipStatusMatch[1].toUpperCase() === 'PRESENT', slotIndex: parseInt(tipStatusMatch[2], 10) }
           }));
         }
 
-        // Parse tip-change result events from embedded
-        if (/TIP_CHANGE_OK/i.test(line)) {
-          window.dispatchEvent(new CustomEvent('tip-change-ok'));
-        }
-        if (/TIP_CHANGE_FAIL/i.test(line)) {
-          window.dispatchEvent(new CustomEvent('tip-change-fail'));
-        }
+        if (/TIP_CHANGE_OK/i.test(line))   window.dispatchEvent(new CustomEvent('tip-change-ok'));
+        if (/TIP_CHANGE_FAIL/i.test(line)) window.dispatchEvent(new CustomEvent('tip-change-fail'));
 
         // Parse Flux Level (e.g. "FLUX_LEVEL:75 STATUS:NORMAL")
         const fluxLevelMatch = line.match(/FLUX_LEVEL:([\d.]+)\s+STATUS:([A-Z_]+)/i);
@@ -130,13 +115,11 @@ export function useSerialMachine() {
           }));
         }
 
-        // Parse Flux Dispense events (e.g. "FLUX_DISPENSE:START", "FLUX_DISPENSE:DONE", or "FLUX_DISPENSE:FAIL")
         const fluxDispMatch = line.match(/FLUX_DISPENSE:(START|DONE|FAIL)/i);
         if (fluxDispMatch) {
           window.dispatchEvent(new CustomEvent('flux-dispense', { detail: { phase: fluxDispMatch[1].toUpperCase() } }));
         }
 
-        // Parse Fume Telemetry (e.g. "FUME_STATUS:RUNNING AIRFLOW:18.5 LOAD:45 HOURS:120.5")
         const fumeMatch = line.match(/FUME_STATUS:([A-Z_]+)(?:\s+AIRFLOW:([\d.]+))?(?:\s+LOAD:([\d.]+))?(?:\s+HOURS:([\d.]+))?/i);
         if (fumeMatch) {
           window.dispatchEvent(new CustomEvent('fume-telemetry', {
@@ -149,45 +132,40 @@ export function useSerialMachine() {
           }));
         }
 
-        // Parse Flux Clean events (e.g. "FLUX_CLEAN:START", "FLUX_CLEAN:DONE", "FLUX_CLEAN:FAIL")
         const fluxCleanMatch = line.match(/FLUX_CLEAN:(START|DONE|FAIL)/i);
         if (fluxCleanMatch) {
           window.dispatchEvent(new CustomEvent('flux-clean', { detail: { phase: fluxCleanMatch[1].toUpperCase() } }));
         }
 
-        // Parse Tip Clean events
         const tipCleanMatch = line.match(/TIP_CLEAN:(START|DONE|FAIL)(?:\s+(.*))?/i);
         if (tipCleanMatch) {
-          window.dispatchEvent(new CustomEvent('tip-clean-event', { 
-            detail: { phase: tipCleanMatch[1].toUpperCase(), message: tipCleanMatch[2]?.trim() } 
-          }));
-        }
-        // Parse Tip Rotation events
-        // Format: "TIP_ROT:HOMING" | "TIP_ROT:HOMED" | "TIP_ROT:MOVING R45" | "TIP_ROT:REACHED R45" | "TIP_ROT:FAULT Motor stall"
-        const tipRotMatch = line.match(/TIP_ROT:(HOMING|HOMED|MOVING|REACHED|FAULT)(?:\s+R?([0-9.]+))?(?:\s+(.*))?/i);
-        if (tipRotMatch) {
-          const angle = tipRotMatch[2] ? parseFloat(tipRotMatch[2]) : undefined;
-          const message = tipRotMatch[3]?.trim() || undefined;
-          window.dispatchEvent(new CustomEvent('tip-rotation-event', {
-            detail: { phase: tipRotMatch[1].toUpperCase(), angle, message }
+          window.dispatchEvent(new CustomEvent('tip-clean-event', {
+            detail: { phase: tipCleanMatch[1].toUpperCase(), message: tipCleanMatch[2]?.trim() }
           }));
         }
 
-        // Parse Hardware Faults
-        if (/ALARM:|Error:|E-STOP:|FUME_FAIL:|CURTAIN_TRIP:|LOW_WIRE:|HEATER_FAULT:|DRIVER_FAULT:|TOUCH_FAULT:/i.test(line)) {
-          let code = 'E000';
-          let level = 'CRITICAL';
-          let msg = line.trim();
-          
-          if (/E-STOP:/i.test(line)) { code = 'E001'; level = 'EMERGENCY'; msg = 'Emergency Stop Activated'; }
-          else if (/FUME_FAIL:/i.test(line)) { code = 'E002'; level = 'CRITICAL'; msg = 'Fume Extraction Failure'; }
-          else if (/CURTAIN_TRIP:/i.test(line)) { code = 'E003'; level = 'EMERGENCY'; msg = 'Light Curtain Triggered'; }
-          else if (/ALARM:.*(Hard limit|Soft limit)/i.test(line)) { code = 'E004'; level = 'CRITICAL'; msg = 'Axis Travel Limit Reached'; }
-          else if (/DRIVER_FAULT:/i.test(line)) { code = 'E005'; level = 'CRITICAL'; msg = 'Motor/Driver Fault'; }
-          else if (/HEATER_FAULT:|Error:.*(Thermal|Heater)/i.test(line)) { code = 'E006'; level = 'CRITICAL'; msg = 'Soldering Heater Fault'; }
-          else if (/LOW_WIRE:/i.test(line)) { code = 'E007'; level = 'WARNING'; msg = 'Solder Wire Spool Low'; }
-          else if (/TOUCH_FAULT:/i.test(line)) { code = 'E008'; level = 'CRITICAL'; msg = 'Unwanted Touch Detected'; }
-          
+        const tipRotMatch = line.match(/TIP_ROT:(HOMING|HOMED|MOVING|REACHED|FAULT)(?:\s+R?([0-9.]+))?(?:\s+(.*))?/i);
+        if (tipRotMatch) {
+          window.dispatchEvent(new CustomEvent('tip-rotation-event', {
+            detail: { phase: tipRotMatch[1].toUpperCase(), angle: tipRotMatch[2] ? parseFloat(tipRotMatch[2]) : undefined, message: tipRotMatch[3]?.trim() || undefined }
+          }));
+        }
+
+        // Parse Hardware Faults — includes GRBL ALARM:N codes
+        const grblErr = parseGrblError(line);
+        const customFaultRx = /E-STOP:|FUME_FAIL:|CURTAIN_TRIP:|LOW_WIRE:|HEATER_FAULT:|DRIVER_FAULT:|TOUCH_FAULT:/i;
+
+        if (grblErr || customFaultRx.test(line)) {
+          let code = 'E000', level = 'CRITICAL', msg = line.trim();
+          if      (/E-STOP:/i.test(line))                         { code = 'E001'; level = 'EMERGENCY'; msg = 'Emergency Stop Activated'; }
+          else if (/FUME_FAIL:/i.test(line))                      { code = 'E002'; level = 'CRITICAL';  msg = 'Fume Extraction Failure'; }
+          else if (/CURTAIN_TRIP:/i.test(line))                   { code = 'E003'; level = 'EMERGENCY'; msg = 'Light Curtain Triggered'; }
+          else if (grblErr?.isAlarm && grblErr.code === 1)        { code = 'E004'; level = 'CRITICAL';  msg = 'Hard Limit Reached (ALARM:1)'; }
+          else if (grblErr?.isAlarm && grblErr.code === 2)        { code = 'E004'; level = 'CRITICAL';  msg = 'Soft Limit Reached (ALARM:2)'; }
+          else if (/DRIVER_FAULT:/i.test(line))                   { code = 'E005'; level = 'CRITICAL';  msg = 'Motor/Driver Fault'; }
+          else if (/HEATER_FAULT:/i.test(line))                   { code = 'E006'; level = 'CRITICAL';  msg = 'Soldering Heater Fault'; }
+          else if (/LOW_WIRE:/i.test(line))                       { code = 'E007'; level = 'WARNING';   msg = 'Solder Wire Spool Low'; }
+          else if (/TOUCH_FAULT:/i.test(line))                    { code = 'E008'; level = 'CRITICAL';  msg = 'Unwanted Touch Detected'; }
           window.dispatchEvent(new CustomEvent('hardware-fault', { detail: { code, level, message: msg } }));
         }
       });

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useToast } from '../Toast.jsx';
 import { dispensePoint, dispenseBead } from "../lib/motion/gcode.js";
 import { applyTransform, fitSimilarity, fitAffine } from "../lib/utils/transform2d.js";
+import { fw } from '../lib/firmware/grblCommands.js';
 import "./AutomatedDispensingPanel.css";
 import { buildJobGlueSummary, GlueStore } from '../lib/glue/glueTracker.js';
 import { getZOffsetForPoint } from './BedCalibrationPanel.jsx';
@@ -93,7 +94,7 @@ export default function AutomatedDispensingPanel({
 
   // Machine Configuration State
   const [valveOnCmd, setValveOnCmd] = useState('M106 S255');
-  const [valveOffCmd, setValveOffCmd] = useState('M107');
+  const [valveOffCmd, setValveOffCmd] = useState(fw.dispenserOff);
   const [dispenseHeight, setDispenseHeight] = useState(0.5);
   const [safeTravelHeight, setSafeTravelHeight] = useState(5.0);
   const [viscosity, setViscosity] = useState('medium'); // low, medium, high
@@ -274,7 +275,7 @@ export default function AutomatedDispensingPanel({
 
   // Queue for synchronous sending — entries are {resolve, reject} pairs
   const ackQueue = useRef([]);
-  const marlinFaultRef = useRef(null);
+  const firmwareFaultRef = useRef(null);
 
   // Soft axis limits — prevent moves outside machine travel envelope
   const [axisLimits, setAxisLimits] = useState(() => {
@@ -442,11 +443,15 @@ export default function AutomatedDispensingPanel({
         if (entry) entry.resolve(true);
       }
 
-      // Detect Marlin errors — reject all pending acks so sendGcodeWait throws immediately
+      // Detect GRBL errors — reject all pending acks so sendGcodeWait throws immediately
+      // GRBL error format: "error:N" (command error) or "ALARM:N" (alarm state)
       const trimmed = line.trim();
-      const isMarlinError = /^Error:/i.test(trimmed) || trimmed === '!!' || /^echo:Unknown command/i.test(trimmed);
-      if (isMarlinError && isJobRunningRef.current) {
-        marlinFaultRef.current = trimmed;
+      const isFirmwareError = /^error:\d+/i.test(trimmed)     // GRBL error
+                           || /^ALARM:\d+/i.test(trimmed)      // GRBL alarm
+                           || trimmed === '!!'                  // double-fault
+                           || /^echo:Unknown command/i.test(trimmed); // legacy compat
+      if (isFirmwareError && isJobRunningRef.current) {
+        firmwareFaultRef.current = trimmed;
         const pending = ackQueue.current.splice(0);
         for (const entry of pending) {
           entry.reject(new Error(`Machine fault: ${trimmed}`));
@@ -457,8 +462,8 @@ export default function AutomatedDispensingPanel({
   }, []);
 
   const sendGcodeWait = async (cmd) => {
-    if (marlinFaultRef.current) {
-      throw new Error(`Machine fault: ${marlinFaultRef.current}`);
+    if (firmwareFaultRef.current) {
+      throw new Error(`Machine fault: ${firmwareFaultRef.current}`);
     }
 
     const ackPromise = new Promise((resolve, reject) => {
@@ -691,7 +696,7 @@ export default function AutomatedDispensingPanel({
     try {
       window.pauseSerialPolling = true;
       if (motionManager) await motionManager.applyProfileToMachine('Rapid');
-      await sendGcodeWait('M400');
+      await sendGcodeWait('G4 P0.01'); // Force GRBL planner sync
       setJobStage('loading');
     } catch (e) {
       window.pauseSerialPolling = false;
@@ -735,7 +740,7 @@ export default function AutomatedDispensingPanel({
     if (onStartJob) onStartJob();
     try {
       window.pauseSerialPolling = true;
-      await sendGcodeWait('M400');
+      await sendGcodeWait('G4 P0.01'); // Force GRBL planner sync
       setJobStage('dispensing');
       if (motionManager) await motionManager.applyProfileToMachine('Soldering');
       runDispenseLoop(resumeFromPad);
@@ -780,7 +785,7 @@ export default function AutomatedDispensingPanel({
     setMachineStatus('busy');
     jobStartTimeRef.current = Date.now();
     globalPointCountRef.current = 0;
-    marlinFaultRef.current = null;
+    firmwareFaultRef.current = null;
     operatorPausedRef.current = false;
     setIsOperatorPaused(false);
     setJobReport(null);
@@ -869,7 +874,7 @@ export default function AutomatedDispensingPanel({
             const cx = probeTarget.x + (toolOffset?.dx || 0) + calibCorrection.x;
             const cy = probeTarget.y + (toolOffset?.dy || 0) + calibCorrection.y;
             await sendGcodeWait(`G1 X${cx.toFixed(3)} Y${cy.toFixed(3)} F4000`);
-            await sendGcodeWait('M400');
+            await sendGcodeWait('G4 P0.01'); // Force GRBL planner sync
             await new Promise(r => setTimeout(r, 300));
           }
         }
@@ -911,7 +916,7 @@ export default function AutomatedDispensingPanel({
             const fidTravelSpeed = speedSettings?.travelSpeed || 2000;
             await sendGcodeWait(`G1 X${expectedMachine.x.toFixed(3)} Y${expectedMachine.y.toFixed(3)} F${fidTravelSpeed}`);
             await sendGcodeWait('M204 T1000');
-            await sendGcodeWait('M400');
+            await sendGcodeWait('G4 P0.01'); // Force GRBL planner sync
             await new Promise(r => setTimeout(r, 800));
 
             if (window.__SNAP_FIDUCIAL_MACHINE_COORD__) {
@@ -1235,7 +1240,7 @@ export default function AutomatedDispensingPanel({
 
       await sendGcodeWait(`G1 Z${safeTravelHeight} F3000`); // Move to safe height
       await sendGcodeWait('G1 X0 Y0 F5000'); // Move to home position
-      await sendGcodeWait('M400'); // Wait for all moves to complete
+      await sendGcodeWait('G4 P0.01'); // Force GRBL planner sync // Wait for all moves to complete
 
       const jobDurationMs = Date.now() - (jobStartTimeRef.current || Date.now());
       setDotCheckResults(prev => {
@@ -1375,11 +1380,11 @@ export default function AutomatedDispensingPanel({
       } else {
         toast.warning('Purge station not set — purging in place. Configure it in Nozzle Maintenance ⚙ settings.');
       }
-      toast.info(`Purging nozzle… (${durationMs} ms @ ${pressure} PSI)`);
-      await sendGcodeWait(`M106 S${Math.min(255, Math.max(0, Math.round(pressure)))}`);
+      toast.info(`Purging nozzle… (${durationMs} ms @ ${pressure} duty)`);
+      await sendGcodeWait(fw.dispenserOn(pressure));
       await sendGcodeWait(`G4 P${Math.round(durationMs)}`);
-      await sendGcodeWait('M107');
-      await sendGcodeWait('M400');
+      await sendGcodeWait(fw.dispenserOff);
+      await sendGcodeWait('G4 P0.01'); // Force GRBL planner sync
       if (station.configured) {
         await sendGcodeWait(`G0 Z${safeTravelHeight.toFixed(3)}`);
       }
@@ -1444,8 +1449,10 @@ export default function AutomatedDispensingPanel({
     }
     // Emergency: bypass the queue — send directly so the machine stops immediately
     try {
-      await window.serial.writeLine('M107');
-      await window.serial.writeLine('G1 Z10 F3000');
+      await window.serial.writeLine(fw.dispenserOff);
+      await window.serial.writeLine(fw.relMode);
+      await window.serial.writeLine('G0 Z10 F3000');
+      await window.serial.writeLine(fw.absMode);
     } catch {
       // The stop command is best effort; the machine state is reset below.
     }

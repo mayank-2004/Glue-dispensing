@@ -196,7 +196,7 @@ export class DispensingSequencer {
     gcode.push('');
     gcode.push('G21 ; Set units to millimeters');
     gcode.push('G90 ; Absolute positioning');
-    gcode.push('G28 ; Home all axes');
+    gcode.push('$H ; Home all axes (GRBL)');
     gcode.push(`G1 Z${safeHeight} F${travelSpeed} ; Lift to safe travel height`);
     gcode.push('');
 

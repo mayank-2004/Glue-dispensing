@@ -327,10 +327,10 @@ dwell(ms: number): string[]
 
 // Home axes
 home({ x, y, z, r }?): string[]
-// → ["G28 X Y Z"]
+//   ["$H"]
 ```
 
-**Valve control:** uses `M106 S{pwmDuty}` (fan/relay ON) and `M107` (OFF), mapped to the Ender-3 part cooling fan output which drives a relay connected to the 983A dispenser trigger input.
+**Valve control:** uses `fw.dispenserOn()` and `fw.dispenserOff()` (default `M106`/`M107`), mapped to the controller's auxiliary output which drives a relay connected to the 983A dispenser trigger input.
 
 ---
 
@@ -575,8 +575,9 @@ fiducials[]       — [{id, design:{x,y}, machine:{x,y}}]
 xf                — computed transform matrix (null until solved)
 applyXf           — boolean flag (transform enabled)
 machinePosition   — {x,y,z} — updated from serial data lines
-isConnected       — serial port open
-isHomed           — machine has been G28'd
+isConnected       - serial port open
+isHoming          - homing sequence ($H) running
+isHomed           - machine has been homed
 panelBoards[]     — array of sub-boards for panelized PCBs
 panelXf           — global panel transform
 ```
@@ -619,8 +620,8 @@ Wraps the browser `getUserMedia` video stream. Provides:
 
 Port management and G-code terminal.
 - `window.serial.list()` → port dropdown
-- Manual G-code input with history
-- Macro buttons: `G28`, `G92 X0 Y0 Z0`, `M84`, custom sequences
+- Displays real-time `MPos` (machine position) and WPos (work position)
+- Macro buttons: `$H`, `G92 X0 Y0 Z0`, custom sequences
 - Live console output (raw serial data lines)
 
 ### `JogPanel.jsx`
@@ -692,28 +693,26 @@ All handlers are defined in `electron/main.js`. Called from preload via `ipcRend
 
 ### Target Firmware
 
-Marlin 2.x or GRBL 1.1 (both speak the same G-code subset used here).
+GRBL 1.1 (or compatible embedded controller).
 
 ### Valve Trigger (Glue Dispenser 983A)
 
-```
-App (M106 S255) → Ender-3 fan output pin → 4.7kΩ resistor → MOSFET gate
-                                                              │
-                                                              ▼
-                                                   MOSFET drain → 983A trigger input
-                                                   MOSFET source → GND (common)
+```text
+App (fw.dispenserOn) ➔ Controller auxiliary pin ➔ 4.7kΩ resistor ➔ MOSFET gate
+                                                                 ➔ MOSFET drain ➔ 983A trigger IN
+                                                                 ➔ MOSFET source ➔ GND
 ```
 
-- `M106 S255` — fan pin HIGH → MOSFET ON → 983A opens valve → glue flows
-- `M107` — fan pin LOW → MOSFET OFF → 983A closes valve → glue stops
-- `pwmDuty` (0–255) controls `M106 S{n}` for variable flow rate
+- `fw.dispenserOn()` ➔ aux pin HIGH ➔ MOSFET ON ➔ 983A opens valve ➔ glue flows
+- `fw.dispenserOff` ➔ aux pin LOW ➔ MOSFET OFF ➔ 983A closes valve ➔ glue stops
+- `pwmDuty` (0-255) controls `fw.dispenserOn(pwmDuty)` for variable flow rate
 
 ### Coordinate System
 
 ```
 G21        ; mm units
 G90        ; absolute mode
-G28 X Y Z  ; home (run once per session)
+$H         ; home (run once per session)
 G92 X0 Y0  ; set work origin at current position (after jogging to board corner)
 ```
 
@@ -813,31 +812,29 @@ When `present: true`, `AutomatedDispensingPanel` automatically sets `boardConfir
 
 | Component | Spec |
 |---|---|
-| 3-axis CNC / 3D printer | Marlin or GRBL firmware, USB serial |
+| 3-axis CNC / 3D printer | GRBL firmware, USB serial |
 | Pneumatic glue dispenser | 983A or equivalent with 3.5mm trigger input |
 | USB camera | Any `getUserMedia`-compatible webcam |
 | PC | Windows 10/11 or Linux, Node.js 18+, Python 3.9+ |
 
 ### Tested Configuration
 
-- **CNC:** Creality Ender-3 (Creality v1.1.x board, Marlin 2.0)
+- **CNC:** 3-axis CNC router or printer frame (GRBL compatible controller)
 - **Dispenser:** 983A pneumatic controller
 - **Valve trigger circuit:**
   ```
-  Ender-3 FAN+ (24V) ─── R1 (10kΩ) ─┐
-                                      ├── Gate of IRF540N MOSFET
-  Ender-3 FAN- (PWM) ─── R2 (10kΩ) ─┘
-                                      └── R3 (10kΩ) pull-down to GND
+  Controller Aux/Spool Pin ─── R1 (4.7kΩ) ─── Gate of IRF540N MOSFET
+                                              └── R2 (10kΩ) pull-down to GND
   MOSFET Drain ──── 983A Trigger Signal
-  MOSFET Source ─── GND (common with Ender-3 and 983A)
+  MOSFET Source ─── GND (common with controller and 983A)
   ```
-- **G-code valve commands:** `M106 S255` (open) / `M107` (close)
+- **G-code valve commands:** `fw.dispenserOn()` (open) / `fw.dispenserOff` (close)
 
 ### Firmware Requirements
 
-- `M42` or `M106`/`M107` must be enabled in Marlin `Configuration_adv.h`
-- `EMERGENCY_PARSER` recommended for reliable E-stop response
-- Baud rate: 115200 (default, configurable in Serial panel)
+- Dispenser and auxiliary pins must be mapped to valid GRBL control pins or custom HAL M-codes (e.g. fw.dispenserOn or fw.dispenserOff).
+- Bed leveling must be managed by the host via G-code transformation; firmware auto-bed-leveling (G29) should be disabled.
+- Baud rate: 115200 (default GRBL rate, configurable in Serial panel)
 
 ---
 

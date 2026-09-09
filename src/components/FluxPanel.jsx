@@ -177,7 +177,7 @@ export default memo(function FluxPanel({ fluxManager }) {
       </div>
 
       {/* ── Instructions ── */}
-      <div className="flux-section">
+      {/* <div className="flux-section">
         <h4>Instructions</h4>
         <details className="flux-instructions">
           <summary>Refill Instructions</summary>
@@ -204,7 +204,7 @@ export default memo(function FluxPanel({ fluxManager }) {
             </ol>
           </div>
         </details>
-      </div>
+      </div> */}
     </div>
   );
 });

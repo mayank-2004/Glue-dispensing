@@ -14,7 +14,7 @@ export function header({ units = "mm", absolute = true } = {}) {
   const lines = [];
   lines.push(units === "in" ? "G20" : "G21");
   lines.push(absolute ? "G90" : "G91");
-  lines.push("M82"); // absolute extrusion (safe no-op if R != E)
+  // Note: M82 (absolute extrusion) is Marlin-specific — removed for GRBL
   return lines;
 }
 
@@ -31,13 +31,16 @@ export function setWorkZero({ x, y, z, r }, axisMap = defaultAxisMap) {
   return parts.length ? [`G92 ${parts.join(" ")}`] : [];
 }
 
-export function home({ x = true, y = true, z = true, r = false } = {}, axisMap = defaultAxisMap) {
-  const parts = [];
-  if (x) parts.push(axisMap.X);
-  if (y) parts.push(axisMap.Y);
-  if (z) parts.push(axisMap.Z);
-  if (r) parts.push(axisMap.R);
-  return [`G28 ${parts.join(" ")}`.trim()];
+export function home({ x = true, y = true, z = true, r = false } = {}) {
+  // GRBL: $H homes all configured axes. Individual axis homing uses $HX, $HY, $HZ.
+  // If only specific axes are requested, use individual commands; otherwise $H for all.
+  const allAxes = x && y && z && !r;
+  if (allAxes) return ['$H'];
+  const cmds = [];
+  if (x) cmds.push('$HX');
+  if (y) cmds.push('$HY');
+  if (z) cmds.push('$HZ');
+  return cmds.length ? cmds : ['$H'];
 }
 
 export function moveAbs({ x, y, z, r, feed }, axisMap = defaultAxisMap) {

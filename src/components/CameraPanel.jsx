@@ -4,6 +4,7 @@ import { fitSimilarity, applyTransform } from "../lib/utils/transform2d.js";
 import { FiducialVisionDetector } from "../lib/vision/fiducialVision.js";
 import { PadDetector } from "../lib/vision/padDetection.js";
 import { jogRel, moveAbs } from "../lib/motion/gcode";
+import { fw } from '../lib/firmware/grblCommands.js';
 import "./CameraPanel.css";
 
 function predictFidMachinePos(fid, allFiducials, xf, effectiveOrigin) {
@@ -915,13 +916,13 @@ export default function CameraPanel({
     settleUntilRef.current = Date.now() + 2200; // ~2 s for machine to arrive and settle
 
     const cmds = moveAbs({ x: camX, y: camY, feed: 2000 });
-    // Cap travel acceleration before a large move to prevent sudden jerk on start.
-    // M204 T sets the non-printing (travel) acceleration in mm/s².
-    window.serial.writeLine('M204 T500').catch(() => { });
-    window.serial.writeLine('G90').catch(() => { });
+    // Cap Z acceleration before a large move to prevent sudden jerk on start.
+    // GRBL: $122 = Z-axis acceleration (mm/s²)
+    window.serial.writeLine('$122=500').catch(() => { });
+    window.serial.writeLine(fw.absMode).catch(() => { });
     cmds.forEach(c => window.serial.writeLine(c).catch(() => { }));
-    // Restore acceleration after move is queued
-    window.serial.writeLine('M204 T1000').catch(() => { });
+    // Restore Z acceleration after move is queued
+    window.serial.writeLine('$122=1000').catch(() => { });
 
     setAutoSearchStatus(`Moving to ${fidActiveId}…`);
     setTimeout(() => setAutoSearchStatus(''), 2500);

@@ -2,6 +2,7 @@ import React, { useState, useRef } from "react";
 import "./JogPanel.css";
 import { jogRel } from "../lib/motion/gcode.js";
 import { useToast } from '../Toast.jsx';
+import { fw } from '../lib/firmware/grblCommands.js';
 
 export default function JogPanel({
     machinePosition,
@@ -46,39 +47,21 @@ export default function JogPanel({
             // Restore absolute mode 600 ms after the last jog click so Marlin is
             // back in G90 before any job or homing command runs.
             jogRestoreRef.current = setTimeout(async () => {
-                try { if (window.serial?.writeLine) await window.serial.writeLine('G90'); } catch {}
+                try { if (window.serial?.writeLine) await window.serial.writeLine(fw.absMode); } catch {}
                 jogRestoreRef.current = null;
             }, 600);
         }
     };
 
-    // const moveToSafeZ = async () => {
-    //     if (isBusy) return;
-    //     if (!confirm(`Move Z to absolute position ${safeZ}mm? Ensure path is clear.`)) return;
-
-    //     setIsBusy(true);
-    //     try {
-    //         const cmd = `G53 G0 Z${safeZ}`;
-    //         console.log("Safe Z:", cmd);
-    //         if (window.serial?.writeLine) {
-    //             await window.serial.writeLine(cmd);
-    //         }
-    //     } catch (e) {
-    //         console.error("Safe Z failed:", e);
-    //     } finally {
-    //         setIsBusy(false);
-    //     }
-    // };
-
     const handleHomeClick = async () => {
         if (!isConnected) { toast.warning("Please connect to machine first!"); return; }
         if (isBusy) return;
-        if (!confirm("Home all axes (G28)? Ensure area is clear.")) return;
+        if (!confirm(`Home all axes (${fw.home})? Ensure area is clear.`)) return;
 
         setIsBusy(true);
         try {
             if (window.serial?.writeLine) {
-                await window.serial.writeLine("G28");
+                await window.serial.writeLine(fw.home); // '$H'
             }
         } catch (e) {
             console.error("Home failed:", e);
@@ -104,7 +87,7 @@ export default function JogPanel({
                         <button className="btn jog-btn x-minus" onClick={() => jog("X", -1)} disabled={isBusy}>X-</button>
                     </div>
                     <div className="jog-cell">
-                        <button className="btn jog-btn home-btn" onClick={handleHomeClick} disabled={isBusy} title="Home All Axes (G28)">
+                        <button className="btn jog-btn home-btn" onClick={handleHomeClick} disabled={isBusy} title={`Home All Axes (${fw.home})`}>
                             🏠
                         </button>
                     </div>

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import "./SerialPanel.css";
 import { useToast } from '../Toast.jsx';
+import { fw, isGrblBoot, parseGrblStatus } from '../lib/firmware/grblCommands.js';
 
 export default function SerialPanel({
   onMachinePositionUpdate = null,
@@ -17,18 +18,18 @@ export default function SerialPanel({
   const toast = useToast();
   const [ports, setPorts] = useState([]);
   const [path, setPath] = useState('');
-  const [baud, setBaud] = useState(250000);
+  const [baud, setBaud] = useState(115200);
   const [consoleLines, setConsoleLines] = useState([]);
   const [isHoming, setIsHoming] = useState(false);
 
   const inputRef = useRef(null);
   const mPosRef = useRef(machinePosition);
   const hasReceivedPosRef = useRef(false);
-  const statusQueryRef = useRef(null); // interval handle for M114 polling
+  const statusQueryRef = useRef(null); // interval handle for '?' status polling
   const watchdogRef = useRef(null);   // interval handle for data-update watchdog
   const lastDataRef = useRef(0);      // timestamp of last received serial data
-  const awaitingOkRef = useRef(null);      // one-shot callback fired on next "ok" from Marlin
-  const marlinBootCbRef = useRef(null);    // fired once when Marlin's boot message is detected
+  const awaitingOkRef = useRef(null);      // one-shot callback fired on next "ok" from GRBL
+  const grblBootCbRef = useRef(null);      // fired once when GRBL's boot message is detected
   // Always-current refs for callbacks so native disconnect handler never goes stale
   const onUnexpectedDisconnectRef = useRef(onUnexpectedDisconnect);
   const onDisconnectRef = useRef(onDisconnect);
@@ -63,7 +64,7 @@ export default function SerialPanel({
       if (statusQueryRef.current) { clearInterval(statusQueryRef.current); statusQueryRef.current = null; }
       setIsHoming(false);
       hasReceivedPosRef.current = false;
-      marlinBootCbRef.current = null;  // cancel any pending boot detection
+      grblBootCbRef.current = null;    // cancel any pending boot detection
       window._pollPauseCount = 0;      // reset counter — homing/job may have left it non-zero
       const handler = onUnexpectedDisconnectRef.current || onDisconnectRef.current;
       if (handler) handler();
@@ -92,9 +93,9 @@ export default function SerialPanel({
     const handleUnload = () => {
       try {
         if (isConnectedRef.current && window.serial) {
-          // Send Quick Stop (M410) to flush the machine's internal buffer
+          // GRBL: send feed hold ('!') to stop motion gracefully before port closes
           if (window.serial.writeLine) {
-            window.serial.writeLine('M410');
+            window.serial.writeLine(fw.pause); // '!'
           }
           if (window.serial.close) {
             window.serial.close();
@@ -115,53 +116,32 @@ export default function SerialPanel({
       const ts = new Date().toISOString();
       setConsoleLines((prev) => [...prev, `[RECE] ${ts} ${line}`].slice(-500));
 
-      let x = null, y = null, z = null;
-      // Try Marlin format
-      const marlinMatch = line.match(/X\s*:\s*([-\d.]+).*?Y\s*:\s*([-\d.]+).*?Z\s*:\s*([-\d.]+)/i);
-      if (marlinMatch) {
-        x = parseFloat(marlinMatch[1]);
-        y = parseFloat(marlinMatch[2]);
-        z = parseFloat(marlinMatch[3]);
-      } else {
-        // Try GRBL format
-        const grblMatch = line.match(/MPos:([-\d.]+),([-\d.]+),([-\d.]+)/);
-        if (grblMatch) {
-          x = parseFloat(grblMatch[1]);
-          y = parseFloat(grblMatch[2]);
-          z = parseFloat(grblMatch[3]);
-        }
-      }
-
-      if (x !== null && y !== null && z !== null) {
+      // ── GRBL real-time status: <Idle|MPos:x,y,z|FS:f,s|Pn:Z> ───────────
+      const grbl = parseGrblStatus(line);
+      if (grbl) {
         hasReceivedPosRef.current = true;
-        const pos = { x, y, z };
-        if (onMachinePositionUpdate) onMachinePositionUpdate(pos);
-      }
-      // Detect Marlin boot — fires the ready callback as soon as firmware is alive
-      if (marlinBootCbRef.current) {
-        const trimmed = line.trim();
-        const isReady = /\bstart\b/i.test(trimmed)
-                     || /marlin/i.test(trimmed)
-                     || /^ok\b/i.test(trimmed);
-        if (isReady) {
-          const cb = marlinBootCbRef.current;
-          marlinBootCbRef.current = null;
-          cb();
+        if (onMachinePositionUpdate) onMachinePositionUpdate({ x: grbl.x, y: grbl.y, z: grbl.z });
+        // Probe pin events (replaces Marlin M119 bridge)
+        if (grbl.probeTriggered) {
+          window.dispatchEvent(new CustomEvent('endstop-z-probe-triggered'));
+        } else {
+          window.dispatchEvent(new CustomEvent('endstop-z-probe-open'));
         }
       }
 
-      // Resolve pending G28 ok-waiter (fires when Marlin sends "ok" after homing completes)
-      if (awaitingOkRef.current && /^ok\b/i.test(line.trim())) {
+      // ── Detect GRBL boot greeting ─────────────────────────────────────────
+      // GRBL sends "Grbl X.Xx ['$' for help]" on startup.
+      if (grblBootCbRef.current && isGrblBoot(line)) {
+        const cb = grblBootCbRef.current;
+        grblBootCbRef.current = null;
+        cb();
+      }
+
+      // ── Resolve pending homing ok-waiter ──────────────────────────────────
+      if (awaitingOkRef.current && /^ok$/i.test(line.trim())) {
         const cb = awaitingOkRef.current;
         awaitingOkRef.current = null;
         cb();
-      }
-      // Bridge for BedCalibrationPanel auto-probe (M119 endstop response)
-      if (line.includes('z_min:')) {
-        const triggered = /z_min:\s*TRIGGERED/i.test(line);
-        window.dispatchEvent(new CustomEvent(
-          triggered ? 'endstop-z-probe-triggered' : 'endstop-z-probe-open'
-        ));
       }
     });
     return unsub;
@@ -174,34 +154,30 @@ export default function SerialPanel({
       setIsHoming(false);
       window._pollPauseCount = 0; // always start clean
       await window.serial.open({ path, baudRate: baud });
-      // setConnected(true); // Removed
       if (onConnect) onConnect(); // Notify Parent
-      
+
       setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} Connected to ${path} at ${baud} baud.`].slice(-500));
 
-      // Grace period covers DTR reset + bootloader + Marlin boot + fallback delay.
-      // 15 s is enough for the slowest boards; on fast ones the boot message
-      // arrives in 3-6 s and homing starts immediately.
+      // Grace period covers DTR reset + GRBL boot + fallback delay.
       startWatchdog(skipHome ? 0 : 15);
 
       if (skipHome) {
-        // Reconnect — machine is at a known position, resume M114 polling immediately
+        // Reconnect — machine is at a known position, resume '?' polling immediately
         startStatusQuery();
         setTimeout(async () => {
-          try { await window.serial.writeLine('M114'); } catch {}
+          try { await window.serial.writeLine(fw.statusQuery); } catch {} // '?'
         }, 500);
       } else {
-        // Dynamic boot detection for RAMPS v1.4 + Arduino Mega 2560:
-        // Arduino resets on USB connect (DTR), bootloader runs ~2s, then Marlin boots ~4-6s.
-        // We listen for Marlin's "start" / version line / first "ok" instead of fixed delays.
-        // Falls back to 12s if no boot message received.
+        // Dynamic boot detection for GRBL:
+        // Controller resets on DTR, GRBL sends "Grbl X.Xx ['$' for help]" when ready.
+        // Falls back to 12s if no boot message received (e.g. custom HAL firmware).
         let bootHandled = false;
 
-        const onMarlinReady = async () => {
+        const onGrblReady = async () => {
           if (bootHandled) return;
           bootHandled = true;
           clearTimeout(bootFallback);
-          console.log('[Boot] Marlin ready — starting M114 polling and homing sequence');
+          console.log('[Boot] GRBL ready — starting status polling and homing sequence');
 
           startStatusQuery();
 
@@ -210,15 +186,13 @@ export default function SerialPanel({
           try {
             setIsHoming(true);
             window.pauseSerialPolling = true;
-            // Wait 3 seconds to allow stepper drivers and Marlin to fully stabilize 
-            // after the bootloader reset before blasting movement commands.
-            await new Promise(r => setTimeout(r, 3000));
+            // Brief stabilization delay before sending motion commands
+            await new Promise(r => setTimeout(r, 1500));
 
-            setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} Starting Auto-Home (G28)...`].slice(-500));
+            setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} Starting Auto-Home (${fw.home})...`].slice(-500));
             if (motionManager) await motionManager.applyProfileToMachine('Homing');
-            await window.serial.writeLine('G90');
-            await window.serial.writeLine('G28');
-            await window.serial.writeLine('M400');
+            await window.serial.writeLine(fw.absMode);  // G90
+            await window.serial.writeLine(fw.home);     // $H — GRBL homing cycle
 
             const homingTimeout = setTimeout(() => {
               awaitingOkRef.current = null;
@@ -227,19 +201,13 @@ export default function SerialPanel({
               if (onHomingComplete) onHomingComplete();
             }, 120000);
 
-            let okPhase = 0;
-            const resolveHoming = () => {
-              okPhase++;
-              if (okPhase < 2) {
-                awaitingOkRef.current = resolveHoming;
-              } else {
-                clearTimeout(homingTimeout);
-                window.pauseSerialPolling = false;
-                setIsHoming(false);
-                if (onHomingComplete) onHomingComplete();
-              }
+            // GRBL sends 'ok' when $H completes successfully
+            awaitingOkRef.current = () => {
+              clearTimeout(homingTimeout);
+              window.pauseSerialPolling = false;
+              setIsHoming(false);
+              if (onHomingComplete) onHomingComplete();
             };
-            awaitingOkRef.current = resolveHoming;
           } catch (e) {
             console.error(e);
             window.pauseSerialPolling = false;
@@ -248,13 +216,13 @@ export default function SerialPanel({
           }
         };
 
-        marlinBootCbRef.current = onMarlinReady;
+        grblBootCbRef.current = onGrblReady;
 
         const bootFallback = setTimeout(() => {
           if (!bootHandled) {
-            console.warn('[Boot] No Marlin boot message in 12 s — using fallback timing');
-            marlinBootCbRef.current = null;
-            onMarlinReady();
+            console.warn('[Boot] No GRBL boot message in 12 s — using fallback timing');
+            grblBootCbRef.current = null;
+            onGrblReady();
           }
         }, 12000);
       }
@@ -299,7 +267,7 @@ export default function SerialPanel({
   };
 
   // Called by the dispense loop on every successful G-code write so the watchdog
-  // knows the connection is alive even when M114 polling is paused.
+  // knows the connection is alive even when '?' polling is paused.
   useEffect(() => {
     window.serialHeartbeat = () => { lastDataRef.current = Date.now(); };
     return () => { delete window.serialHeartbeat; };
@@ -308,10 +276,11 @@ export default function SerialPanel({
   const startStatusQuery = () => {
     if (statusQueryRef.current) clearInterval(statusQueryRef.current);
     let failCount = 0;
+    // GRBL status query interval: 200 ms (GRBL responds with real-time status)
     statusQueryRef.current = setInterval(async () => {
       if (window.pauseSerialPolling) { failCount = 0; return; } // job running — skip
       try {
-        await window.serial.writeLine('M114');
+        await window.serial.writeLine(fw.statusQuery); // '?'
         failCount = 0;
       } catch {
         failCount++;
@@ -417,8 +386,8 @@ export default function SerialPanel({
         <button className="btn secondary" onClick={refresh}>Refresh</button>
 
         <select value={baud} onChange={e => setBaud(Number(e.target.value))} style={{ width: 100 }}>
-          <option value={250000}>250000</option>
           <option value={115200}>115200</option>
+          <option value={250000}>250000</option>
           <option value={57600}>57600</option>
           <option value={9600}>9600</option>
         </select>
@@ -447,26 +416,10 @@ export default function SerialPanel({
         {/* Left Panel: Control Grid */}
         <div className="control-pane">
           <h3>Control</h3>
-          {/* <div className="control-grid-3">
-            <button className="btn-dark" onClick={() => sendCommand('M8')}>Left Air On</button>
-            <button className="btn-dark" onClick={() => sendCommand('M8')}>Right Air On</button>
-            <button className="btn-dark" onClick={() => sendCommand('M8')}>Ring Lights On</button>
- 
-            <button className="btn-dark" onClick={() => sendCommand('M9')}>Left Air Off</button>
-            <button className="btn-dark" onClick={() => sendCommand('M9')}>Right Air Off</button>
-            <button className="btn-dark" onClick={() => sendCommand('M9')}>Ring Lights Off</button>
-
-            <button className="btn-dark" onClick={() => sendCommand('M8')}>Left Vac</button>
-            <button className="btn-dark" onClick={() => sendCommand('M8')}>Right Vac</button>
-            <button className="btn-dark" onClick={() => sendCommand('M18')}>Disable<br />Steppers</button>
-          </div> */}
-
           <div className="control-grid-5" style={{ marginTop: 'auto' }}>
-            <button className="btn-dark small" onClick={() => sendCommand('G28 X')}>Home<br />X</button>
-            <button className="btn-dark small" onClick={() => sendCommand('G28 Y')}>Home<br />Y</button>
-            <button className="btn-dark small" onClick={() => sendCommand('G28 Z')}>Home<br />Z</button>
-            {/* <button className="btn-dark small" onClick={() => sendCommand('G0 X200')}>Jog<br/>Max</button>
-            <button className="btn-dark small" onClick={() => sendCommand('G0 X0')}>Jog<br/>Min</button> */}
+            <button className="btn-dark small" onClick={() => sendCommand(fw.homeX)}>Home<br />X</button>
+            <button className="btn-dark small" onClick={() => sendCommand(fw.homeY)}>Home<br />Y</button>
+            <button className="btn-dark small" onClick={() => sendCommand(fw.homeZ)}>Home<br />Z</button>
           </div>
         </div>
 

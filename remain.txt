@@ -789,3 +789,16 @@ Use code with caution.Note: At 1/8 microstepping, your motor will still run exce
 #define MINIMUM_STEPPER_POST_DIR_DELAY 6 
 #define MINIMUM_STEPPER_PRE_DIR_DELAY 6  
 Use code with caution.Recommended Testing PlanFlash the firmware changes from Fix 1 and Fix 3 first. Test a long, high-speed move via G-code.If the stutter is completely gone, you can gradually increase the feedrates slightly until you find your 8-bit board's precise breaking point.If it still stutters, apply Fix 2 to drop down to 1/8 microstepping. This frees up enough processing headroom to solve the issue permanently on 8-bit architecture.If you make these adjustments and still encounter issues, tell me:What are your current DEFAULT_AXIS_STEPS_PER_UNIT values?What voltage is your power supply delivering to the 2DM556 (e.g., 24V, 36V, or 48V)?
+
+
+
+
+
+
+
+
+
+🔧 One Additional Thing: Custom M-codes
+Your hardware managers send custom M-codes (M700, M710, M720, M730, M731, M765, M766, M800, M801) for Flux, Fume, Tip Cleaner, Tip Rotation, and Payload. GRBL does not support M-codes beyond M0–M5 by default.
+
+This means your embedded firmware must be custom GRBL-HAL or GRBL with M-code extensions. If you're running stock GRBL, these commands will return error:20 (unsupported). You need to confirm with your embedded team that the firmware handles these custom M-codes.

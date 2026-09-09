@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { fw } from '../lib/firmware/grblCommands.js';
 
 export function useMotionManager(payloadStatus, isEmergencyStopped) {
   const MAX_SPEED_MMS = 300;
@@ -24,7 +25,7 @@ export function useMotionManager(payloadStatus, isEmergencyStopped) {
   
   // Safe state computation
   const isSafeToMoveFast = !isEmergencyStopped && payloadStatus !== 'OVER_LIMIT';
-  const restrictionReason = isEmergencyStopped ? 'Emergency Stop Active' : 
+  const restrictionReason = isEmergencyStopped ? 'Emergency Stop Active' :
                             payloadStatus === 'OVER_LIMIT' ? 'Payload exceeds safe limits' : null;
 
   useEffect(() => {
@@ -37,46 +38,41 @@ export function useMotionManager(payloadStatus, isEmergencyStopped) {
       const nextSpeed = Math.min(MAX_SPEED_MMS, Math.max(0, updates.speed !== undefined ? updates.speed : current.speed));
       return {
         ...prev,
-        [name]: {
-          ...current,
-          ...updates,
-          speed: nextSpeed
-        }
+        [name]: { ...current, ...updates, speed: nextSpeed }
       };
     });
   }, []);
 
   const getActiveSettings = useCallback(() => {
     let settings = profiles[activeProfileName];
-    // Cap speed if not in a safe state
     if (!isSafeToMoveFast) {
-      settings = { ...settings, speed: Math.min(settings.speed, 20) }; // cap at 20 mm/s
+      settings = { ...settings, speed: Math.min(settings.speed, 20) };
     }
     return settings;
   }, [profiles, activeProfileName, isSafeToMoveFast]);
 
   const applyProfileToMachine = useCallback(async (profileName) => {
     setActiveProfileName(profileName);
-    
+
     if (window.serial?.writeLine) {
       const settings = profiles[profileName];
       let speed = settings.speed;
-      
+
       if (!isSafeToMoveFast) {
         speed = Math.min(speed, 20); // enforce safe speed
       }
-      
+
       const speedMmMin = speed * 60;
-      // Send acceleration and speed limits to controller
-      // Using M204 for accel/decel and M203 for max feedrate
       try {
-        await window.serial.writeLine(`M204 P${settings.accel} T${settings.accel}`);
-        // If firmware supports custom decel, send it here, e.g. M204 D... but standard Marlin doesn't have D for decel, we just send it if needed.
-        // We will just send it as a comment for now or hypothetical M-code if embedded expects it.
-        // The prompt says: "Configure separate speed, acceleration, and deceleration profiles for different operations."
-        // Let's send a custom command for accel/decel specifically if needed, or stick to M204.
-        await window.serial.writeLine(`M203 X${speed} Y${speed} Z${speed}`);
-      } catch(err) {
+        // GRBL acceleration settings (mm/s²): $120=X, $121=Y, $122=Z
+        await window.serial.writeLine(fw.accelX(settings.accel));
+        await window.serial.writeLine(fw.accelY(settings.accel));
+        await window.serial.writeLine(fw.accelZ(settings.accel));
+        // GRBL max rate settings (mm/min): $110=X, $111=Y, $112=Z
+        await window.serial.writeLine(fw.maxRateX(speedMmMin));
+        await window.serial.writeLine(fw.maxRateY(speedMmMin));
+        await window.serial.writeLine(fw.maxRateZ(speedMmMin));
+      } catch (err) {
         console.error('[MotionManager] Failed to apply profile:', err);
       }
     }
