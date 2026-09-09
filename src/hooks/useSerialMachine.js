@@ -6,6 +6,28 @@ export function useSerialMachine() {
   const [isEmergencyStopped, setIsEmergencyStopped] = useState(false);
   const statusIntervalRef = useRef(null);
 
+  // Throttled position update: buffer raw parsed position in a ref,
+  // and flush it to React state at most once per animation frame (~60fps cap).
+  // This prevents serial position lines (which can arrive 10-20x/s during a job)
+  // from causing excessive re-renders of the entire component tree.
+  const pendingPosRef = useRef(null);
+  const posRafRef = useRef(null);
+
+  const flushMachinePos = () => {
+    posRafRef.current = null;
+    if (pendingPosRef.current) {
+      setMachinePos(pendingPosRef.current);
+      pendingPosRef.current = null;
+    }
+  };
+
+  const scheduleMachinePosUpdate = (pos) => {
+    pendingPosRef.current = pos;
+    if (!posRafRef.current) {
+      posRafRef.current = requestAnimationFrame(flushMachinePos);
+    }
+  };
+
   const handleSerialConnect = (status) => {
     setIsSerialConnected(status);
     // M114 polling is handled exclusively by SerialPanel's startStatusQuery,
@@ -68,7 +90,7 @@ export function useSerialMachine() {
             z = parseFloat(grblMatch[3]);
           }
         }
-        if (x !== null && y !== null && z !== null) setMachinePos({ x, y, z });
+        if (x !== null && y !== null && z !== null) scheduleMachinePosUpdate({ x, y, z });
 
         // Parse Payload Status
         const payloadMatch = line.match(/PAYLOAD_KG:([-\d.]+)\s+STATUS:([A-Z_]+)/);

@@ -1,4 +1,4 @@
-﻿import { useState } from "react";
+import { memo, useState } from "react";
 import { ROTATION_STATUS } from "../hooks/useTipRotationManager.js";
 import "./TipRotationPanel.css";
 
@@ -59,7 +59,7 @@ function AngleArc({ currentAngle, targetAngle, size = 180 }) {
   );
 }
 
-export default function TipRotationPanel({ tipRotationManager }) {
+export default memo(function TipRotationPanel({ tipRotationManager }) {
   if (!tipRotationManager) return <div className="panel"><p>Tip rotation manager not available.</p></div>;
 
   const {
@@ -208,4 +208,4 @@ export default function TipRotationPanel({ tipRotationManager }) {
       </div>
     </div>
   );
-}
+});

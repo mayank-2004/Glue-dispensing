@@ -1,4 +1,4 @@
-﻿import { useState } from "react";
+import { memo, useState } from "react";
 import { FUME_STATUS } from "../hooks/useFumeManager.js";
 import "./FumePanel.css";
 
@@ -9,7 +9,7 @@ function formatTimeOnly(iso) {
   } catch { return iso; }
 }
 
-export default function FumePanel({ fumeManager }) {
+export default memo(function FumePanel({ fumeManager }) {
   if (!fumeManager) return <div className="panel"><p>Fume extraction manager not available.</p></div>;
 
   const {
@@ -122,4 +122,4 @@ export default function FumePanel({ fumeManager }) {
       </div>
     </div>
   );
-}
+});

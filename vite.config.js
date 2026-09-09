@@ -7,6 +7,16 @@ export default defineConfig({
   server: { port: 5173 },
   build: {
     outDir: 'dist',
-    sourcemap: false
+    sourcemap: false,
+    // Split bundle so the browser can parse each chunk in parallel
+    // and cache vendor libraries independently of app code.
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'react-core': ['react', 'react-dom'],
+        }
+      }
+    },
+    chunkSizeWarningLimit: 800
   }
 })

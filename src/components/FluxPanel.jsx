@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import { FLUX_LEVEL, CLEAN_STATE, DISPENSE_STATE } from "../hooks/useFluxManager.js";
 import "./FluxPanel.css";
 
@@ -41,7 +41,7 @@ function ActivityBadge({ dispenseState, cleanState }) {
   return <span className="flux-activity-badge IDLE">○ Idle</span>;
 }
 
-export default function FluxPanel({ fluxManager }) {
+export default memo(function FluxPanel({ fluxManager }) {
   const [showConfig, setShowConfig] = useState(false);
 
   if (!fluxManager) return <div className="panel"><p>Flux manager not available.</p></div>;
@@ -61,7 +61,7 @@ export default function FluxPanel({ fluxManager }) {
       {/* ── Status bar ── */}
       <div className="flux-status-bar">
         <div>
-          <div className="flux-label">Level Status</div>
+          <div className="flux-label">Flux Tank Level</div>
           <StateBadge state={levelState} />
         </div>
 
@@ -207,4 +207,4 @@ export default function FluxPanel({ fluxManager }) {
       </div>
     </div>
   );
-}
+});

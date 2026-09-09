@@ -72,13 +72,6 @@ function processPads(points) {
   });
 }
 
-function parseLengthToMm(lenStr = "") {
-  const m = String(lenStr).match(/^([\d.]+)\s*(mm|in)?$/i);
-  if (!m) return null;
-  const v = parseFloat(m[1]); const unit = (m[2] || "mm").toLowerCase();
-  return unit === "in" ? v * 25.4 : v;
-}
-
 export default function App() {
   const toast = useToast();
   const {
@@ -355,6 +348,10 @@ export default function App() {
     completedPads: []
   });
 
+  // Keep machine position in a ref so SVG overlay can read it without triggering
+  // a React re-render on every M114 position report.
+  const machinePosRef = useRef(null);
+
   const [multiSelectMode, setMultiSelectMode] = useState(false);
   const [selectedPadIndices, setSelectedPadIndices] = useState([]);
 
@@ -363,7 +360,7 @@ export default function App() {
   const prevActiveRefLogRef = useRef(null);
 
   const handleAlignmentCapture = useCallback((refIndex) => {
-    const currentMPos = livePreview.machinePosition;
+    const currentMPos = machinePosRef.current || livePreview.machinePosition;
     if (!currentMPos) {
       toast.warning("No machine position available. Connect machine first.");
       return;
@@ -419,6 +416,9 @@ export default function App() {
   }, [livePreview.machinePosition, boardOutline, pads]);
 
   const handleMachinePositionUpdate = useCallback((newPos) => {
+    // Always keep the ref up to date for immediate reads (SVG overlay, jog panel etc.)
+    machinePosRef.current = newPos;
+    // Only push into livePreview state when something else needs to react to it
     setLivePreview(prev => ({
       ...prev,
       machinePosition: newPos
@@ -793,34 +793,8 @@ export default function App() {
         glive.appendChild(label);
       }
 
-      if (livePreview.machinePosition) {
-        const u = mmToCurrentUnits(livePreview.machinePosition);
-        const crossSize = u.r * 0.8;
-        const hLine = document.createElementNS(NS, "line");
-        hLine.setAttribute("x1", u.x - crossSize);
-        hLine.setAttribute("y1", u.y);
-        hLine.setAttribute("x2", u.x + crossSize);
-        hLine.setAttribute("y2", u.y);
-        hLine.setAttribute("stroke", "#007bff");
-        hLine.setAttribute("stroke-width", u.r * 0.1);
-        glive.appendChild(hLine);
-
-        const vLine = document.createElementNS(NS, "line");
-        vLine.setAttribute("x1", u.x);
-        vLine.setAttribute("y1", u.y - crossSize);
-        vLine.setAttribute("x2", u.x);
-        vLine.setAttribute("y2", u.y + crossSize);
-        vLine.setAttribute("stroke", "#007bff");
-        vLine.setAttribute("stroke-width", u.r * 0.1);
-        glive.appendChild(vLine);
-
-        const centerDot = document.createElementNS(NS, "circle");
-        centerDot.setAttribute("cx", u.x);
-        centerDot.setAttribute("cy", u.y);
-        centerDot.setAttribute("r", u.r * 0.2);
-        centerDot.setAttribute("fill", "#007bff");
-        glive.appendChild(centerDot);
-      }
+      // Machine position crosshair is drawn by the dedicated rAF loop (updateCrosshairOverlay)
+      // to avoid triggering a full overlay redraw on every position tick.
     } else {
       ensureGroup("overlay-live");
     }
@@ -1244,7 +1218,8 @@ export default function App() {
     } else {
       ensureGroup("overlay-ghost");
     }
-  }, [multiSelectMode, selectedMm, fiducials, xf, selectedOrigin, generatedPath, pads, getSvgEl, getSvgGeom, livePreview, dispensingSequence, showPasteDots, nozzleDia, side, boardOutline, fiducialDetectionResult]);
+  // livePreview.machinePosition removed from deps — crosshair drawn separately via rAF
+  }, [multiSelectMode, selectedMm, fiducials, xf, selectedOrigin, generatedPath, pads, getSvgEl, getSvgGeom, livePreview.isActive, livePreview.currentPadIndex, livePreview.completedPads, dispensingSequence, showPasteDots, nozzleDia, side, boardOutline, fiducialDetectionResult]);
 
   const hexToRgba = (hex, a = 0.3) => {
     const h = hex.replace("#", "");
@@ -1255,6 +1230,77 @@ export default function App() {
 
   useEffect(() => { updateOverlay(); }, [updateOverlay]);
   useEffect(() => { updateOverlay(); }, [panelRailFiducials]);
+
+  // ── Standalone machine-position crosshair ──────────────────────────────────
+  // This runs on a rAF loop independently of React state so the nozzle crosshair
+  // updates smoothly without triggering any re-renders or SVG overlay rebuilds.
+  const crosshairRafRef = useRef(null);
+  useEffect(() => {
+    const NS_SVG = "http://www.w3.org/2000/svg";
+    let hLine, vLine, centerDot;
+
+    const ensureCrosshairEls = (g) => {
+      if (!hLine || !g.contains(hLine)) {
+        hLine   = document.createElementNS(NS_SVG, "line");   hLine.id   = "__mpos_h";   g.appendChild(hLine);
+        vLine   = document.createElementNS(NS_SVG, "line");   vLine.id   = "__mpos_v";   g.appendChild(vLine);
+        centerDot = document.createElementNS(NS_SVG, "circle"); centerDot.id = "__mpos_c"; g.appendChild(centerDot);
+        [hLine, vLine].forEach(el => { el.setAttribute("stroke", "#007bff"); el.setAttribute("stroke-linecap", "round"); });
+        centerDot.setAttribute("fill", "#007bff");
+      }
+    };
+
+    const hideCrosshair = () => {
+      [hLine, vLine, centerDot].forEach(el => el && el.setAttribute("display", "none"));
+    };
+
+    const tick = () => {
+      crosshairRafRef.current = requestAnimationFrame(tick);
+      const pos = machinePosRef.current;
+      const svgEl = document.querySelector(".viewer .canvas svg");
+      if (!pos || !svgEl) { hideCrosshair(); return; }
+
+      const vbAttr = svgEl.getAttribute("viewBox");
+      const wAttr  = svgEl.getAttribute("width");
+      if (!vbAttr || !wAttr) return;
+      const [minX, minY, vbW, vbH] = vbAttr.split(" ").map(Number);
+
+      const toMm = (v) => {
+        const n = parseFloat(v);
+        if (!v || isNaN(n)) return null;
+        if (String(v).includes("mm")) return n;
+        if (String(v).includes("in")) return n * 25.4;
+        return null;
+      };
+      const wMm = toMm(wAttr);
+      if (!wMm) return;
+      const mmPerUnit = wMm / vbW;
+
+      const isSideBottom = side === "bottom";
+      const xRaw = pos.x / mmPerUnit;
+      const xU = isSideBottom ? (2 * minX + vbW) - xRaw : xRaw;
+      const yU = (2 * minY + vbH) - (pos.y / mmPerUnit);
+      const r  = 1 / mmPerUnit;
+      const cross = r * 0.8;
+      const sw    = r * 0.1;
+
+      const glive = svgEl.querySelector("#overlay-live") || svgEl;
+      ensureCrosshairEls(glive);
+
+      hLine.setAttribute("x1", xU - cross); hLine.setAttribute("y1", yU);
+      hLine.setAttribute("x2", xU + cross); hLine.setAttribute("y2", yU);
+      hLine.setAttribute("stroke-width", sw); hLine.setAttribute("display", "");
+
+      vLine.setAttribute("x1", xU); vLine.setAttribute("y1", yU - cross);
+      vLine.setAttribute("x2", xU); vLine.setAttribute("y2", yU + cross);
+      vLine.setAttribute("stroke-width", sw); vLine.setAttribute("display", "");
+
+      centerDot.setAttribute("cx", xU); centerDot.setAttribute("cy", yU);
+      centerDot.setAttribute("r", r * 0.2); centerDot.setAttribute("display", "");
+    };
+
+    crosshairRafRef.current = requestAnimationFrame(tick);
+    return () => { if (crosshairRafRef.current) cancelAnimationFrame(crosshairRafRef.current); };
+  }, [side]); // re-init only when side (bottom/top) changes
 
   useEffect(() => {
     const refPoint = referencePoint || selectedOrigin;

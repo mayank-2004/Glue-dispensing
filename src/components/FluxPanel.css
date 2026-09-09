@@ -60,7 +60,7 @@
 .flux-clean-meta span { color: var(--text-primary); }
 
 /* Config grid */
-.flux-config-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+.flux-config-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
 .flux-config-item { display: flex; flex-direction: column; gap: 4px; }
 .flux-config-item label { font-size: 0.82em; color: var(--text-secondary); }
 .flux-config-item input {

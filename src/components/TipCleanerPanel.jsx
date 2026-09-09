@@ -1,4 +1,4 @@
-﻿import { useState } from "react";
+import { memo, useState } from "react";
 import { CLEANER_STATUS } from "../hooks/useTipCleanerManager.js";
 import "./TipCleanerPanel.css";
 
@@ -9,7 +9,7 @@ function formatTimeOnly(iso) {
   } catch { return iso; }
 }
 
-export default function TipCleanerPanel({ tipCleanerManager }) {
+export default memo(function TipCleanerPanel({ tipCleanerManager }) {
   if (!tipCleanerManager) return <div className="panel"><p>Tip cleaner manager not available.</p></div>;
 
   const {
@@ -109,4 +109,4 @@ export default function TipCleanerPanel({ tipCleanerManager }) {
       </div>
     </div>
   );
-}
+});

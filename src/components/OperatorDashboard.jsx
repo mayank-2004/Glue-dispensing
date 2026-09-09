@@ -1,7 +1,7 @@
-import React from 'react';
+import React, { memo } from 'react';
 import './OperatorDashboard.css';
 
-function Metric({ label, value, detail, tone = 'neutral' }) {
+const Metric = memo(function Metric({ label, value, detail, tone = 'neutral' }) {
   return (
     <div className={`operator-metric tone-${tone}`}>
       <div className="operator-metric-label">{label}</div>
@@ -9,9 +9,9 @@ function Metric({ label, value, detail, tone = 'neutral' }) {
       <div className="operator-metric-detail">{detail}</div>
     </div>
   );
-}
+});
 
-function ModuleCard({ icon, title, description, status, tone = 'neutral', onOpen }) {
+const ModuleCard = memo(function ModuleCard({ icon, title, description, status, tone = 'neutral', onOpen }) {
   return (
     <button className={`operator-module tone-${tone}`} onClick={onOpen}>
       <span className="operator-module-icon">{icon}</span>
@@ -23,7 +23,7 @@ function ModuleCard({ icon, title, description, status, tone = 'neutral', onOpen
       <span className="operator-module-arrow">›</span>
     </button>
   );
-}
+});
 
 export default function OperatorDashboard({
   isConnected,
