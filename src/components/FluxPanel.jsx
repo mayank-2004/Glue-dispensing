@@ -14,7 +14,7 @@ function LevelGauge({ pct, state }) {
   return (
     <div className="flux-gauge-wrap">
       <div className="flux-gauge-bar">
-        <div className="flux-gauge-fill" style={{ width: `${Math.max(0, Math.min(100, pct))}%` }} />
+        <div className={`flux-gauge-fill ${fillClass}`} style={{ width: `${Math.max(0, Math.min(100, pct))}%` }} />
       </div>
       <small style={{ color: "var(--text-secondary)", fontSize: "0.8em", }}>{pct}% remaining</small>
     </div>
@@ -49,7 +49,8 @@ export default memo(function FluxPanel({ fluxManager }) {
   const {
     levelPct, levelState, cleanState, lastCleanedAt, cleanCycleCount, cleanAfterCycles,
     dispenseState, lastDispensedAt, totalDispenseCount, sourceIsReliable,
-    lowThresholdPct, triggerClean, triggerManualDispense, markRefilled, setConfig,
+    lowThresholdPct, emptyWeight, fullWeight, currentWeight,
+    triggerClean, triggerManualDispense, markRefilled, setConfig,
   } = fluxManager;
 
   const isBusy = dispenseState !== DISPENSE_STATE.IDLE || cleanState === CLEAN_STATE.RUNNING;
@@ -63,6 +64,9 @@ export default memo(function FluxPanel({ fluxManager }) {
         <div>
           <div className="flux-label">Flux Tank Level</div>
           <StateBadge state={levelState} />
+          <div style={{ fontSize: "0.8em", marginTop: 4, color: "var(--text-secondary)", marginLeft: 8 }}>
+            {currentWeight !== undefined ? Math.max(0, currentWeight - (emptyWeight || 0)).toFixed(1) : "0.0"}g (Net)
+          </div>
         </div>
 
         <LevelGauge pct={levelPct} state={levelState} />
@@ -83,7 +87,7 @@ export default memo(function FluxPanel({ fluxManager }) {
 
         {!sourceIsReliable && (
           <div style={{ fontSize: "0.78em", color: "#ffc107", border: "1px solid #ffc107", padding: "3px 8px", borderRadius: 4 }}>
-            ⚠ No encoder feedback — software estimate
+            ⚠ No load cell feedback — software estimate
           </div>
         )}
       </div>
@@ -149,13 +153,29 @@ export default memo(function FluxPanel({ fluxManager }) {
       {/* ── Config ── */}
       <div className="flux-section">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: showConfig ? 12 : 0 }}>
-          <h4 style={{ margin: 0 }}>Configuration</h4>
+          <h4 style={{ margin: 0 }}>Configuration (Load Cell)</h4>
           <button className="btn sm secondary" onClick={() => setShowConfig(s => !s)}>
             {showConfig ? "Hide" : "Show Settings"}
           </button>
         </div>
         {showConfig && (
           <div className="flux-config-grid">
+            <div className="flux-config-item">
+              <label>Empty (Tare) Weight (g)</label>
+              <input
+                type="number" min={0} max={5000}
+                value={emptyWeight}
+                onChange={e => setConfig("emptyWeight", Number(e.target.value))}
+              />
+            </div>
+            <div className="flux-config-item">
+              <label>Full Weight (g)</label>
+              <input
+                type="number" min={0} max={5000}
+                value={fullWeight}
+                onChange={e => setConfig("fullWeight", Number(e.target.value))}
+              />
+            </div>
             <div className="flux-config-item">
               <label>Low level threshold (%)</label>
               <input

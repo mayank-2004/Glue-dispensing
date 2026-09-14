@@ -48,6 +48,7 @@ import { useTipCleanerManager } from "./hooks/useTipCleanerManager.js";
 import TipCleanerPanel from "./components/TipCleanerPanel.jsx";
 import { useTipRotationManager } from "./hooks/useTipRotationManager.js";
 import TipRotationPanel from "./components/TipRotationPanel.jsx";
+import SafetyPanel from "./components/SafetyPanel.jsx";
 
 function calculatePadCenter(p) {
   if (typeof p.x === "number" && typeof p.y === "number") {
@@ -1864,6 +1865,7 @@ export default function App() {
     { id: 'FumePanel', num: '💨', label: 'Fumes', sub: 'Extraction System' },
     { id: 'TipCleanerPanel', num: '🧹', label: 'Tip Cleaner', sub: 'Auto Cleaning' },
     { id: 'TipRotationPanel', num: '🔄', label: 'Tip Rotation', sub: 'Angle Control' },
+    { id: 'SafetyPanel', num: '🛡', label: 'SAFETY', sub: 'EMERGENCY / DIAGNOSTICS' },
     { id: 'NetworkManagerPanel', num: '📡', label: 'Network', sub: 'Wi-Fi / Bluetooth / Fleet' },
   ];
 
@@ -1895,7 +1897,6 @@ export default function App() {
         isAdminMode={isAdminMode}
         onToggleAdmin={setIsAdminMode}
       />
-      <SafetyBanner safetySystem={safetySystem} />
 
       {/* ── BODY: Sidebar + Content ─────────────────────────── */}
       <div className="app-body">
@@ -2586,6 +2587,9 @@ export default function App() {
                 onNozzleHealthChange={setNozzleHealth}
                 isAdminMode={isAdminMode}
               />
+            </div>
+            <div style={{ display: activeComponent === 'SafetyPanel' ? 'flex' : 'none', width: '100%', height: '100%', flexDirection: 'column' }}>
+              <SafetyPanel safetySystem={safetySystem} />
             </div>
 
             {/* ── Network Manager Panel ─────────────────────────────────── */}

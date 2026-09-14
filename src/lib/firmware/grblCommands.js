@@ -1,4 +1,4 @@
-﻿/**
+/**
  * grblCommands.js
  * ───────────────
  * Single source of truth for all GRBL firmware commands used in this app.
@@ -82,11 +82,12 @@ export const fw = {
     off:          'M801',
   },
   flux: {
-    cleanStart:   'M700',
-    flushFwd:     'M701 S1',
-    flushRev:     'M701 S-1',
-    cleanEnd:     'M702',
-    dispense:     'M710',
+    cleanStart:   'M3',       // Spindle CW (Pump Forward)
+    flushFwd:     'M3 S255',  // Full speed forward
+    flushRev:     'M4 S255',  // Full speed reverse
+    cleanEnd:     'M5',       // Spindle Stop
+    dispense:     'M3 S255',  // Dispense forward
+    dispenseOff:  'M5',       // Stop
   },
   tipCleaner: {
     clean:        'M720',

@@ -802,3 +802,76 @@ Use code with caution.Recommended Testing PlanFlash the firmware changes from Fi
 Your hardware managers send custom M-codes (M700, M710, M720, M730, M731, M765, M766, M800, M801) for Flux, Fume, Tip Cleaner, Tip Rotation, and Payload. GRBL does not support M-codes beyond M0–M5 by default.
 
 This means your embedded firmware must be custom GRBL-HAL or GRBL with M-code extensions. If you're running stock GRBL, these commands will return error:20 (unsupported). You need to confirm with your embedded team that the firmware handles these custom M-codes.
+
+
+
+
+
+However, there are two extremely important files inside the grbl folder that you should open in a text editor like VS Code or Notepad:
+
+cpu_map.h (Crucial for Wiring)
+Why it matters: Your React app is now sending M3 (Spindle CW) to trigger the Flux pump. But which physical pin on the Arduino MEGA does M3 actually turn on? You will find that answer inside cpu_map.h. It contains the master list of all MEGA pins assigned to Steppers, Limit Switches, Spindle Enable, and Coolant. You will use this file as your wiring diagram for your MOSFETs and relays.
+config.h (Crucial for Machine Behavior)
+Why it matters: This file controls the core features of the firmware. For example, when your app sends $H, the homing sequence is determined by config.h (usually it homes the Z-axis first to clear the board, then X and Y together). If you ever need to change homing behavior or enable hard limits, you change it here.
+2. How to upload the code to your Arduino MEGA
+To flash GRBL, you must import it into the Arduino IDE as a "Library".
+
+Extract the ZIP file to a normal folder on your computer (e.g., to your Desktop or Downloads folder). The Arduino IDE cannot read it while it is still zipped.
+Open the Arduino IDE.
+Go to the top menu: Sketch > Include Library > Add .ZIP Library...
+In the file browser, navigate into your extracted grbl-Mega-edge folder, click once on the inner folder named grbl (this is the folder containing all the .c and .h files), and click Open.
+The Arduino IDE will say "Library added to your libraries".
+Now go to the top menu: File > Examples > grbl > grblUpload.
+A new window will open with a tiny sketch that literally just says #include <grbl.h>.
+Go to Tools > Board and select Arduino Mega or Mega 2560.
+Go to Tools > Port and select your MEGA's COM port.
+Click the Upload arrow button!
+
+
+
+
+
+
+
+
+
+
+
+
+1. config.h (Machine Behavior)
+This file controls how the firmware behaves. You only need to make one change here, but a few other settings are important to verify:
+
+HOMING_SINGLE_AXIS_COMMANDS (Line 134)
+Action Required: You MUST uncomment this line (remove the // at the start of the line).
+Why: Your React app (grblCommands.js) uses $HX, $HY, and $HZ to home individual axes when you click the buttons in the JogPanel. By default, GRBL disables this and only allows $H (home all). Uncommenting this enables those buttons to work.
+
+BAUD_RATE 115200 (Line 46)
+Verify: Ensure this remains 115200. This perfectly matches the new default baud rate we set in your SerialPanel.jsx.
+
+HOMING_CYCLE_0 & HOMING_CYCLE_1 (Lines 114-115)
+Verify: Notice that CYCLE_0 homes the Z_AXIS first, and CYCLE_1 homes X and Y. This is the default, and it is perfect for your machine because it lifts the glue nozzle out of the way before moving horizontally.
+
+
+2. cpu_map.h (Wiring & Pin Assignments)
+This file is essentially your wiring diagram. Since you are using a standard MEGA 2560 (defined under #ifdef CPU_MAP_2560_INITIAL around line 29), here are the exact physical pins you need to wire your custom hardware to:
+
+For your Flux Pump (Mapped to Spindle M3/M4/M5):
+
+SPINDLE_ENABLE_BIT (Line 75) ➔ Digital Pin 6
+Usage: Connect your Flux pump's MOSFET/Relay (Forward flow) here. When the app sends M3 (Dispense/Flush Forward), Pin 6 goes HIGH.
+SPINDLE_DIRECTION_BIT (Line 78) ➔ Digital Pin 5
+Usage: Connect your Flux pump's reverse relay here. When the app sends M4 (Suck Waste), Pin 5 goes HIGH.
+For your Glue Dispenser (Mapped to Coolant Flood M8/M9):
+
+COOLANT_FLOOD_BIT (Line 83) ➔ Digital Pin 8
+Usage: Connect your 983A Glue Dispenser trigger circuit here. When the app sends M8, it will trigger the glue flow.
+For your Z-Probe / Bed Calibration:
+
+PROBE_BIT (Line 106) ➔ Analog Pin 15 (A15)
+Usage: Connect your nozzle contact probe here. When the nozzle touches the PCB, A15 must be pulled to ground. The React app reads this automatically via telemetry (Pn:Z) during bed leveling.
+For your Homing Switches:
+
+X_LIMIT_BIT (Line 64) ➔ Digital Pin 10
+Y_LIMIT_BIT (Line 65) ➔ Digital Pin 11
+Z_LIMIT_BIT (Line 66) ➔ Digital Pin 12
+To summarize: Open config.h and uncomment line 134 to enable single-axis homing. Then, use the pin numbers listed in cpu_map.h to wire your Flux MOSFETs to Pins 5 and 6, your Glue Dispenser to Pin 8, and your Probe to A15!

@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { fw } from "../lib/firmware/grblCommands.js";
 
 const STORAGE_KEY = "fluxManager_v1";
 
@@ -29,8 +30,11 @@ export const DISPENSE_STATE = {
 };
 
 const DEFAULT_STATE = {
-  // Level tracking from encoder feedback
-  levelPct:         100,      // 0–100 from embedded encoder
+  // Weight tracking (Load Cell)
+  currentWeight:    0,
+  emptyWeight:      100,      // Tare weight (grams)
+  fullWeight:       1000,     // Full weight (grams)
+  levelPct:         100,      // Derived 0-100
   levelState:       FLUX_LEVEL.UNKNOWN,
   // Cleaning
   cleanState:       CLEAN_STATE.IDLE,
@@ -44,7 +48,7 @@ const DEFAULT_STATE = {
   // Config
   lowThresholdPct:  20,
   cleanAfterCycles: 10,       // Auto-clean after this many dispense cycles
-  // Manual mode
+  // Status
   sourceIsReliable: false,    // true once embedded sends valid FLUX_* messages
 };
 
@@ -69,12 +73,23 @@ export function useFluxManager() {
 
   // ── Serial event listeners ────────────────────────────────────────────────
   useEffect(() => {
-    // FLUX_LEVEL:75 STATUS:NORMAL
-    const onFluxLevel = (e) => {
-      const { levelPct, status } = e.detail;
-      const rawState = (status || "").toUpperCase();
-      const levelState = Object.values(FLUX_LEVEL).includes(rawState) ? rawState : FLUX_LEVEL.UNKNOWN;
-      patch({ levelPct, levelState, sourceIsReliable: true });
+    // FLUX_WEIGHT:123.4
+    const onFluxWeight = (e) => {
+      const { weight } = e.detail;
+      setState(prev => {
+        const range = prev.fullWeight - prev.emptyWeight;
+        let pct = 100;
+        if (range > 0) {
+          pct = ((weight - prev.emptyWeight) / range) * 100;
+        }
+        pct = Math.max(0, Math.min(100, Math.round(pct)));
+        
+        let levelState = FLUX_LEVEL.NORMAL;
+        if (pct <= 0) levelState = FLUX_LEVEL.EMPTY;
+        else if (pct <= prev.lowThresholdPct) levelState = FLUX_LEVEL.LOW;
+
+        return { ...prev, currentWeight: weight, levelPct: pct, levelState, sourceIsReliable: true };
+      });
     };
 
     // FLUX_DISPENSE:START, DONE, or FAIL
@@ -98,30 +113,25 @@ export function useFluxManager() {
     const onFluxClean = (e) => {
       const { phase } = e.detail;
       if (phase === "START") {
-        patch({ cleanState: CLEAN_STATE.RUNNING, dispenseState: DISPENSE_STATE.CLEANING });
+        patch({ cleanState: CLEAN_STATE.RUNNING });
       } else if (phase === "DONE") {
-        patch({
+        patch(prev => ({
           cleanState: CLEAN_STATE.COMPLETE,
-          dispenseState: DISPENSE_STATE.IDLE,
           lastCleanedAt: new Date().toISOString(),
-          levelState: prev => prev.levelState === FLUX_LEVEL.CLEANING_REQUIRED ? FLUX_LEVEL.NORMAL : prev.levelState,
-        });
-        // Reset cycle count after clean
-        setState(prev => {
-          const newState = { ...prev, cleanState: CLEAN_STATE.COMPLETE, dispenseState: DISPENSE_STATE.IDLE, lastCleanedAt: new Date().toISOString() };
-          if (prev.levelState === FLUX_LEVEL.CLEANING_REQUIRED) newState.levelState = FLUX_LEVEL.NORMAL;
-          return { ...newState, cleanCycleCount: 0 };
-        });
+          cleanCycleCount: (prev.cleanCycleCount || 0) + 1,
+          totalDispenseCount: 0 // Reset counter after cleaning
+        }));
+        setTimeout(() => patch({ cleanState: CLEAN_STATE.IDLE }), 3000);
       } else if (phase === "FAIL") {
-        patch({ cleanState: CLEAN_STATE.FAILED, dispenseState: DISPENSE_STATE.IDLE });
+        patch({ cleanState: CLEAN_STATE.FAILED });
       }
     };
 
-    window.addEventListener("flux-level", onFluxLevel);
+    window.addEventListener("flux-weight", onFluxWeight);
     window.addEventListener("flux-dispense", onFluxDispense);
     window.addEventListener("flux-clean", onFluxClean);
     return () => {
-      window.removeEventListener("flux-level", onFluxLevel);
+      window.removeEventListener("flux-weight", onFluxWeight);
       window.removeEventListener("flux-dispense", onFluxDispense);
       window.removeEventListener("flux-clean", onFluxClean);
     };
@@ -161,10 +171,11 @@ export function useFluxManager() {
     patch({ cleanState: CLEAN_STATE.RUNNING, dispenseState: DISPENSE_STATE.CLEANING });
     try {
       if (window.serial?.writeLine) {
-        await window.serial.writeLine("M700");      // Custom: Start flux clean cycle
-        await window.serial.writeLine("M701 S1");   // Flush water forward
-        await window.serial.writeLine("M701 S-1");  // Reverse pump to suck waste
-        await window.serial.writeLine("M702");      // End clean cycle
+        await window.serial.writeLine(fw.flux.flushFwd);   // M3 S255
+        await new Promise(r => setTimeout(r, 2000));       // 2 sec forward
+        await window.serial.writeLine(fw.flux.flushRev);   // M4 S255
+        await new Promise(r => setTimeout(r, 2000));       // 2 sec reverse
+        await window.serial.writeLine(fw.flux.cleanEnd);   // M5
       }
       patch({ cleanState: CLEAN_STATE.COMPLETE, dispenseState: DISPENSE_STATE.IDLE, lastCleanedAt: new Date().toISOString(), cleanCycleCount: 0 });
     } catch (e) {
@@ -177,9 +188,11 @@ export function useFluxManager() {
     patch({ dispenseState: DISPENSE_STATE.DISPENSING });
     try {
       if (window.serial?.writeLine) {
-        await window.serial.writeLine("M710");      // Custom: Manual flux dispense burst
+        await window.serial.writeLine(fw.flux.dispense);      // M3 S255
+        await new Promise(r => setTimeout(r, 2000));          // Burst delay
+        await window.serial.writeLine(fw.flux.dispenseOff);   // M5
       }
-      setTimeout(() => patch({ dispenseState: DISPENSE_STATE.IDLE }), 2000);
+      patch({ dispenseState: DISPENSE_STATE.IDLE });
       recordDispense();
     } catch (e) {
       patch({ dispenseState: DISPENSE_STATE.IDLE });

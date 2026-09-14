@@ -505,9 +505,16 @@ When a `CRITICAL` or `EMERGENCY` fault occurs:
 **File:** `hooks/useFluxManager.js` & `components/FluxPanel.jsx`
 
 Manages a secondary flux spray mechanism attached to the CNC head, communicating via custom serial telemetry.
-- **Telemetry Parsing:** Parses `FLUX_LEVEL:*` and `FLUX_DISPENSE:*` events from the embedded controller to track tank levels and spray success/failure.
+- **Telemetry Parsing:** Parses `FLUX_WEIGHT:*` and `FLUX_DISPENSE:*` events from the embedded controller to track tank levels (via a load cell) and spray success/failure. The frontend calculates the remaining percentage dynamically based on configured empty (tare) and full weights.
 - **Job Integration:** Evaluates flux levels during the job preflight checks. If the tank is empty, the job is blocked. If it empties mid-job, the operator is paused.
-- **Maintenance:** Tracks dispensing cycles and prompts the operator to perform a nozzle flush/clean sequence via M-codes (`M700`/`M710`) to prevent clogging.
+- **Maintenance:** Tracks dispensing cycles and prompts the operator to perform a nozzle flush/clean sequence to prevent clogging.
+- **GRBL Command & Pin Mapping (Arduino Nano/Uno):** Since standard GRBL is used, the flux pump is mapped to the Spindle output pins.
+
+  | GRBL Command | Action | Arduino Nano Pin | Internal GRBL Name |
+  | :--- | :--- | :--- | :--- |
+  | **`M3`** | Pump FORWARD (Dispense / Flush) | **Digital Pin 11** | Spindle Enable |
+  | **`M4`** | Pump REVERSE (Suck waste) | **Digital Pin 13** | Spindle Direction |
+  | **`M5`** | Stop Pump | **N/A** | Spindle Stop |
 
 ---
 
@@ -541,6 +548,9 @@ Manages a servo-actuated bucket and air jet system to clean the dispensing tip.
 - **Interval Tracking:** Tracks pads dispensed during jobs against a configurable threshold. When the limit is reached, it automatically interrupts the job, dispatches a tip clean sequence (via M-code), and resumes the job.
 - **Preflight & Safety:** Blocks the job start if a mandatory clean is pending or if the mechanical servo/air-jet system reports a fault.
 - **Telemetry:** Parses `TIP_CLEAN:START/DONE/FAIL` events to sync state and record detailed event logs.
+- **GRBL Command & Pin Mapping (Arduino Nano):** The tip cleaner uses the standard GRBL Coolant Enable pin.
+  - **`M8`** (Run Cycle) -> **Analog Pin A3** (Coolant Enable)
+  - **`M9`** (Stop Cycle) -> **N/A** (Coolant Disable)
 
 ---
 
@@ -548,15 +558,16 @@ Manages a servo-actuated bucket and air jet system to clean the dispensing tip.
 
 **File:** `hooks/useTipRotationManager.js` & `components/TipRotationPanel.jsx`
 
-Controls a small stepper motor that rotates the soldering iron tip from 0° to 180° to achieve the optimal soldering angle for each operation.
+Controls a small stepper motor that rotates the soldering iron tip from 0° to 180° to achieve the optimal soldering angle for each operation. 
+**Hardware Note:** This mechanism runs on a separate, dedicated Arduino Nano board to bypass standard GRBL 3-axis limitations and memory constraints. The software sends rotation commands over a multiplexed or dedicated serial channel.
 
-- **Homing & Zero Reference:** Before any angle command can be accepted, the axis must be homed (`M731`). Homing establishes the physical 0° position using the embedded endstop, after which the motor encoder tracks all subsequent movements. The UI shows a persistent "Not Homed" warning until this is done and provides a recalibration button (Home → move to default recipe angle) for when the angle drifts.
-- **Recipe Angle Storage:** A `defaultSolderAngle` setting is persisted in `localStorage`. When a job starts, `AutomatedDispensingPanel` reads this value and automatically commands `M730 R{angle}`, rotating the tip to the configured recipe angle before the first pad is dispensed.
+- **Homing & Zero Reference:** Before any angle command can be accepted, the axis must be homed (`M731` or `$HA`). Homing establishes the physical 0° position using the embedded endstop, after which the motor encoder tracks all subsequent movements. The UI shows a persistent "Not Homed" warning until this is done and provides a recalibration button (Home → move to default recipe angle) for when the angle drifts.
+- **Recipe Angle Storage:** A `defaultSolderAngle` setting is persisted in `localStorage`. When a job starts, `AutomatedDispensingPanel` reads this value and automatically commands `M730 R{angle}` (or `G0 A{angle}`), rotating the tip to the configured recipe angle before the first pad is dispensed.
 - **Status Visibility:** The Dashboard metric card and the panel badge reflect the live state — `IDLE`, `HOMING`, `ROTATING`, `TARGET_REACHED`, or `FAULT` — so operators always understand why a job may be waiting for the mechanism.
 - **Preflight Guard:** Jobs are blocked if the axis is in FAULT state or has not been homed.
 - **Serial Protocol:**
-  - `M730 R{angle}` — command rotation to `angle` degrees (0–180)
-  - `M731` — home the rotation axis to 0°
+  - `G0 A{angle}` or `M730 R{angle}` — command rotation to `angle` degrees (0–180)
+  - `$HA` or `M731` — home the rotation axis to 0°
   - Firmware replies: `TIP_ROT:HOMING`, `TIP_ROT:HOMED`, `TIP_ROT:MOVING R45`, `TIP_ROT:REACHED R45`, `TIP_ROT:FAULT {reason}`
 
 ---
