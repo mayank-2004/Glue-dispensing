@@ -1,4 +1,4 @@
-/**
+﻿/**
  * grblCommands.js
  * ───────────────
  * Single source of truth for all GRBL firmware commands used in this app.
@@ -76,10 +76,10 @@ export const fw = {
   unitsMm:        'G21',
   unitsIn:        'G20',
 
-  // ── Custom embedded M-codes (handled by your HAL layer) ─────────────────
+  // ── Feature M-codes (Mapped to standard GRBL outputs for separate boards) ──
   fume: {
-    on:           'M800',
-    off:          'M801',
+    on:           'M8',       // Standard Coolant Flood ON
+    off:          'M9',       // Standard Coolant OFF
   },
   flux: {
     cleanStart:   'M3',       // Spindle CW (Pump Forward)
@@ -90,11 +90,12 @@ export const fw = {
     dispenseOff:  'M5',       // Stop
   },
   tipCleaner: {
-    clean:        'M720',
+    cleanStart:   'M3',       // Standard Spindle ON
+    cleanEnd:     'M5',       // Standard Spindle OFF
   },
   payload: {
-    query:        'M765',
-    set:          (kg)   => `M766 P${parseFloat(kg).toFixed(2)}`,
+    query:        '?',        // Standard GRBL Status Query
+    set:          (kg)   => `(PAYLOAD:${parseFloat(kg).toFixed(2)})`, // Standard G-code comment
   },
 };
 

@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 const STORAGE_KEY = "fumeManager_v1";
 
@@ -133,7 +133,10 @@ export function useFumeManager() {
     logEvent('START', 'Fume extraction started for soldering cycle.');
     
     try {
-      if (window.serial?.writeLine) await window.serial.writeLine("M800"); // Custom: Fume Extractor ON
+      if (window.serial?.writeLine) {
+        const { fw } = await import('../lib/firmware/grblCommands.js');
+        await window.serial.writeLine(fw.fume.on);
+      }
     } catch (e) {
       console.error(e);
     }
@@ -153,12 +156,24 @@ export function useFumeManager() {
       postRunTimerRef.current = setTimeout(async () => {
         patch(prev => ({ status: prev.operatingHours >= prev.serviceThresholdHours ? FUME_STATUS.SERVICE_REQUIRED : FUME_STATUS.READY }));
         logEvent('STOP', 'Post-run complete. Extractor off.');
-        try { if (window.serial?.writeLine) await window.serial.writeLine("M801"); } catch(e){}
+        try {
+          if (window.serial?.writeLine) {
+            const { fw } = await import('../lib/firmware/grblCommands.js');
+            await window.serial.writeLine(fw.fume.off);
+          }
+        } catch(e) { console.error(e); }
+        postRunTimerRef.current = null;
       }, delayMs);
     } else {
       patch(prev => ({ status: prev.operatingHours >= prev.serviceThresholdHours ? FUME_STATUS.SERVICE_REQUIRED : FUME_STATUS.READY }));
       logEvent('STOP', 'Extractor off.');
-      try { if (window.serial?.writeLine) window.serial.writeLine("M801"); } catch(e){}
+      try {
+        if (window.serial?.writeLine) {
+          import('../lib/firmware/grblCommands.js').then(({ fw }) => {
+            window.serial.writeLine(fw.fume.off);
+          }).catch(console.error);
+        }
+      } catch(e) { console.error(e); }
     }
   }, [state.status, state.postRunDurationSec, state.operatingHours, state.serviceThresholdHours, patch, logEvent]);
 

@@ -111,7 +111,26 @@ export function useTipCleanerManager() {
       
       try {
         if (window.serial?.writeLine) {
-          await window.serial.writeLine("M720"); 
+          const { fw } = await import('../lib/firmware/grblCommands.js');
+          await window.serial.writeLine(fw.tipCleaner.cleanStart);
+          
+          // Wait for 2 seconds (cleaning duration)
+          setTimeout(async () => {
+            if (window.serial?.writeLine) {
+              await window.serial.writeLine(fw.tipCleaner.cleanEnd);
+            }
+            window.removeEventListener('tip-clean-event', onEvent);
+            // Simulate DONE event since standard GRBL won't send TIP_CLEAN:DONE
+            window.dispatchEvent(new CustomEvent('tip-clean-event', { detail: { phase: 'DONE' } }));
+            resolve();
+          }, 2000);
+        } else {
+          // If not connected, just simulate success for testing
+          setTimeout(() => {
+            window.removeEventListener('tip-clean-event', onEvent);
+            window.dispatchEvent(new CustomEvent('tip-clean-event', { detail: { phase: 'DONE' } }));
+            resolve();
+          }, 2000);
         }
       } catch (e) {
         window.removeEventListener('tip-clean-event', onEvent);

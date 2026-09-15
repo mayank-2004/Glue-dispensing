@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fw, parseGrblStatus, parseGrblError } from "../lib/firmware/grblCommands.js";
 
 export function useSerialMachine() {
@@ -88,14 +88,6 @@ export function useSerialMachine() {
           }
         }
 
-        // Parse Payload Status
-        const payloadMatch = line.match(/PAYLOAD_KG:([-\d.]+)\s+STATUS:([A-Z_]+)/);
-        if (payloadMatch) {
-           window.dispatchEvent(new CustomEvent('payload-sync', {
-             detail: { kg: parseFloat(payloadMatch[1]), status: payloadMatch[2].toLowerCase() }
-           }));
-        }
-
         // Parse Tip Status (e.g. "TIP_STATUS:PRESENT SLOT:0")
         const tipStatusMatch = line.match(/TIP_STATUS:(PRESENT|ABSENT)\s+SLOT:(\d+)/i);
         if (tipStatusMatch) {
@@ -148,6 +140,13 @@ export function useSerialMachine() {
         if (tipRotMatch) {
           window.dispatchEvent(new CustomEvent('tip-rotation-event', {
             detail: { phase: tipRotMatch[1].toUpperCase(), angle: tipRotMatch[2] ? parseFloat(tipRotMatch[2]) : undefined, message: tipRotMatch[3]?.trim() || undefined }
+          }));
+        }
+
+        const payloadMatch = line.match(/\[?PAYLOAD(?:_KG)?:([-\d.]+)(?:\s+STATUS:([A-Z_]+))?\]?/i);
+        if (payloadMatch) {
+          window.dispatchEvent(new CustomEvent('payload-sync', {
+            detail: { kg: parseFloat(payloadMatch[1]), status: payloadMatch[2] ? payloadMatch[2].toUpperCase() : 'UNKNOWN' }
           }));
         }
 

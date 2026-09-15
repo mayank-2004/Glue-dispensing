@@ -1865,7 +1865,7 @@ export default function App() {
     { id: 'FumePanel', num: '💨', label: 'Fumes', sub: 'Extraction System' },
     { id: 'TipCleanerPanel', num: '🧹', label: 'Tip Cleaner', sub: 'Auto Cleaning' },
     { id: 'TipRotationPanel', num: '🔄', label: 'Tip Rotation', sub: 'Angle Control' },
-    { id: 'SafetyPanel', num: '🛡', label: 'SAFETY', sub: 'EMERGENCY / DIAGNOSTICS' },
+    { id: 'SafetyPanel', num: '🛡️', label: 'SAFETY', sub: 'EMERGENCY / DIAGNOSTICS' },
     { id: 'NetworkManagerPanel', num: '📡', label: 'Network', sub: 'Wi-Fi / Bluetooth / Fleet' },
   ];
 
