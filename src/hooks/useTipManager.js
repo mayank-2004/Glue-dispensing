@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 const STORAGE_KEY = "tipManager_v1";
 const DEFAULT_SLOT_COUNT = 4;
@@ -226,10 +226,10 @@ export function useTipManager() {
       await send(`G10 L2 P1 X${dx.toFixed(3)} Y${dy.toFixed(3)} Z${dz.toFixed(3)}`);
       await pause(300); check(); markStep("apply_offset", "done");
 
-      // Verify — send M115 (Marlin firmware query, embedded may annotate reply)
+      // Verify — send standard G-code comment for custom board to intercept
       // and wait up to 3s for TIP_STATUS or TIP_CHANGE_OK event from embedded
       markStep("verify", "running");
-      await send("M115");
+      await send("(VERIFY_TIP)");
       await pause(3000);
       // If no event updated verification, leave as UNVERIFIED (not FAILED)
       setVerificationState(prev => prev === TIP_VERIFY.VERIFIED ? TIP_VERIFY.VERIFIED : TIP_VERIFY.UNVERIFIED);

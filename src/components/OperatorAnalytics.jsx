@@ -8,7 +8,7 @@ export default function OperatorAnalytics({ jobStatistics, operationReport, onOp
   const average = Number(stats.averageDistance || 0);
   const estimated = Number(stats.estimatedTime || 0);
   const hasData = Boolean(jobStatistics);
-  const bars = [42, 68, 51, 84, 63, 76, hasData ? 92 : 34];
+  // const bars = [42, 68, 51, 84, 63, 76, hasData ? 92 : 34];
 
   return (
     <section className="operator-analytics">
@@ -49,11 +49,20 @@ export default function OperatorAnalytics({ jobStatistics, operationReport, onOp
             <span className="section-live">LAST 7 RUN WINDOWS</span>
           </div>
           <div className="analytics-bars">
+              <div className="analytics-bar-column"><div className="analytics-bar" style={{ height: '40%' }}></div><div className="bar-label">R1</div></div>
+              <div className="analytics-bar-column"><div className="analytics-bar" style={{ height: '60%' }}></div><div className="bar-label">R2</div></div>
+              <div className="analytics-bar-column"><div className="analytics-bar" style={{ height: '45%' }}></div><div className="bar-label">R3</div></div>
+              <div className="analytics-bar-column"><div className="analytics-bar" style={{ height: '80%' }}></div><div className="bar-label">R4</div></div>
+              <div className="analytics-bar-column"><div className="analytics-bar" style={{ height: '55%' }}></div><div className="bar-label">R5</div></div>
+              <div className="analytics-bar-column"><div className="analytics-bar" style={{ height: '70%' }}></div><div className="bar-label">R6</div></div>
+              <div className="analytics-bar-column"><div className="analytics-bar" style={{ height: '30%' }}></div><div className="bar-label">R7</div></div>
+            </div>
+          {/* <div className="analytics-bars">
             {bars.map((height, index) => <div className="analytics-bar-column" key={index}>
               <div className="analytics-bar" style={{ height: `${height}%` }} />
               <small>R{index + 1}</small>
             </div>)}
-          </div>
+          </div> */}
         </div>
         <div className="operator-section analytics-breakdown">
           <div className="operator-section-heading">

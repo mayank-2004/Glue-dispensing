@@ -4,8 +4,17 @@ import './SafetyPanel.css';
 export default function SafetyPanel({ safetySystem }) {
   const { activeFaults, isCritical, clearFault, executeEmergencyHalt } = safetySystem;
   
-  // Keep track of history locally
-  const [history, setHistory] = useState([]);
+  // Keep track of history locally with persistence
+  const [history, setHistory] = useState(() => {
+    try {
+      const saved = localStorage.getItem('safety_fault_history');
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
+  });
+
+  useEffect(() => {
+    localStorage.setItem('safety_fault_history', JSON.stringify(history));
+  }, [history]);
 
   useEffect(() => {
     if (activeFaults.length > 0) {
@@ -82,18 +91,26 @@ export default function SafetyPanel({ safetySystem }) {
       </div>
 
       <div className="safety-section">
-        <h4>Active Faults</h4>
+        <div className="history-header-row">
+          <h4>Active Faults</h4>
+          {activeFaults.length > 0 && (
+            <button className="btn-clear-log" onClick={() => safetySystem.clearAllFaults?.()}>CLEAR ALL</button>
+          )}
+        </div>
         {activeFaults.length === 0 ? (
           <div className="no-faults">No active faults.</div>
         ) : (
           <div className="fault-list">
             {activeFaults.map(fault => (
               <div key={fault.id || fault.code} className="fault-item">
-                <div className="fault-info">
-                  <span className="fault-code">{fault.code}</span>
-                  <span>{fault.message}</span>
+                <div className="fault-info-stack">
+                  <div className="fault-code-title">
+                    {fault.code} - {fault.level || 'EMERGENCY'}
+                  </div>
+                  <div className="fault-message-text">{fault.message}</div>
+                  <div className="fault-time-text">{formatTime(fault.timestamp)}</div>
                 </div>
-                <button className="btn sm" onClick={() => clearFault(fault.code)}>Clear</button>
+                <button className="btn sm recover-btn" onClick={() => clearFault(fault.code)}>RECOVER</button>
               </div>
             ))}
           </div>

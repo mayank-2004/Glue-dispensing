@@ -39,7 +39,6 @@ import { useCameraSystem } from "./hooks/useCameraSystem.js";
 import { useTipManager } from "./hooks/useTipManager.js";
 import TipManagementPanel from "./components/TipManagementPanel.jsx";
 import { useSafetySystem, FAULT_LEVEL } from "./hooks/useSafetySystem.js";
-import SafetyBanner from "./components/SafetyBanner.jsx";
 import { useFluxManager } from "./hooks/useFluxManager.js";
 import FluxPanel from "./components/FluxPanel.jsx";
 import { useFumeManager } from "./hooks/useFumeManager.js";
@@ -327,6 +326,22 @@ export default function App() {
   }, [resetEmergencyStop, safetySystem]);
 
   const fluxManager = useFluxManager();
+  const prevFluxLevelRef = useRef(fluxManager.levelState);
+
+  useEffect(() => {
+    const current = fluxManager.levelState;
+    const prev = prevFluxLevelRef.current;
+    
+    if (current !== prev) {
+      if (current === 'LOW') {
+        toast.warning("Flux Tank is running low (20% or less). Please prepare to refill.");
+      } else if (current === 'EMPTY') {
+        toast.error("Flux Tank is EMPTY! Dispensing operations paused.");
+      }
+      prevFluxLevelRef.current = current;
+    }
+  }, [fluxManager.levelState, toast]);
+
   const fumeManager = useFumeManager();
   const tipCleanerManager = useTipCleanerManager();
   const tipRotationManager = useTipRotationManager();

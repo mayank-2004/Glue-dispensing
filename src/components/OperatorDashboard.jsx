@@ -110,7 +110,7 @@ export default function OperatorDashboard({
           tone={payloadStatus === 'OVER_LIMIT' ? 'danger' : payloadStatus === 'NEAR_LIMIT' ? 'warning' : 'success'} 
         />
         <Metric
-          label="Soldering Tip"
+          label="Dispense Tip"
           value={tipValue}
           detail={tipDetail}
           tone={activeTip ? tipTone : 'neutral'}

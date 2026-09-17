@@ -99,6 +99,14 @@ export function useSerialMachine() {
         if (/TIP_CHANGE_OK/i.test(line))   window.dispatchEvent(new CustomEvent('tip-change-ok'));
         if (/TIP_CHANGE_FAIL/i.test(line)) window.dispatchEvent(new CustomEvent('tip-change-fail'));
 
+        // Parse Flux Weight (e.g. "FLUX_WEIGHT:123.4")
+        const fluxWeightMatch = line.match(/FLUX_WEIGHT:([\d.]+)/i);
+        if (fluxWeightMatch) {
+          window.dispatchEvent(new CustomEvent('flux-weight', {
+            detail: { weight: parseFloat(fluxWeightMatch[1]) }
+          }));
+        }
+
         // Parse Flux Level (e.g. "FLUX_LEVEL:75 STATUS:NORMAL")
         const fluxLevelMatch = line.match(/FLUX_LEVEL:([\d.]+)\s+STATUS:([A-Z_]+)/i);
         if (fluxLevelMatch) {
