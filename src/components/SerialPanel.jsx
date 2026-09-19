@@ -79,7 +79,6 @@ export default function SerialPanel({
       if (isConnectedRef.current) return; // already connected, ignore
       setPath(portPath);
       setBaud(baudRate);
-      toast.info("Machine detected — reconnecting automatically…");
       // Brief delay so the USB device finishes initialising before we open it
       setTimeout(() => { connectRef.current?.(); }, 1500);
     });

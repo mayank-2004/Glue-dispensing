@@ -307,7 +307,6 @@ export default function AutomatedDispensingPanel({
       setPnpPanelCols(panelInfo.dimX);
       setPnpPanelStepX(panelInfo.stepX);
       setPnpPanelStepY(panelInfo.stepY);
-      toast.success(`Panel auto-detected from Gerber SR: ${panelInfo.dimY}×${panelInfo.dimX}, step X=${panelInfo.stepX} mm, Y=${panelInfo.stepY} mm`);
       return;
     }
 
@@ -320,7 +319,6 @@ export default function AutomatedDispensingPanel({
       const stepY = rows > 1 ? parseFloat((yOff[1] - yOff[0]).toFixed(4)) : 0;
       setPnpPanelRows(rows); setPnpPanelCols(cols);
       setPnpPanelStepX(stepX); setPnpPanelStepY(stepY);
-      toast.success(`Panel auto-detected: ${rows}×${cols} grid, step X=${stepX} mm, Y=${stepY} mm`);
       return;
     }
 
@@ -334,9 +332,6 @@ export default function AutomatedDispensingPanel({
       setPnpPanelCols(1);
       setPnpPanelStepX(0);
       setPnpPanelStepY(detected.stepY);
-      if (isPnpMode) {
-        toast.success(`Panel auto-detected from fiducials: ${detected.rows} rows, step Y=${detected.stepY} mm`);
-      }
     }
   }, [panelInfo, panelBoards, isPnpMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -997,7 +992,6 @@ export default function AutomatedDispensingPanel({
 
         // Tip Cleaner Auto-Cycle
         if (tipCleanerManager && tipCleanerManager.status === 'CLEANING_REQUIRED') {
-          toast.info(`Mid-job tip cleaning required (${tipCleanerManager.padsSinceLastClean} pads reached). Running auto-clean...`);
           try {
             await tipCleanerManager.triggerClean('Mid-job auto threshold reached');
           } catch (err) {
@@ -1372,7 +1366,6 @@ export default function AutomatedDispensingPanel({
     try {
       const station = nozzleMaintenance.getPurgeStation();
       if (station.configured) {
-        toast.info(`Moving to purge station (${station.x.toFixed(1)}, ${station.y.toFixed(1)}, ${station.z.toFixed(1)})…`);
         const liftZ = Math.max(station.z + 5, safeTravelHeight);
         await sendGcodeWait(`G0 Z${liftZ.toFixed(3)}`);
         await sendGcodeWait(`G0 X${station.x.toFixed(3)} Y${station.y.toFixed(3)} F6000`);
@@ -1380,7 +1373,6 @@ export default function AutomatedDispensingPanel({
       } else {
         toast.warning('Purge station not set — purging in place. Configure it in Nozzle Maintenance ⚙ settings.');
       }
-      toast.info(`Purging nozzle… (${durationMs} ms @ ${pressure} duty)`);
       await sendGcodeWait(fw.dispenserOn(pressure));
       await sendGcodeWait(`G4 P${Math.round(durationMs)}`);
       await sendGcodeWait(fw.dispenserOff);
@@ -1388,7 +1380,6 @@ export default function AutomatedDispensingPanel({
       if (station.configured) {
         await sendGcodeWait(`G0 Z${safeTravelHeight.toFixed(3)}`);
       }
-      toast.success('Nozzle purge complete.');
     } finally {
       setIsPurging(false);
     }
@@ -1414,7 +1405,6 @@ export default function AutomatedDispensingPanel({
   const pauseJob = () => {
     operatorPausedRef.current = true;
     setIsOperatorPaused(true);
-    toast.info('Job pausing — will stop after current pad completes.');
   };
 
   const resumeOperatorPause = () => {
@@ -1558,7 +1548,6 @@ export default function AutomatedDispensingPanel({
     delete updated[name];
     persistRecipes(updated);
     if (activeRecipe === name) { setActiveRecipe(''); setRecipeName(''); }
-    toast.info(`Recipe "${name}" deleted.`);
   };
 
   const handleExportRecipes = () => {
@@ -1579,7 +1568,6 @@ export default function AutomatedDispensingPanel({
         if (typeof imported !== 'object' || Array.isArray(imported)) throw new Error();
         const merged = { ...savedRecipes, ...imported };
         persistRecipes(merged);
-        toast.success(`Imported ${Object.keys(imported).length} recipe(s).`);
       } catch { toast.error('Invalid recipe file — expected a JSON object of recipes.'); }
     };
     reader.readAsText(file);

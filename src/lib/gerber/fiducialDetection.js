@@ -277,7 +277,7 @@ export function analyzeFiducialsWithRails(layers, side = 'top') {
   // ─── Strategy 1: Soldermask cross-correlation ────────────────────────────────
   // Find copper pads that have a corresponding soldermask opening (1.3x-4x larger)
   if (copperLayers.length > 0 && maskLayers.length > 0) {
-    console.log('[FidAnalyze] Trying soldermask cross-correlation strategy...');
+    // console.log('[FidAnalyze] Trying soldermask cross-correlation strategy...');
 
     // Collect all copper circular SMD pads
     const copperFlashes = copperLayers.flatMap(l => parseAllFlashes(l.text))
@@ -287,7 +287,7 @@ export function analyzeFiducialsWithRails(layers, side = 'top') {
     const maskFlashes = maskLayers.flatMap(l => parseAllFlashes(l.text))
       .filter(f => f.type === 'circle' && f.diameter >= 0.8);
 
-    console.log(`[FidAnalyze] Copper SMD circles: ${copperFlashes.length}, Mask circles: ${maskFlashes.length}`);
+    // console.log(`[FidAnalyze] Copper SMD circles: ${copperFlashes.length}, Mask circles: ${maskFlashes.length}`);
 
     // For each copper pad, find corresponding mask opening
     const MATCH_DIST = 0.5; // mm position tolerance
@@ -304,7 +304,7 @@ export function analyzeFiducialsWithRails(layers, side = 'top') {
           maskDiameter: matchingMask.diameter,
           ratio: matchingMask.diameter / cu.diameter
         });
-        console.log(`  cross-match: cu=(${cu.x.toFixed(2)},${cu.y.toFixed(2)}) dia=${cu.diameter.toFixed(2)}, mask dia=${matchingMask.diameter.toFixed(2)}, ratio=${(matchingMask.diameter/cu.diameter).toFixed(1)}`);
+        // console.log(`  cross-match: cu=(${cu.x.toFixed(2)},${cu.y.toFixed(2)}) dia=${cu.diameter.toFixed(2)}, mask dia=${matchingMask.diameter.toFixed(2)}, ratio=${(matchingMask.diameter/cu.diameter).toFixed(1)}`);
       }
     }
 
@@ -327,7 +327,7 @@ export function analyzeFiducialsWithRails(layers, side = 'top') {
       .sort((a, b) => b.length - a.length)[0];
 
     if (repeatedGroup) {
-      console.log(`[FidAnalyze] Cross-correlation found ${repeatedGroup.length} isolated repeated-aperture fiducials.`);
+      // console.log(`[FidAnalyze] Cross-correlation found ${repeatedGroup.length} isolated repeated-aperture fiducials.`);
       return buildResult(repeatedGroup, copperLayers[0]);
     } else {
       console.log('[FidAnalyze] Cross-correlation insufficient, falling back...');

@@ -92,16 +92,11 @@ export default function App() {
 
     if (!wasConnected && isSerialConnected) {
       if (!hasConnectedRef.current) {
-        toast.success("Connection established successfully.");
         hasConnectedRef.current = true;
-      } else {
-        toast.success("Re-connection established.");
       }
       intentionalDisconnectRef.current = false;
     } else if (wasConnected && !isSerialConnected) {
-      if (intentionalDisconnectRef.current) {
-        toast.info("Machine disconnected.");
-      } else {
+      if (!intentionalDisconnectRef.current) {
         toast.warning("Connection lost — cable may be loose or disconnected.");
       }
       intentionalDisconnectRef.current = false;
@@ -120,15 +115,14 @@ export default function App() {
   useEffect(() => {
     if (!window.vision) return;
     // Register listeners for future events
-    const offReady = window.vision.onReady(() => toast.success("Vision server ready — camera online."));
+    const offReady = window.vision.onReady(() => {});
     const offStopped = window.vision.onStopped(({ code, error } = {}) => {
       if (error) toast.error(`Vision server failed to start: ${error}`);
       else toast.warning("Vision server stopped — camera offline.");
     });
     // Query current state — handles the race where server started/failed before React mounted
     window.vision.status().then(({ ready, startupError }) => {
-      if (ready) toast.success("Vision server ready — camera online.");
-      else if (startupError) toast.error(`Vision server failed to start: ${startupError}`);
+      if (!ready && startupError) toast.error(`Vision server failed to start: ${startupError}`);
     });
     return () => { offReady(); offStopped(); };
   }, []);
@@ -259,7 +253,6 @@ export default function App() {
 
   const handleHomingComplete = useCallback(async () => {
     setIsHomed(true);
-    toast.success("Machine is homed — all axes at zero.");
     const { xf: curXf, applyXf: curApplyXf, selectedOrigin: curOrigin, pcbOriginOffset: curOffset } = originStateRef.current;
     let targetX, targetY;
 
@@ -2104,7 +2097,6 @@ export default function App() {
                         setPcbOriginOffset({ x: 0, y: 0 });
                         setFiducials(prev => prev.map(f => f.machine ? { ...f, machine: { x: f.machine.x + shiftX, y: f.machine.y + shiftY } } : f));
                         setXf(null); setApplyXf(false);
-                        toast.success("Machine Zero Set!");
                       }
                     }}>Set Zero</button>
                 </div>

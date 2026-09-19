@@ -875,3 +875,38 @@ X_LIMIT_BIT (Line 64) ➔ Digital Pin 10
 Y_LIMIT_BIT (Line 65) ➔ Digital Pin 11
 Z_LIMIT_BIT (Line 66) ➔ Digital Pin 12
 To summarize: Open config.h and uncomment line 134 to enable single-axis homing. Then, use the pin numbers listed in cpu_map.h to wire your Flux MOSFETs to Pins 5 and 6, your Glue Dispenser to Pin 8, and your Probe to A15!
+
+
+
+
+
+
+
+
+
+
+
+
+
+TOP - BOTTOM side of PCB issue resolved below -
+
+If your specific PCB design software (EDA) is exporting the bottom layer Gerber so that the origin (0,0) is mirrored and placed at the bottom-right corner, then the raw values work like this:
+
+The Raw Coordinate Values:
+Because your Gerber file's origin is at the bottom-right, the raw X coordinates the app reads are the exact distance from the right edge of the board.
+
+For example, if a pad is 10mm away from the right edge of the board, the raw value in the app is exactly x: 10.
+Why this is causing the machine bug:
+This explains exactly why your machine is starting in the wrong spot!
+
+Your raw bottom-side data says x: 10 (meaning 10mm from the right corner).
+The G-Code generator just reads x: 10 and sends it to the machine.
+The machine's physical origin is still on the left, so it drives to 10mm from the left corner!
+The Solution:
+Because your Gerber file is already mirrored, the G-Code generator needs to translate those bottom-right coordinates into bottom-left coordinates so the machine understands them.
+
+All we have to do is add this rule to the G-Code generator for the bottom side: Machine_X = Board_Width - Raw_Gerber_X
+
+If your board is 100mm wide, and the raw pad is at 10 (from the right), the machine will calculate 100 - 10 = 90. The machine will drive to X=90 (from the left), and it will hit the pad perfectly!
+
+Does this match the behavior of your Gerber files? If so, we can easily add this math to the G-code generator.

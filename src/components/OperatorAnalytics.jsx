@@ -43,7 +43,7 @@ export default function OperatorAnalytics({ jobStatistics, operationReport, onOp
         </div>
       </div>
       <div className="analytics-grid">
-        <div className="operator-section analytics-chart">
+        {/* <div className="operator-section analytics-chart">
           <div className="operator-section-heading">
             <span>CYCLE TREND</span>
             <span className="section-live">LAST 7 RUN WINDOWS</span>
@@ -56,14 +56,14 @@ export default function OperatorAnalytics({ jobStatistics, operationReport, onOp
               <div className="analytics-bar-column"><div className="analytics-bar" style={{ height: '55%' }}></div><div className="bar-label">R5</div></div>
               <div className="analytics-bar-column"><div className="analytics-bar" style={{ height: '70%' }}></div><div className="bar-label">R6</div></div>
               <div className="analytics-bar-column"><div className="analytics-bar" style={{ height: '30%' }}></div><div className="bar-label">R7</div></div>
-            </div>
+            </div> */}
           {/* <div className="analytics-bars">
             {bars.map((height, index) => <div className="analytics-bar-column" key={index}>
               <div className="analytics-bar" style={{ height: `${height}%` }} />
               <small>R{index + 1}</small>
             </div>)}
           </div> */}
-        </div>
+        {/* </div> */}
         <div className="operator-section analytics-breakdown">
           <div className="operator-section-heading">
             <span>JOB BREAKDOWN</span>
