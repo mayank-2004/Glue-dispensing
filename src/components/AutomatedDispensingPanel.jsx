@@ -93,7 +93,7 @@ export default function AutomatedDispensingPanel({
     : { x: 0, y: 0 };
 
   // Machine Configuration State
-  const [valveOnCmd, setValveOnCmd] = useState('M106 S255');
+  const [valveOnCmd, setValveOnCmd] = useState(fw.dispenserOn(255));
   const [valveOffCmd, setValveOffCmd] = useState(fw.dispenserOff);
   const [dispenseHeight, setDispenseHeight] = useState(0.5);
   const [safeTravelHeight, setSafeTravelHeight] = useState(5.0);
@@ -1470,7 +1470,7 @@ export default function AutomatedDispensingPanel({
     const feed = speedSettings?.travelSpeed || 4000;
     const corrX = mx + calibCorrection.x;
     const corrY = my + calibCorrection.y;
-    await window.serial.writeLine(`G1 Z${safeTravelHeight} F3000`);
+    await window.serial.writeLine(`G1 Z${safeTravelHeight} F60`);
     await window.serial.writeLine(`G1 X${corrX.toFixed(3)} Y${corrY.toFixed(3)} F${feed}`);
   };
 
@@ -1853,7 +1853,7 @@ export default function AutomatedDispensingPanel({
                         max="10"
                         value={clogThreshold}
                         onChange={e => setClogThreshold(Math.max(1, parseInt(e.target.value) || 1))}
-                        style={{ width: 52, marginTop: 0 }}
+                        style={{ width: 60, marginTop: 0 }}
                       />
                     </label>
                   )}

@@ -155,8 +155,8 @@ export class DispensingSequencer {
       xf,
       applyXf,
       toolOffset = { dx: 0, dy: 0 },
-      valveOnCmd = 'M106 S255', // Default Ender-3 Fan ON
-      valveOffCmd = 'M107',     // Default Ender-3 Fan OFF
+      valveOnCmd = 'M3 S255 M8', // Standard GRBL Spindle ON + Coolant ON
+      valveOffCmd = 'M5 M9',     // Standard GRBL Spindle OFF + Coolant OFF
       dispenseHeight = 0.5,     // mm above board to dispense
       side = 'top',             // current board side
       boardWidth = 0            // for mirroring

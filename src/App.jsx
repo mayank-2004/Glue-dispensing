@@ -298,7 +298,7 @@ export default function App() {
   const motionManager = useMotionManager(payloadManager.payloadStatus, isEmergencyStopped);
   const cameraSystem = useCameraSystem();
   const tipManager = useTipManager();
-  
+
   const serialWriteWrapper = useCallback(async (cmd) => {
     if (window.serial?.writeLine) await window.serial.writeLine(cmd);
     else if (window.serial?.write) await window.serial.write(cmd);
@@ -331,7 +331,7 @@ export default function App() {
   useEffect(() => {
     const current = fluxManager.levelState;
     const prev = prevFluxLevelRef.current;
-    
+
     if (current !== prev) {
       if (current === 'LOW') {
         toast.warning("Flux Tank is running low (20% or less). Please prepare to refill.");
@@ -353,6 +353,9 @@ export default function App() {
   const [panelJobStage, setPanelJobStage] = useState('idle');
   const [operationReport, setOperationReport] = useState(null);
   const [operationFailure, setOperationFailure] = useState(null);
+  const [jobHistory, setJobHistory] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('jobHistoryDB') || '[]'); } catch { return []; }
+  });
   const [glueStatus, setGlueStatus] = useState(null);
   const [nozzleHealth, setNozzleHealth] = useState(null);
   const [useSafePathPlanning, setUseSafePathPlanning] = useState(true);
@@ -656,7 +659,6 @@ export default function App() {
 
   const NS = "http://www.w3.org/2000/svg";
   const getSvgEl = useCallback(() => document.querySelector(".viewer .canvas svg"), []);
-  const getCanvas = useCallback(() => document.querySelector(".viewer .canvas"), []);
 
   const getSvgGeom = useCallback(() => {
     const svgEl = getSvgEl(); if (!svgEl) return null;
@@ -686,16 +688,6 @@ export default function App() {
 
     return { svgEl, minX, minY, vbW, vbH, mmPerUnit };
   }, [getSvgEl]);
-
-  const mmToUnits = useCallback((ptMm) => {
-    const g = getSvgGeom(); if (!g) return null;
-    return {
-      x: ptMm.x / g.mmPerUnit + g.minX,
-      y: ptMm.y / g.mmPerUnit + g.minY,
-      r: 1 / g.mmPerUnit,
-      _vb: g
-    };
-  }, [getSvgGeom]);
 
   function ensureGroup(id) {
     const svgEl = getSvgEl(); if (!svgEl) return null;
@@ -1234,7 +1226,7 @@ export default function App() {
     } else {
       ensureGroup("overlay-ghost");
     }
-  // livePreview.machinePosition removed from deps — crosshair drawn separately via rAF
+    // livePreview.machinePosition removed from deps — crosshair drawn separately via rAF
   }, [multiSelectMode, selectedMm, fiducials, xf, selectedOrigin, generatedPath, pads, getSvgEl, getSvgGeom, livePreview.isActive, livePreview.currentPadIndex, livePreview.completedPads, dispensingSequence, showPasteDots, nozzleDia, side, boardOutline, fiducialDetectionResult]);
 
   const hexToRgba = (hex, a = 0.3) => {
@@ -1257,8 +1249,8 @@ export default function App() {
 
     const ensureCrosshairEls = (g) => {
       if (!hLine || !g.contains(hLine)) {
-        hLine   = document.createElementNS(NS_SVG, "line");   hLine.id   = "__mpos_h";   g.appendChild(hLine);
-        vLine   = document.createElementNS(NS_SVG, "line");   vLine.id   = "__mpos_v";   g.appendChild(vLine);
+        hLine = document.createElementNS(NS_SVG, "line"); hLine.id = "__mpos_h"; g.appendChild(hLine);
+        vLine = document.createElementNS(NS_SVG, "line"); vLine.id = "__mpos_v"; g.appendChild(vLine);
         centerDot = document.createElementNS(NS_SVG, "circle"); centerDot.id = "__mpos_c"; g.appendChild(centerDot);
         [hLine, vLine].forEach(el => { el.setAttribute("stroke", "#007bff"); el.setAttribute("stroke-linecap", "round"); });
         centerDot.setAttribute("fill", "#007bff");
@@ -1276,7 +1268,7 @@ export default function App() {
       if (!pos || !svgEl) { hideCrosshair(); return; }
 
       const vbAttr = svgEl.getAttribute("viewBox");
-      const wAttr  = svgEl.getAttribute("width");
+      const wAttr = svgEl.getAttribute("width");
       if (!vbAttr || !wAttr) return;
       const [minX, minY, vbW, vbH] = vbAttr.split(" ").map(Number);
 
@@ -1295,9 +1287,9 @@ export default function App() {
       const xRaw = pos.x / mmPerUnit;
       const xU = isSideBottom ? (2 * minX + vbW) - xRaw : xRaw;
       const yU = (2 * minY + vbH) - (pos.y / mmPerUnit);
-      const r  = 1 / mmPerUnit;
+      const r = 1 / mmPerUnit;
       const cross = r * 0.8;
-      const sw    = r * 0.1;
+      const sw = r * 0.1;
 
       const glive = svgEl.querySelector("#overlay-live") || svgEl;
       ensureCrosshairEls(glive);
@@ -1697,16 +1689,28 @@ export default function App() {
   // Auto-advance arm dropdown after each successful fiducial save.
   const onAdvanceArmedFid = useCallback((justSavedId) => {
     setFidActiveId(currentId => {
+      const boardFids = [];
+      if (panelBoards && panelBoards.length > 0) {
+        panelBoards.forEach(b => {
+          (b.fiducials || []).forEach(f => {
+            boardFids.push({ ...f, _isRail: false, boardId: b.id });
+          });
+        });
+      } else {
+        (fiducials || []).forEach(f => {
+          boardFids.push({ ...f, _isRail: false });
+        });
+      }
       const sequence = [
         ...panelRailFiducials.map(f => ({ ...f, _isRail: true })),
-        ...fiducials.map(f => ({ ...f, _isRail: false })),
+        ...boardFids,
       ];
       const justSavedIdx = sequence.findIndex(f => f.id === justSavedId);
       if (justSavedIdx === -1) return currentId;
       const nextFid = sequence.slice(justSavedIdx + 1).find(f => !f.machine);
       return nextFid ? nextFid.id : null;
     });
-  }, [panelRailFiducials, fiducials]);
+  }, [panelRailFiducials, panelBoards, fiducials]);
 
   const onSolve2 = () => {
     const P = fiducials.filter(f => f.design && f.machine);
@@ -2011,7 +2015,7 @@ export default function App() {
                 maintenanceManager.setToolOffset(o);
                 forceRender({});
               }}
-              machinePosition={livePreview.machinePosition}
+              machinePosition={livePreview.machinePosition || machinePos}
               isConnected={isSerialConnected}
               onAutoDetect={async () => {
                 if (cameraPanelRef.current) {
@@ -2028,7 +2032,7 @@ export default function App() {
                 onFocus={(pad) => {
                   setSelectedMm({ x: pad.x, y: pad.y, centerValid: pad.centerValid, centerMethod: pad.centerMethod, originalPad: pad });
                 }}
-                onItemClick={(pad, index) => {
+                onItemClick={async (pad, index) => {
                   if (multiSelectMode) {
                     setSelectedPadIndices(prev => {
                       const s = [...prev];
@@ -2039,6 +2043,27 @@ export default function App() {
                   } else {
                     setSelectedPadIndices([index]);
                     setSelectedMm({ x: pad.x, y: pad.y, centerValid: pad.centerValid, centerMethod: pad.centerMethod, originalPad: pad });
+
+                    // Jog machine to component
+                    if (!window.serial?.writeLine) {
+                      toast.warning("Machine not connected. Cannot jog.");
+                      return;
+                    }
+                    let targetX, targetY;
+                    if (applyXf && xf) {
+                      const machinePt = applyTransform(xf, { x: pad.x, y: pad.y });
+                      console.log('Jogging to machine coordinates:', machinePt);
+                      targetX = machinePt.x;
+                      targetY = machinePt.y;
+                    } else if (selectedOrigin && pcbOriginOffset) {
+                      targetX = pad.x - selectedOrigin.x + pcbOriginOffset.x;
+                      targetY = pad.y - selectedOrigin.y + pcbOriginOffset.y;
+                    } else {
+                      targetX = pad.x;
+                      targetY = pad.y;
+                    }
+                    const speed = speedSettings?.travelSpeed || 6000;
+                    await window.serial.writeLine(`G1 X${targetX.toFixed(3)} Y${targetY.toFixed(3)} F${speed}`);
                   }
                 }}
                 multiSelectMode={multiSelectMode}
@@ -2244,7 +2269,7 @@ export default function App() {
               <div className="panel full-height">
                 <div className="panel-header"><h3 className="panel-title">ANALYTICS</h3></div>
                 <div style={{ padding: 12, height: '100%', overflow: 'auto' }}>
-                  <OperatorAnalytics jobStatistics={jobStatistics} operationReport={operationReport} onOpen={setActiveComponent} />
+                  <OperatorAnalytics jobStatistics={jobStatistics} operationReport={operationReport} jobHistory={jobHistory} onOpen={setActiveComponent} />
                 </div>
               </div>
             </div>
@@ -2321,7 +2346,7 @@ export default function App() {
                 <div style={{ padding: 12 }}>
                   <JogPanel
                     isConnected={isSerialConnected}
-                    machinePosition={livePreview.machinePosition}
+                    machinePosition={livePreview.machinePosition || machinePos}
                     motionManager={motionManager}
                   />
                 </div>
@@ -2499,7 +2524,7 @@ export default function App() {
                 qualityController={qualityController}
                 onCaptureAlignment={handleAlignmentCapture}
                 alignmentInfo={alignment}
-                machinePosition={livePreview.machinePosition}
+                machinePosition={livePreview.machinePosition || machinePos}
                 fiducialVisionDetector={fiducialVisionDetector}
                 layerData={layerData}
                 onUpdateFiducials={handleFiducialsUpdate}
@@ -2509,6 +2534,7 @@ export default function App() {
                 pads={pads}
                 gerberFiducials={fiducialDetectionResult || []}
                 fidActiveId={fidActiveId}
+                setFidActiveId={setFidActiveId}
                 panelRailFiducials={panelRailFiducials}
                 setPanelRailFiducials={setPanelRailFiducials}
                 onAdvanceArmedFid={onAdvanceArmedFid}
@@ -2596,7 +2622,15 @@ export default function App() {
                 onJobComplete={() => {
                   setIsJobRunning(false);
                 }}
-                onJobReportChange={(report) => { setOperationReport(report); setOperationFailure(null); }}
+                onJobReportChange={(report) => { 
+                  setOperationReport(report); 
+                  setOperationFailure(null); 
+                  setJobHistory(prev => {
+                    const next = [...prev, report].slice(-100); // keep last 100
+                    localStorage.setItem('jobHistoryDB', JSON.stringify(next));
+                    return next;
+                  });
+                }}
                 onJobFailure={(failure) => { setOperationFailure(failure); setOperationReport(null); }}
                 onGlueStatusChange={setGlueStatus}
                 onNozzleHealthChange={setNozzleHealth}

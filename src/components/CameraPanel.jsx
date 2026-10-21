@@ -7,83 +7,78 @@ import { jogRel, moveAbs } from "../lib/motion/gcode";
 import { fw } from '../lib/firmware/grblCommands.js';
 import "./CameraPanel.css";
 
-function predictFidMachinePos(fid, allFiducials, xf, effectiveOrigin) {
+function getFullFiducialSequence(cProps) {
+  const rails = (cProps.panelRailFiducials || []).map(f => ({ ...f, isRail: true }));
+  const boardFids = [];
+  if (cProps.panelBoards && cProps.panelBoards.length > 0) {
+    cProps.panelBoards.forEach(b => {
+      (b.fiducials || []).forEach(f => {
+        boardFids.push({ ...f, boardId: b.id, boardName: b.name, isRail: false });
+      });
+    });
+  } else if (cProps.fiducials && cProps.fiducials.length > 0) {
+    cProps.fiducials.forEach(f => {
+      boardFids.push({ ...f, isRail: false });
+    });
+  }
+  return [...rails, ...boardFids];
+}
+
+function predictFidMachinePos(fid, allFiducials, panelXf, boardXf) {
   if (!fid?.design) return null;
-  // ── Priority 1: Full transform available ─────────────────────────────────
-  if (xf) return applyTransform(xf, fid.design);
-  const solved = (allFiducials || []).filter(f => f.id !== fid.id && f.design && f.machine);
-  // ── Priority 2: 2+ solved peers — fit similarity (captures rotation + scale + Y-flip) ─
+
+  // 1. If an explicit transform applies:
+  const xf = fid.isRail ? panelXf : (boardXf || panelXf);
+  if (xf) {
+    try {
+      const p = applyTransform(xf, fid.design);
+      if (p && !isNaN(p.x) && !isNaN(p.y)) return p;
+    } catch {}
+  }
+
+  // 2. Gather ALL solved fiducials across the entire panel (both rails and boards!)
+  const solved = (allFiducials || []).filter(
+    f => f.id !== fid.id && f.design && f.machine && typeof f.machine.x === 'number' && typeof f.machine.y === 'number'
+  );
+
+  // If 2+ fiducials are solved, fit a similarity transform (rotation + scale + translation)
   if (solved.length >= 2) {
     try {
       const T = fitSimilarity(
         solved.map(f => f.design),
         solved.map(f => f.machine)
       );
-      return applyTransform(T, fid.design);
-    } catch {
-      // fall through to single-point logic
+      const p = applyTransform(T, fid.design);
+      if (p && !isNaN(p.x) && !isNaN(p.y)) return p;
+    } catch (e) {
+      console.warn('[predictFidMachinePos] fitSimilarity fallback:', e);
     }
   }
 
-  // ── Priority 3: Single solved peer — axis-aware translation ──────────────
-  if (solved.length === 1) {
-    const ref = solved[0];
-    // Vector from the solved fiducial to the target, in design space
-    const dDesignX = fid.design.x - ref.design.x;
-    const dDesignY = fid.design.y - ref.design.y;
-
-    // Determine Y-axis orientation by comparing the solved fiducial's design vs machine coords.
-    // If the machine's Y increased when the Gerber Y increased → same direction.
-    // If they moved in opposite directions → Y is flipped (most common with Gerber boards).
-    //
-    // We use a heuristic: if the machine's Y offset (machine.y - origin.y) has the
-    // opposite sign to the design's Y offset vs origin, the Y axis is inverted.
-    // Since we only have one reference point, we estimate axis orientation by checking
-    // whether design.y ≈ machine.y (same-orientation) or roughly -machine.y (flipped).
-    //
-    // The most reliable approach: check which prediction (flipped vs not) keeps us
-    // on the same side of the machine's current position as the design implies.
-    // We use the raw design-to-machine delta of the single solved point:
-    //   If ref.machine.y is close to ref.design.y → Y same direction.
-    //   If they have largely opposite signs → Y is likely flipped.
-    //
-    // Actually, the cleanest approach: use the design-space and machine-space relationship
-    // of the solved point itself to infer axis orientation:
-    //   designYSign  = sign(ref.design.y)   (Gerber: positive = up on board)
-    //   machineYSign = sign(ref.machine.y)  (machine: positive direction of Y motor)
-    // If they differ, Y is flipped.
-    //
-    // However, since machine origin is arbitrary, we can't rely on absolute signs.
-    // Instead, when we have the effective origin, we compute relative values:
-    let machineX, machineY;
-
-    if (effectiveOrigin) {
-      // Compute design offset relative to an anchor (origin)
-      const designRelX = ref.design.x - effectiveOrigin.x;
-      const designRelY = ref.design.y - effectiveOrigin.y;
-      const machineRelX = ref.machine.x - effectiveOrigin.x;
-      const machineRelY = ref.machine.y - effectiveOrigin.y;
-
-      // Check axis orientation: if design and machine have same-sign Y relative to origin → same dir
-      const yFlipped = designRelY !== 0 && Math.sign(designRelY) !== Math.sign(machineRelY);
-      const xFlipped = designRelX !== 0 && Math.sign(designRelX) !== Math.sign(machineRelX);
-
-      machineX = ref.machine.x + (xFlipped ? -dDesignX : dDesignX);
-      machineY = ref.machine.y + (yFlipped ? -dDesignY : dDesignY);
-    } else {
-      // No origin — use plain translation (same as before, but note the limitation)
-      machineX = ref.machine.x + dDesignX;
-      machineY = ref.machine.y + dDesignY;
+  // If 1 solved fiducial exists, use vector translation in Gerber design space
+  if (solved.length >= 1) {
+    let bestRef = solved[0];
+    let bestDist = Math.hypot(fid.design.x - bestRef.design.x, fid.design.y - bestRef.design.y);
+    for (let i = 1; i < solved.length; i++) {
+      const d = Math.hypot(fid.design.x - solved[i].design.x, fid.design.y - solved[i].design.y);
+      if (d < bestDist) {
+        bestDist = d;
+        bestRef = solved[i];
+      }
     }
-
-    return { x: machineX, y: machineY };
+    const dX = fid.design.x - bestRef.design.x;
+    const dY = fid.design.y - bestRef.design.y;
+    return {
+      x: parseFloat((bestRef.machine.x + dX).toFixed(3)),
+      y: parseFloat((bestRef.machine.y + dY).toFixed(3)),
+    };
   }
 
-  // ── Priority 4: Origin offset only ───────────────────────────────────────
-  if (effectiveOrigin) {
-    return { x: fid.design.x + effectiveOrigin.x, y: fid.design.y + effectiveOrigin.y };
-  }
-  return null;
+  // Fallback: Default to design coordinate (for the very first fiducial R1)
+  return {
+    x: parseFloat(fid.design.x.toFixed(3)),
+    y: parseFloat(fid.design.y.toFixed(3)),
+  };
 }
 
 export default function CameraPanel({
@@ -108,6 +103,7 @@ export default function CameraPanel({
   pads = [],
   gerberFiducials = [],
   fidActiveId = null,
+  setFidActiveId,
   panelRailFiducials = [],
   setPanelRailFiducials,
   onAdvanceArmedFid,
@@ -135,10 +131,10 @@ export default function CameraPanel({
   useEffect(() => { localStorage.setItem("nozzleDia", JSON.stringify(nozzleDia)); }, [nozzleDia]);
 
   // Ref to hold latest props for stale-closure avoidance in setInterval
-  const latestPropsRef = useRef({ fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, pads, cameraOffset: { dx: 0, dy: 0 }, fidActiveId, panelRailFiducials, setPanelRailFiducials, onAdvanceArmedFid, xf, panelXf });
+  const latestPropsRef = useRef({ fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, pads, cameraOffset: { dx: 0, dy: 0 }, fidActiveId, setFidActiveId, panelRailFiducials, setPanelRailFiducials, onAdvanceArmedFid, xf, panelXf });
   useEffect(() => {
-    latestPropsRef.current = { fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, pads, cameraOffset, fidActiveId, panelRailFiducials, setPanelRailFiducials, onAdvanceArmedFid, xf, panelXf };
-  }, [fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, pads, cameraOffset, fidActiveId, panelRailFiducials, setPanelRailFiducials, onAdvanceArmedFid, xf, panelXf]);
+    latestPropsRef.current = { fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, pads, cameraOffset, fidActiveId, setFidActiveId, panelRailFiducials, setPanelRailFiducials, onAdvanceArmedFid, xf, panelXf };
+  }, [fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, pads, cameraOffset, fidActiveId, setFidActiveId, panelRailFiducials, setPanelRailFiducials, onAdvanceArmedFid, xf, panelXf]);
 
   const [streamOn, setStreamOn] = useState(false);
 
@@ -172,6 +168,11 @@ export default function CameraPanel({
   // Persist mode preference
   useEffect(() => { localStorage.setItem('pythonVisionMode', JSON.stringify(pythonMode)); }, [pythonMode]);
 
+  const [autoMoveEnabled, setAutoMoveEnabled] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('autoMoveToNextFid') || 'true'); } catch { return true; }
+  });
+  useEffect(() => { localStorage.setItem('autoMoveToNextFid', JSON.stringify(autoMoveEnabled)); }, [autoMoveEnabled]);
+
   // Sync pixelsPerMm to Python server whenever it changes
   useEffect(() => {
     if (pythonMode && pythonServerOk && pixelsPerMm) {
@@ -194,6 +195,16 @@ export default function CameraPanel({
   }, []);
 
   useEffect(() => { machinePositionRef.current = machinePosition; }, [machinePosition]);
+
+  useEffect(() => {
+    if (!isJobRunning) {
+      window._pollPauseCount = 0;
+      window.pauseSerialPolling = false;
+      if (window.serial?.writeLine) {
+        window.serial.writeLine('?').catch(() => {});
+      }
+    }
+  }, [isJobRunning]);
 
   const [pairs, setPairs] = useState(() => {
     try { return JSON.parse(localStorage.getItem("camPairs") || "[]"); } catch { return []; }
@@ -292,7 +303,7 @@ export default function CameraPanel({
           const distMm = Math.hypot(dxMm, result.offset.y);
           // Only jog if offset is meaningful (> 20µm) and not a false positive (< 3mm)
           if (distMm > 0.02 && distMm < 3.0) {
-            const cmds = jogRel({ dx: dxMm, dy: result.offset.y, feed: 500 });
+            const cmds = jogRel({ dx: dxMm, dy: result.offset.y, feed: 450 });
             if (window.serial && window.serial.writeLine) {
               for (const line of cmds) await window.serial.writeLine(line);
             }
@@ -656,7 +667,7 @@ export default function CameraPanel({
       if (isBusy) return;
       setIsBusy(true);
       try {
-        const cmds = jogRel({ dx, dy, feed: 1000 });
+        const cmds = jogRel({ dx, dy, feed: 450 });
         if (window.serial && window.serial.writeLine) {
           for (const line of cmds) await window.serial.writeLine(line);
           setIsBusy(false);
@@ -867,65 +878,91 @@ export default function CameraPanel({
 
   // ── Auto-fiducial search ──────────────────────────────────────────────────
   // When the armed fiducial changes AND detection is running, compute the
-  // expected camera position from the transform (or a solved-point translation)
-  // and send one absolute G1 move so the machine arrives near the fiducial.
-  // The servo loop then centres it precisely without manual jogging.
+  // expected camera position and automatically navigate the machine to it.
   const [autoSearchStatus, setAutoSearchStatus] = useState('');
 
-  useEffect(() => {
-    if (!fidActiveId) { setAutoSearchStatus(''); return; }
-    if (!detectionInterval) return; // only move when detection is active
-    if (!window.serial?.writeLine) return;
-
-    const cProps = latestPropsRef.current;
-
-    // Find the armed fiducial in rail list first, then board list
-    const isRail = (cProps.panelRailFiducials || []).some(f => f.id === fidActiveId);
-    const allFids = [...(cProps.panelRailFiducials || []), ...(cProps.fiducials || [])];
-    const fid = allFids.find(f => f.id === fidActiveId);
-    if (!fid || !fid.design) { setAutoSearchStatus(''); return; }
-
-    // Rail fiducials: use panelXf; board fiducials: use board xf, falling back to
-    // panelXf when the board transform isn't solved yet (panelXf can map any design
-    // coord to machine space once the rail is aligned).
-    // Pass the matching fiducial list so predictFidMachinePos can derive translation
-    // from already-solved points of the same group (R1→R2, F1→F2).
-    const transform = isRail
-      ? cProps.panelXf
-      : (cProps.xf || cProps.panelXf);
-    const refFids = isRail ? (cProps.panelRailFiducials || []) : cProps.fiducials;
-    const machPos = predictFidMachinePos(fid, refFids, transform, cProps.effectiveOrigin);
-    if (!machPos) { setAutoSearchStatus('No transform — jog manually'); return; }
-
-    // Camera target = machine position minus camera-to-nozzle offset
-    const camOff = cProps.cameraOffset || { dx: 0, dy: 0 };
-    const camX = machPos.x - camOff.dx;
-    const camY = machPos.y - camOff.dy;
-
-    // Skip move if already within 2 mm (operator is already close enough)
-    const curPos = machinePositionRef.current;
-    if (curPos && Math.hypot(camX - curPos.x, camY - curPos.y) < 2.0) {
-      setAutoSearchStatus('');
+  const autoNavigateToFiducial = async (targetFid, solvedListOverride = null) => {
+    if (!targetFid || !targetFid.design) return;
+    if (!window.serial?.writeLine) {
+      toast.warning("Serial not connected — cannot move machine.");
       return;
     }
 
-    // Reset servo so it doesn't try to save the old position during transit
-    servoStateRef.current = { phase: 'idle', lockedAt: null };
+    const cProps = latestPropsRef.current;
+    const allSeq = getFullFiducialSequence(cProps);
+    const solvedList = solvedListOverride || allSeq.filter(f => f.machine && typeof f.machine.x === 'number');
+
+    const machPos = predictFidMachinePos(targetFid, solvedList, cProps.panelXf, cProps.xf);
+    if (!machPos) {
+      toast.warning(`Cannot predict position for ${targetFid.id}`);
+      return;
+    }
+
+    const camOff = cProps.cameraOffset || { dx: 0, dy: 0 };
+    const camX = parseFloat((machPos.x - (camOff.dx || 0)).toFixed(3));
+    const camY = parseFloat((machPos.y - (camOff.dy || 0)).toFixed(3));
+
+    const curPos = machinePositionRef.current || { x: 0, y: 0 };
+    const dist = Math.hypot(camX - curPos.x, camY - curPos.y);
+
+    if (dist < 0.8) {
+      console.log(`[AutoNavigate] Already within 0.8mm of ${targetFid.id}`);
+      if (cProps.setFidActiveId && cProps.fidActiveId !== targetFid.id) {
+        cProps.setFidActiveId(targetFid.id);
+      }
+      return;
+    }
+
+    // Transit time calculation: feed 2000 mm/min = ~33.3 mm/s + 700ms settle
+    const transitMs = Math.max(1000, Math.round((dist / 2000) * 60 * 1000) + 700);
+
+    // Lock servo while moving so it doesn't trigger false convergence during transit
+    isJoggingRef.current = true;
+    servoStateRef.current = { phase: 'transit', lockedAt: null };
     convergenceCountRef.current = 0;
     hasJoggedInCycleRef.current = false;
-    settleUntilRef.current = Date.now() + 2200; // ~2 s for machine to arrive and settle
+    settleUntilRef.current = Date.now() + transitMs;
+    saveBlockRef.current = Date.now() + transitMs + 500;
 
-    const cmds = moveAbs({ x: camX, y: camY, feed: 2000 });
-    // Cap Z acceleration before a large move to prevent sudden jerk on start.
-    // GRBL: $122 = Z-axis acceleration (mm/s²)
-    window.serial.writeLine('$122=500').catch(() => { });
-    window.serial.writeLine(fw.absMode).catch(() => { });
-    cmds.forEach(c => window.serial.writeLine(c).catch(() => { }));
-    // Restore Z acceleration after move is queued
-    window.serial.writeLine('$122=1000').catch(() => { });
+    if (cProps.setFidActiveId && cProps.fidActiveId !== targetFid.id) {
+      cProps.setFidActiveId(targetFid.id);
+    }
 
-    setAutoSearchStatus(`Moving to ${fidActiveId}…`);
-    setTimeout(() => setAutoSearchStatus(''), 2500);
+    setAutoSearchStatus(`Moving to ${targetFid.id} (${dist.toFixed(1)} mm)...`);
+    console.log(`[AutoNavigate] Moving to ${targetFid.id} at Machine(X${camX}, Y${camY}), dist: ${dist.toFixed(1)}mm, transit: ${transitMs}ms`);
+
+    try {
+      await window.serial.writeLine(fw.absMode);
+      await window.serial.writeLine(`G1 X${camX.toFixed(3)} Y${camY.toFixed(3)} F2000`);
+    } catch (err) {
+      console.error("[AutoNavigate] Move command failed:", err);
+      toast.error(`Move to ${targetFid.id} failed: ${err.message}`);
+    }
+
+    setTimeout(() => {
+      isJoggingRef.current = false;
+      servoStateRef.current = { phase: 'idle', lockedAt: null };
+      setAutoSearchStatus('');
+      if (window.serial?.writeLine) {
+        window.serial.writeLine(fw.statusQuery).catch(() => {});
+      }
+    }, transitMs);
+  };
+
+  useEffect(() => {
+    if (!fidActiveId) { setAutoSearchStatus(''); return; }
+    if (!detectionInterval) return; // only move automatically when detection is running
+    if (!window.serial?.writeLine) return;
+
+    const cProps = latestPropsRef.current;
+    const allSeq = getFullFiducialSequence(cProps);
+    const fid = allSeq.find(f => f.id === fidActiveId);
+    if (!fid || !fid.design) { setAutoSearchStatus(''); return; }
+
+    // If fiducial is already captured, do not re-move
+    if (fid.machine) return;
+
+    autoNavigateToFiducial(fid);
   }, [fidActiveId, detectionInterval, panelXf]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- OVERWRITE HELPER: update a specific slot by ID without advancing the arm dropdown ---
@@ -963,8 +1000,12 @@ export default function CameraPanel({
 
   // --- FIDUCIAL STORAGE HELPER ---
   // Takes a confirmed machine coordinate for a fiducial and saves it into the panelBoards state
-  const saveFiducialCoordinate = (estimatedWorld, confidence = 1.0) => {
+  const saveFiducialCoordinate = (rawCoord, confidence = 1.0) => {
     const cProps = latestPropsRef.current;
+    const estimatedWorld = {
+      x: parseFloat(Number(rawCoord.x).toFixed(3)),
+      y: parseFloat(Number(rawCoord.y).toFixed(3))
+    };
 
     // Correction mode: snap triggered a jog toward a specific slot — route there, not the armed slot.
     const corrTarget = correctionTargetRef.current;
@@ -993,23 +1034,42 @@ export default function CameraPanel({
       return;
     }
 
-    // RAIL ROUTING: if the operator has armed a rail fiducial, save there and return.
-    // This is the sole mechanism for routing camera-detected coords to the rail table vs
-    // the local table — the operator selects R1/R2 from the arm dropdown before detection.
+    // RAIL ROUTING: if the operator has armed a rail fiducial (or first empty rail fiducial exists), save there and return.
     const armedId = cProps.fidActiveId;
     const railFids = cProps.panelRailFiducials || [];
     const setRailFids = cProps.setPanelRailFiducials;
-    if (armedId && setRailFids) {
-      const armedRailIdx = railFids.findIndex(f => f.id === armedId);
-      if (armedRailIdx >= 0) {
-        setRailFids(railFids.map((f, i) =>
-          i === armedRailIdx ? { ...f, machine: estimatedWorld, autoDetected: true } : f
-        ));
-        saveBlockRef.current = Date.now() + 4000; // block detection 4s — operator must physically move to next fiducial
-        lastAutoSavedRef.current = { id: armedId, position: { ...estimatedWorld } };
-        cProps.onAdvanceArmedFid?.(armedId);
-        return;
+    const targetRail = armedId
+      ? railFids.find(f => f.id === armedId)
+      : (railFids.length > 0 ? railFids.find(f => !f.machine) : null);
+
+    if (targetRail && setRailFids) {
+      const updatedRailFids = railFids.map(f =>
+        f.id === targetRail.id ? { ...f, machine: estimatedWorld, autoDetected: true } : f
+      );
+      setRailFids(updatedRailFids);
+      lastAutoSavedRef.current = { id: targetRail.id, position: { ...estimatedWorld } };
+
+      // Determine next in sequence
+      const allSeq = getFullFiducialSequence({
+        ...cProps,
+        panelRailFiducials: updatedRailFids,
+      });
+      const savedIdx = allSeq.findIndex(f => f.id === targetRail.id);
+      const nextFid = savedIdx >= 0 ? allSeq.slice(savedIdx + 1).find(f => !f.machine) : null;
+
+      cProps.onAdvanceArmedFid?.(targetRail.id);
+
+      if (nextFid) {
+        console.log(`[AutoSequence] Rail fiducial ${targetRail.id} saved. Next target: ${nextFid.id}`);
+        if (autoMoveEnabled) {
+          setTimeout(() => {
+            autoNavigateToFiducial(nextFid, allSeq.filter(f => f.machine));
+          }, 600);
+        }
+      } else {
+        toast.success("🎉 All panel rail and board fiducials captured!");
       }
+      return;
     }
 
     const currentFids = cProps.fiducials || [];
@@ -1117,9 +1177,107 @@ export default function CameraPanel({
       updateCallback(nextFids);
     }
     if (savedFidId) {
-      saveBlockRef.current = Date.now() + 4000; // block detection 4s — operator must physically move to next fiducial
       lastAutoSavedRef.current = { id: savedFidId, position: { ...estimatedWorld } };
+
+      const allSeq = getFullFiducialSequence({
+        ...cProps,
+        panelBoards: nextBoards,
+        fiducials: nextFids,
+      });
+      const savedIdx = allSeq.findIndex(f => f.id === savedFidId);
+      const nextFid = savedIdx >= 0 ? allSeq.slice(savedIdx + 1).find(f => !f.machine) : null;
+
       cProps.onAdvanceArmedFid?.(savedFidId);
+
+      if (nextFid) {
+        console.log(`[AutoSequence] Board fiducial ${savedFidId} saved. Next target: ${nextFid.id}`);
+        if (autoMoveEnabled) {
+          setTimeout(() => {
+            autoNavigateToFiducial(nextFid, allSeq.filter(f => f.machine));
+          }, 600);
+        }
+      } else {
+        toast.success("🎉 All panel rail and board fiducials captured!");
+      }
+    }
+  };
+
+  const handleStartAutoAlignSequence = async () => {
+    const cProps = latestPropsRef.current;
+    const allSeq = getFullFiducialSequence(cProps);
+    if (allSeq.length === 0) {
+      toast.warning("No fiducials found in Gerber/PCB files.");
+      return;
+    }
+
+    // Find the first uncaptured fiducial (e.g. R1, or whichever is first)
+    const nextFid = allSeq.find(f => !f.machine) || allSeq[0];
+
+    // Ensure continuous detection is active so camera centers and converges automatically
+    if (!detectionInterval) {
+      startContinuousDetection();
+    }
+
+    toast.info(`Starting auto-alignment sequence at ${nextFid.id}...`);
+    await autoNavigateToFiducial(nextFid);
+  };
+
+  const handleManualCapturePosition = async () => {
+    if (window.serial?.writeLine) {
+      try {
+        await window.serial.writeLine('?');
+        await new Promise(r => setTimeout(r, 80));
+      } catch {}
+    }
+    const machPos = machinePositionRef.current || machinePosition || { x: 0, y: 0 };
+    const camOffset = cameraOffset || { dx: 0, dy: 0 };
+    const savedCoord = {
+      x: parseFloat((machPos.x + (camOffset.dx || 0)).toFixed(3)),
+      y: parseFloat((machPos.y + (camOffset.dy || 0)).toFixed(3))
+    };
+    saveFiducialCoordinate(savedCoord, 1.0);
+    toast.success(`Saved position X:${savedCoord.x.toFixed(3)}, Y:${savedCoord.y.toFixed(3)} for ${fidActiveId || 'fiducial'}`);
+  };
+
+  const handleClearFiducialMachine = (id) => {
+    if (!id) return;
+    const cProps = latestPropsRef.current;
+    const railFids = cProps.panelRailFiducials || [];
+    const isRail = railFids.some(f => f.id === id);
+    if (isRail && cProps.setPanelRailFiducials) {
+      cProps.setPanelRailFiducials(railFids.map(f => f.id === id ? { ...f, machine: null, autoDetected: false } : f));
+      toast.info(`Cleared machine coordinate for rail fiducial ${id}`);
+      return;
+    }
+    const pBoards = cProps.panelBoards;
+    const setPBoards = cProps.setPanelBoards;
+    const boardName = cProps.activeBoardName;
+    if (pBoards && setPBoards) {
+      const bIdx = Math.max(0, pBoards.findIndex(b => b.name === boardName));
+      if (pBoards[bIdx]) {
+        const newFids = pBoards[bIdx].fiducials.map(f => f.id === id ? { ...f, machine: null, autoDetected: false } : f);
+        setPBoards(pBoards.map((b, i) => i === bIdx ? { ...b, fiducials: newFids } : b));
+        toast.info(`Cleared machine coordinate for fiducial ${id}`);
+        return;
+      }
+    }
+    if (cProps.onUpdateFiducials) {
+      cProps.onUpdateFiducials((cProps.fiducials || []).map(f => f.id === id ? { ...f, machine: null, autoDetected: false } : f));
+      toast.info(`Cleared machine coordinate for fiducial ${id}`);
+    }
+  };
+
+  const handleJogToDesignPos = async (designCoord) => {
+    if (!designCoord || !window.serial?.writeLine) return;
+    try {
+      const camOff = cameraOffset || { dx: 0, dy: 0 };
+      const targetX = designCoord.x - (camOff.dx || 0);
+      const targetY = designCoord.y - (camOff.dy || 0);
+      await window.serial.writeLine(fw.absMode);
+      await window.serial.writeLine(`G1 X${targetX.toFixed(3)} Y${targetY.toFixed(3)} F2000`);
+      toast.info(`Moving machine head near design position (${designCoord.x.toFixed(2)}, ${designCoord.y.toFixed(2)})...`);
+    } catch (e) {
+      toast.error(`Failed to move: ${e.message}`);
     }
   };
 
@@ -1129,7 +1287,7 @@ export default function CameraPanel({
   const servoStateRef = useRef({ phase: 'idle', lockedAt: null });
   const settleUntilRef = useRef(0);     // suppress detection until this timestamp (ms)
   const isJoggingRef = useRef(false);    // lock flag to prevent duplicate / stacked jog commands
-  const SERVO_FEED = 800;           // mm/min jog speed
+  const SERVO_FEED = 450;           // mm/min jog speed (smooth 450 mm/min to eliminate jerking)
   const SERVO_SETTLE_MS = 1000;          // ms to wait after each jog before re-checking
   const CONVERGE_MM = 0.05;          // crosshair within 0.05mm → declare converged & save
   const TRULY_CENTRED_MM = 0.008;        // sub-pixel threshold — safe to skip jog requirement
@@ -1273,8 +1431,8 @@ export default function CameraPanel({
             console.log(`[PyServo] Near-zero offset (${dist.toFixed(4)}mm) but haven't jogged yet — micro-jogging to verify centring`);
           }
 
-          // Jog toward fiducial center. Coarse: faster + longer settle; Fine: normal.
-          const jogFeed = servoPhase === 'idle' ? SERVO_FEED * 1.5 : SERVO_FEED;
+          // Jog toward fiducial center (steady 450 mm/min to prevent jerking)
+          const jogFeed = SERVO_FEED;
 
           const moveTimeMs = (dist / (jogFeed / 60)) * 1000;
           const settleMs = Math.max(2500, Math.ceil(moveTimeMs + 2000));
@@ -1420,7 +1578,7 @@ export default function CameraPanel({
                 hasJoggedRef.current = { x: crosshairCoord.x, y: crosshairCoord.y }; // Lock immediately
 
                 const dist = Math.hypot(dx, dy);
-                const moveTimeMs = (dist / (800 / 60)) * 1000;
+                const moveTimeMs = (dist / (450 / 60)) * 1000;
                 const settleMs = Math.max(2500, Math.ceil(moveTimeMs + 2000));
                 settleUntilRef.current = Date.now() + settleMs;
                 isJoggingRef.current = true;
@@ -1434,7 +1592,7 @@ export default function CameraPanel({
 
                 try {
                   // Step 1: Move camera crosshair to exactly center on the fiducial
-                  const camCorrCmds = jogRel({ dx, dy, feed: 800 });
+                  const camCorrCmds = jogRel({ dx, dy, feed: 450 });
                   if (window.serial && window.serial.writeLine) {
                     for (const line of camCorrCmds) await window.serial.writeLine(line);
                     console.log(`[FiducialAlign] Camera is now perfectly centered on the fiducial.`);
@@ -1522,13 +1680,13 @@ export default function CameraPanel({
       }
 
       const dist = Math.hypot(dx, dy);
-      const moveTimeMs = (dist / (800 / 60)) * 1000;
+      const moveTimeMs = (dist / (450 / 60)) * 1000;
       const settleMs = Math.max(2500, Math.ceil(moveTimeMs + 2000));
       settleUntilRef.current = Date.now() + settleMs;
       isJoggingRef.current = true;
       setTimeout(() => { isJoggingRef.current = false; }, settleMs);
 
-      const cmds = jogRel({ dx, dy, feed: 800 });
+      const cmds = jogRel({ dx, dy, feed: 450 });
       if (window.serial?.writeLine) {
         for (const line of cmds) await window.serial.writeLine(line);
         console.log(`[SnapToFiducial] Jog sent — servo locked for ${settleMs}ms settlement.`);
@@ -1571,7 +1729,7 @@ export default function CameraPanel({
   const jogCameraToNozzle = async (offset) => {
     if (!offset || (offset.dx === 0 && offset.dy === 0)) return;
 
-    const cmds = jogRel({ dx: offset.dx, dy: offset.dy, feed: 1000 });
+    const cmds = jogRel({ dx: offset.dx, dy: offset.dy, feed: 450 });
 
     if (window.serial && window.serial.writeLine) {
       for (const cmd of cmds) {
@@ -1601,7 +1759,7 @@ export default function CameraPanel({
     setIsBusy(true);
     try {
       const dist = dir * jogStep;
-      const cmds = jogRel(axis === 'X' ? { dx: dist, feed: 1000 } : { dy: dist, feed: 1000 });
+      const cmds = jogRel(axis === 'X' ? { dx: dist, feed: 450 } : { dy: dist, feed: 450 });
       if (window.serial && window.serial.writeLine) {
         for (const line of cmds) await window.serial.writeLine(line);
       }
@@ -1672,34 +1830,221 @@ export default function CameraPanel({
           </label>
         </div> */}
 
-        <div className="fiducial-detection-section">
-          <h4>Automated Fiducial Detection</h4>
-          <div className="flex-row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-            <button
-              className={`btn ${detectionInterval ? 'primary' : ''}`}
-              onClick={startContinuousDetection}
-              disabled={!streamOn}
-            >
-              {detectionInterval ? 'Stop Auto-Detect' : '📷 Start Auto-Detect'}
-            </button>
-            <button className="btn sm secondary" onClick={clearAccumulatedFiducials} disabled={!fiducials.some(f => f.machine)}>
-              Clear
-            </button>
+        <div className="fiducial-detection-section" style={{ background: '#252830', padding: 12, borderRadius: 8, border: '1px solid #3c4049', marginTop: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
+            <h4 style={{ margin: 0, color: '#4fc3f7', display: 'flex', alignItems: 'center', gap: 6, fontSize: '1.05em' }}>
+              <span>🎯</span> Fiducial Detection & Gerber Comparison
+            </h4>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+              <button
+                className="btn primary"
+                onClick={handleStartAutoAlignSequence}
+                style={{ fontSize: '0.85em', padding: '5px 12px', fontWeight: 'bold', background: '#28a745', borderColor: '#28a745', display: 'flex', alignItems: 'center', gap: 6 }}
+                title="Automatically visit and detect each fiducial in sequence"
+              >
+                <span>▶</span> Auto-Align All Fiducials
+              </button>
+              <button
+                className={`btn ${detectionInterval ? 'primary' : ''}`}
+                onClick={startContinuousDetection}
+                disabled={!streamOn}
+                style={{ fontSize: '0.85em', padding: '4px 10px' }}
+              >
+                {detectionInterval ? '⏹ Stop Auto-Detect' : '📷 Start Auto-Detect'}
+              </button>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.82em', color: '#ccc', cursor: 'pointer', marginLeft: 6 }}>
+                <input
+                  type="checkbox"
+                  checked={autoMoveEnabled}
+                  onChange={e => setAutoMoveEnabled(e.target.checked)}
+                />
+                Auto-move to next fiducial
+              </label>
+              <button
+                className="btn sm secondary"
+                onClick={clearAccumulatedFiducials}
+                disabled={!fiducials.some(f => f.machine) && !(panelRailFiducials || []).some(f => f.machine)}
+                style={{ fontSize: '0.82em', marginLeft: 'auto' }}
+              >
+                Clear All
+              </button>
+            </div>
           </div>
 
-          {/* Auto-search status — shows while machine is travelling to the predicted fiducial position */}
+          {/* Auto-search status */}
           {autoSearchStatus && (
-            <div style={{ marginTop: 6, padding: '4px 10px', background: 'rgba(79,195,247,0.12)', border: '1px solid #4fc3f7', borderRadius: 4, fontSize: '0.82em', color: '#4fc3f7', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{ marginBottom: 10, padding: '4px 10px', background: 'rgba(79,195,247,0.15)', border: '1px solid #4fc3f7', borderRadius: 4, fontSize: '0.82em', color: '#4fc3f7', display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span>
               {autoSearchStatus}
             </div>
           )}
 
-          {!pythonMode && (
-            <small style={{ fontSize: '12px', color: '#6c757d' }}>
-              Start the camera and click 'Start Auto-Detect'. As you jog the machine, any fiducials seen by the camera will be instantly logged and saved to the active board automatically!
-            </small>
-          )}
+          {/* Active Target Fiducial & Comparative Metrics Card */}
+          {(() => {
+            const allAvailableFids = [
+              ...(panelRailFiducials || []).map(f => ({ ...f, _isRail: true })),
+              ...(fiducials || []).map(f => ({ ...f, _isRail: false }))
+            ];
+            const activeFid = allAvailableFids.find(f => f.id === fidActiveId) || allAvailableFids[0] || null;
+            const curMach = machinePositionRef.current || machinePosition || { x: 0, y: 0 };
+            const effectiveCur = {
+              x: parseFloat((curMach.x + (cameraOffset?.dx || 0)).toFixed(3)),
+              y: parseFloat((curMach.y + (cameraOffset?.dy || 0)).toFixed(3))
+            };
+
+            const desPos = activeFid?.design;
+            const machPos = activeFid?.machine;
+
+            // Real-time comparison with live head
+            const liveDx = desPos ? effectiveCur.x - desPos.x : null;
+            const liveDy = desPos ? effectiveCur.y - desPos.y : null;
+            const liveDist = desPos ? Math.hypot(liveDx, liveDy) : null;
+
+            // Saved comparison
+            const savedDx = (desPos && machPos) ? machPos.x - desPos.x : null;
+            const savedDy = (desPos && machPos) ? machPos.y - desPos.y : null;
+            const savedDist = (desPos && machPos) ? Math.hypot(savedDx, savedDy) : null;
+
+            return (
+              <div style={{ background: '#1c1f26', padding: 10, borderRadius: 6, border: '1px solid #333842' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ color: activeFid?._isRail ? '#ff9800' : '#4fc3f7', fontWeight: 'bold', fontSize: '0.95em' }}>
+                      Target: {activeFid ? `${activeFid.id} ${activeFid._isRail ? '(Panel Rail)' : '(Board)'}` : 'None'}
+                    </span>
+                    {machPos ? (
+                      <span style={{ background: '#2e7d32', color: '#fff', padding: '1px 8px', borderRadius: 10, fontSize: '0.75em', fontWeight: 600 }}>
+                        ✓ Captured at ({machPos.x.toFixed(3)}, {machPos.y.toFixed(3)})
+                      </span>
+                    ) : (
+                      <span style={{ background: '#b26a00', color: '#fff', padding: '1px 8px', borderRadius: 10, fontSize: '0.75em', fontWeight: 600 }}>
+                        ⏳ Not Yet Captured
+                      </span>
+                    )}
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: '0.8em', color: '#aaa' }}>Switch:</span>
+                    <select
+                      value={fidActiveId || ''}
+                      onChange={e => {
+                        const val = e.target.value || null;
+                        if (setFidActiveId) setFidActiveId(val);
+                      }}
+                      style={{ padding: '3px 8px', borderRadius: 4, background: '#2c313d', color: '#fff', border: '1px solid #555', fontSize: '0.85em' }}
+                    >
+                      <option value="">-- Select Target --</option>
+                      {panelRailFiducials && panelRailFiducials.length > 0 && (
+                        <optgroup label="Panel Rail Fiducials">
+                          {panelRailFiducials.map(f => (
+                            <option key={f.id} value={f.id}>{f.id} (Rail) {f.machine ? '✓' : ''}</option>
+                          ))}
+                        </optgroup>
+                      )}
+                      {fiducials && fiducials.length > 0 && (
+                        <optgroup label="Board Fiducials">
+                          {fiducials.map(f => (
+                            <option key={f.id} value={f.id}>{f.id} {f.machine ? '✓' : ''}</option>
+                          ))}
+                        </optgroup>
+                      )}
+                    </select>
+                  </div>
+                </div>
+
+                {/* 3 Metrics Cards */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 8, marginBottom: 10 }}>
+                  {/* 1. Gerber Design Coordinate */}
+                  <div style={{ background: '#262a34', padding: '8px 10px', borderRadius: 5, border: '1px solid #363d4a' }}>
+                    <div style={{ fontSize: '0.72em', color: '#aaa', textTransform: 'uppercase', marginBottom: 3, fontWeight: 600 }}>
+                      Gerber Design (SVG)
+                    </div>
+                    {desPos ? (
+                      <div style={{ fontFamily: 'monospace', fontSize: '0.9em', color: '#fff' }}>
+                        <div>X: <strong>{desPos.x.toFixed(3)}</strong> mm</div>
+                        <div>Y: <strong>{desPos.y.toFixed(3)}</strong> mm</div>
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: '0.8em', color: '#888', fontStyle: 'italic' }}>No design coordinate</div>
+                    )}
+                  </div>
+
+                  {/* 2. Machine Head Coordinate */}
+                  <div style={{ background: '#262a34', padding: '8px 10px', borderRadius: 5, border: '1px solid #363d4a' }}>
+                    <div style={{ fontSize: '0.72em', color: '#aaa', textTransform: 'uppercase', marginBottom: 3, fontWeight: 600, display: 'flex', justifyContent: 'space-between' }}>
+                      <span>Machine Head</span>
+                      <span style={{ color: '#4caf50' }}>● Origin (0,0)</span>
+                    </div>
+                    <div style={{ fontFamily: 'monospace', fontSize: '0.9em', color: '#4fc3f7' }}>
+                      <div>X: <strong>{curMach.x.toFixed(3)}</strong> mm</div>
+                      <div>Y: <strong>{curMach.y.toFixed(3)}</strong> mm</div>
+                    </div>
+                  </div>
+
+                  {/* 3. Comparison (ΔX, ΔY, Distance Offset) */}
+                  <div style={{ background: '#262a34', padding: '8px 10px', borderRadius: 5, border: machPos ? '1px solid #2e7d32' : '1px solid #363d4a' }}>
+                    <div style={{ fontSize: '0.72em', color: '#aaa', textTransform: 'uppercase', marginBottom: 3, fontWeight: 600 }}>
+                      {machPos ? 'Comparison (Captured)' : 'Live Delta (Jogging)'}
+                    </div>
+                    {machPos && desPos ? (
+                      <div style={{ fontFamily: 'monospace', fontSize: '0.88em' }}>
+                        <div style={{ color: Math.abs(savedDx) > 5 ? '#ff9800' : '#4caf50' }}>
+                          ΔX: {savedDx >= 0 ? `+${savedDx.toFixed(3)}` : savedDx.toFixed(3)} mm
+                        </div>
+                        <div style={{ color: Math.abs(savedDy) > 5 ? '#ff9800' : '#4caf50' }}>
+                          ΔY: {savedDy >= 0 ? `+${savedDy.toFixed(3)}` : savedDy.toFixed(3)} mm
+                        </div>
+                        <div style={{ color: '#aaa', fontSize: '0.82em', fontWeight: 600 }}>
+                          Offset: {savedDist.toFixed(3)} mm
+                        </div>
+                      </div>
+                    ) : desPos ? (
+                      <div style={{ fontFamily: 'monospace', fontSize: '0.88em', color: '#ccc' }}>
+                        <div>ΔX: {liveDx >= 0 ? `+${liveDx.toFixed(3)}` : liveDx.toFixed(3)} mm</div>
+                        <div>ΔY: {liveDy >= 0 ? `+${liveDy.toFixed(3)}` : liveDy.toFixed(3)} mm</div>
+                        <div style={{ color: '#888', fontSize: '0.82em' }}>Dist: {liveDist.toFixed(3)} mm</div>
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: '0.8em', color: '#888', fontStyle: 'italic' }}>Select a fiducial</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Buttons for Manual Head Capture, Move Near Design, and Clear */}
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <button
+                    className="btn"
+                    style={{ background: '#007bff', borderColor: '#007bff', fontWeight: 600, fontSize: '0.82em', display: 'flex', alignItems: 'center', gap: 6 }}
+                    onClick={handleManualCapturePosition}
+                    title="Save current machine head position from origin to this fiducial"
+                  >
+                    <span>📸</span> Save Current Head Pos to {activeFid?.id || 'Target'}
+                  </button>
+
+                  {activeFid && (
+                    <button
+                      className="btn secondary"
+                      style={{ fontSize: '0.82em', display: 'flex', alignItems: 'center', gap: 4 }}
+                      onClick={() => autoNavigateToFiducial(activeFid)}
+                      title="Move machine head to this fiducial using design/transform"
+                    >
+                      <span>🎯</span> Move to {activeFid.id}
+                    </button>
+                  )}
+
+                  {machPos && (
+                    <button
+                      className="btn secondary"
+                      style={{ fontSize: '0.82em', color: '#ff4d4f' }}
+                      onClick={() => handleClearFiducialMachine(activeFid?.id)}
+                    >
+                      Clear {activeFid?.id} Capture
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
         {/* Camera → Nozzle Offset */}
@@ -1820,7 +2165,7 @@ export default function CameraPanel({
                 if (Math.abs(dx) < 0.005 && Math.abs(dy) < 0.005) return;
 
                 const dist = Math.hypot(dx, dy);
-                const moveTimeMs = (dist / (1000 / 60)) * 1000;
+                const moveTimeMs = (dist / (450 / 60)) * 1000;
                 const settleMs = Math.max(2500, Math.ceil(moveTimeMs + 2000));
                 settleUntilRef.current = Date.now() + settleMs;
                 isJoggingRef.current = true;
@@ -1828,7 +2173,7 @@ export default function CameraPanel({
 
                 setIsBusy(true);
                 try {
-                  const cmds = jogRel({ dx, dy, feed: 1000 });
+                  const cmds = jogRel({ dx, dy, feed: 450 });
                   if (window.serial && window.serial.writeLine) {
                     for (const line of cmds) await window.serial.writeLine(line);
                     console.log(`[PythonClick] Jogged ΔX:${dx.toFixed(3)} ΔY:${dy.toFixed(3)} mm (settle ${settleMs}ms)`);
