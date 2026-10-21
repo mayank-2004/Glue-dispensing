@@ -11,8 +11,8 @@ export default function JogPanel({
     const toast = useToast();
     const jogRestoreRef = useRef(null); // debounce handle for G90 restore
     const [stepSize, setStepSize] = useState(10); // mm
-    const [xyFeedRate, setXyFeedRate] = useState(1000); // Matches Marlin XY Homing Speed
-    const [zFeedRate, setZFeedRate] = useState(100);    // Matches Marlin Z Homing Speed
+    const [xyFeedRate, setXyFeedRate] = useState(400); // Safe default XY feed rate (450 mm/min)
+    const [zFeedRate, setZFeedRate] = useState(60);    // Safe Z speed (60 mm/min)
     const [safeZ, setSafeZ] = useState(-5); // mm (Machine coordinate usually negative)
     const [isBusy, setIsBusy] = useState(false);
 
@@ -56,12 +56,14 @@ export default function JogPanel({
     const handleHomeClick = async () => {
         if (!isConnected) { toast.warning("Please connect to machine first!"); return; }
         if (isBusy) return;
-        if (!confirm(`Home all axes (${fw.home})? Ensure area is clear.`)) return;
+        if (!confirm("Home all axes? Ensure workspace is clear.")) return;
 
         setIsBusy(true);
         try {
-            if (window.serial?.writeLine) {
-                await window.serial.writeLine(fw.home); // '$H'
+            if (window._runAutoHomingSequence) {
+                await window._runAutoHomingSequence();
+            } else if (window.serial?.writeLine) {
+                await window.serial.writeLine(fw.home);
             }
         } catch (e) {
             console.error("Home failed:", e);

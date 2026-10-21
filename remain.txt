@@ -637,26 +637,6 @@ RAMPS / Marlin firmware
 
 
 
-
-Wiring — Arduino Mega Pins to 2DM556
-The simplest approach: use the same pin numbers that RAMPS uses so you don't need to change any Marlin pin configuration. Just wire those Arduino Mega pins directly to each 2DM556.
-
-Signal	             Arduino Mega Pin	           Wire to 2DM556
-X STEP	               Pin D22	                  PUL+ (via 1kΩ resistor)
-X DIR	                 Pin D24 	                  DIR+ (via 1kΩ resistor)
-X ENABLE	             Pin D26	                    ENA+ (via 1kΩ resistor)
-Y STEP	               Pin D28                    PUL+
-Y DIR	                 Pin D30	                    DIR+
-Y ENABLE	             Pin D32	                    ENA+
-Z STEP	               Pin D34	                    PUL+
-Z DIR	                 Pin D36                    DIR+
-Z ENABLE	             Pin D38                     ENA+
-X limit switch	       Pin D40	                  signal wire
-Y limit switch	       Pin D42	                  signal wire
-Z limit switch	       Pin D44	                  signal wire
-All PUL−, DIR−, ENA− → common GND (Arduino GND and power supply GND joined)
-
-
 Arduino Mega Pin 54 ──[1kΩ]── PUL+
 Arduino GND ──────────────── PUL−
                               2DM556
@@ -910,3 +890,128 @@ All we have to do is add this rule to the G-Code generator for the bottom side: 
 If your board is 100mm wide, and the raw pad is at 10 (from the right), the machine will calculate 100 - 10 = 90. The machine will drive to X=90 (from the left), and it will hit the pad perfectly!
 
 Does this match the behavior of your Gerber files? If so, we can easily add this math to the G-code generator.
+
+
+
+
+
+
+
+
+
+
+
+
+
+To proceed and get those 45% values into the app while keeping your hardware setup, you have three paths forward. You need to choose which one you are most comfortable with:
+
+Path 1: The Software Estimate (No hardware changes needed)
+Instead of asking GRBL to read a physical sensor, we let the React App (Pi Zero) calculate the math.
+
+How it works: You tell the app "The tank is 100% full." Every time the app sends the GRBL command to dispense a dot of paste, the app subtracts 0.5% from its own internal counter.
+Pros: You don't have to change any firmware or wiring. The UI gauges work perfectly and smoothly count down based on machine usage.
+Cons: It's an estimate. If the tank leaks while the machine is off, the app won't know.
+Path 2: Modify the GRBL Source Code (Custom Firmware)
+If you must have a physical analog sensor reading the actual tank, you have to edit the GRBL C++ code yourself before flashing it to your board.
+
+How it works: You open the GRBL source code (specifically report.c), and you write a few lines of C++ to read the analog voltage on pin A6/A7. You then modify the print statement to include that math in the status string, so GRBL outputs: <Idle|MPos:0,0,0|Flux:45>
+Pros: You get real, live hardware values through the USB cable.
+Cons: You are now maintaining a custom, hacked version of GRBL.
+Path 3: Wire the Sensor directly to the Pi Zero (Bypassing GRBL)
+Since you are using a Raspberry Pi Zero 2W as your main brain, you don't actually need GRBL to read the sensors!
+
+How it works: You wire the Flux analog sensor directly into the GPIO pins on the Raspberry Pi Zero (using a cheap I2C ADC chip, since the Pi has no native analog pins). You write a tiny Python script on the Pi that constantly reads the sensor and sends the 45% value straight into the React app.
+Pros: Standard GRBL is left completely alone to handle motion. The Pi Zero handles the complex sensor math perfectly.
+Cons: Requires a tiny bit of extra wiring to the Pi Zero's header pins.
+
+
+
+
+
+
+
+
+
+
+Here is exactly how the physical machine will dispense the flux with this new setup. It splits the work into a very clean "Division of Labor" between your boards:
+
+1. The Action (Controlled by the Main Board)
+Because the G-code (M3 S255 M8) is executed by your Main GRBL Board, the Flux pump's electrical relay must be wired directly to the Coolant Pin on the Main Board.
+
+The machine drives the head to a pad.
+It executes M3 S255 M8. The Main board fires the Spindle pin (Glue) and the Coolant pin (Flux) at the exact same millisecond.
+It waits for the specified dwell time (e.g., 150ms).
+It executes M5 M9. The Main board shuts both pins off simultaneously.
+2. The Monitoring (Controlled by the Secondary Board)
+Because the Main Board is too busy moving motors, it doesn't have time to weigh the flux. That is what your Secondary Flux Board is for!
+
+The Secondary Board is wired only to the HX711 load cell (the weighing scale) under the flux tank.
+It constantly reads the scale and streams [MSG: FLUX_WEIGHT:150.5] back to the Raspberry Pi over USB.
+Summary:
+Main Board: Pulls the trigger (Moves motors, fires Glue, fires Flux).
+Secondary Board: Watches the fuel gauge (Weighs the tank and updates the app).
+
+
+
+
+
+
+
+
+
+
+
+
+
+$0=10
+$1=255
+$2=0
+$3=7
+$4=0
+$5=1
+$6=0
+$10=1
+$11=0.010
+$12=0.002
+$13=0
+$20=0
+$21=0
+$22=1
+$23=7
+$24=25.000
+$25=200.000
+$26=250
+$27=5.000
+$30=255
+$31=0
+$32=0
+$100=40.000
+$101=40.000
+$102=110.000
+$110=3000.000
+$111=3000.000
+$112=3000.000
+$120=500.000
+$121=500.000
+$122=1000.000
+$130=2000.000
+$131=2000.000
+$132=270.000
+
+
+
+
+
+Forced the system_control_get_state() to return 0 and disabling system_init(), the Arduino will permanently ignore any noise on the A8-A11 pins.
+
+
+
+
+
+
+
+
+
+
+capacitor - to connect at GND
+resistor - to connect at 5V

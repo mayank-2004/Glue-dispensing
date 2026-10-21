@@ -23,21 +23,21 @@ function LevelGauge({ pct, state }) {
 
 function StateBadge({ state }) {
   const labels = {
-    [FLUX_LEVEL.NORMAL]:            "NORMAL",
-    [FLUX_LEVEL.LOW]:               "LOW",
-    [FLUX_LEVEL.EMPTY]:             "EMPTY",
-    [FLUX_LEVEL.REFILL_REQUIRED]:   "REFILL REQUIRED",
+    [FLUX_LEVEL.NORMAL]: "NORMAL",
+    [FLUX_LEVEL.LOW]: "LOW",
+    [FLUX_LEVEL.EMPTY]: "EMPTY",
+    [FLUX_LEVEL.REFILL_REQUIRED]: "REFILL REQUIRED",
     [FLUX_LEVEL.CLEANING_REQUIRED]: "CLEAN DUE",
-    [FLUX_LEVEL.UNKNOWN]:           "UNKNOWN",
+    [FLUX_LEVEL.UNKNOWN]: "UNKNOWN",
   };
   return <span className={`flux-state-badge ${state}`}>{labels[state] ?? state}</span>;
 }
 
 function ActivityBadge({ dispenseState, cleanState }) {
-  if (cleanState === CLEAN_STATE.RUNNING)         return <span className="flux-activity-badge CLEANING">⟳ Cleaning…</span>;
-  if (dispenseState === DISPENSE_STATE.DISPENSING)return <span className="flux-activity-badge DISPENSING">● Dispensing</span>;
-  if (dispenseState === DISPENSE_STATE.CLEANING)  return <span className="flux-activity-badge CLEANING">⟳ Cleaning…</span>;
-  if (dispenseState === DISPENSE_STATE.PAUSED)    return <span className="flux-activity-badge PAUSED">⏸ Paused</span>;
+  if (cleanState === CLEAN_STATE.RUNNING) return <span className="flux-activity-badge CLEANING">⟳ Cleaning…</span>;
+  if (dispenseState === DISPENSE_STATE.DISPENSING) return <span className="flux-activity-badge DISPENSING">● Dispensing</span>;
+  if (dispenseState === DISPENSE_STATE.CLEANING) return <span className="flux-activity-badge CLEANING">⟳ Cleaning…</span>;
+  if (dispenseState === DISPENSE_STATE.PAUSED) return <span className="flux-activity-badge PAUSED">⏸ Paused</span>;
   return <span className="flux-activity-badge IDLE">○ Idle</span>;
 }
 
@@ -154,46 +154,44 @@ export default memo(function FluxPanel({ fluxManager }) {
       <div className="flux-section">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: showConfig ? 12 : 0 }}>
           <h4 style={{ margin: 0 }}>Configuration (Load Cell)</h4>
-          <button className="btn sm secondary" onClick={() => setShowConfig(s => !s)}>
+          {/* <button className="btn sm secondary" onClick={() => setShowConfig(s => !s)}>
             {showConfig ? "Hide" : "Show Settings"}
-          </button>
+          </button> */}
         </div>
-        {showConfig && (
-          <div className="flux-config-grid">
-            <div className="flux-config-item">
-              <label>Empty (Tare) Weight (g)</label>
-              <input
-                type="number" min={0} max={5000}
-                value={emptyWeight}
-                onChange={e => setConfig("emptyWeight", Number(e.target.value))}
-              />
-            </div>
-            <div className="flux-config-item">
-              <label>Full Weight (g)</label>
-              <input
-                type="number" min={0} max={5000}
-                value={fullWeight}
-                onChange={e => setConfig("fullWeight", Number(e.target.value))}
-              />
-            </div>
-            <div className="flux-config-item">
-              <label>Low level threshold (%)</label>
-              <input
-                type="number" min={5} max={50}
-                value={lowThresholdPct}
-                onChange={e => setConfig("lowThresholdPct", Number(e.target.value))}
-              />
-            </div>
-            <div className="flux-config-item">
-              <label>Clean cycle interval (dispenses)</label>
-              <input
-                type="number" min={1} max={500}
-                value={cleanAfterCycles}
-                onChange={e => setConfig("cleanAfterCycles", Number(e.target.value))}
-              />
-            </div>
+        <div className="flux-config-grid" style={{marginTop: 15}}>
+          <div className="flux-config-item">
+            <label>Empty (Tare) Weight (g)</label>
+            <input
+              type="number" min={0} max={5000}
+              value={emptyWeight}
+              onChange={e => setConfig("emptyWeight", Number(e.target.value))}
+            />
           </div>
-        )}
+          <div className="flux-config-item">
+            <label>Full Weight (g)</label>
+            <input
+              type="number" min={0} max={5000}
+              value={fullWeight}
+              onChange={e => setConfig("fullWeight", Number(e.target.value))}
+            />
+          </div>
+          <div className="flux-config-item">
+            <label>Low level threshold (%)</label>
+            <input
+              type="number" min={5} max={50}
+              value={lowThresholdPct}
+              onChange={e => setConfig("lowThresholdPct", Number(e.target.value))}
+            />
+          </div>
+          <div className="flux-config-item">
+            <label>Clean cycle interval (dispenses)</label>
+            <input
+              type="number" min={1} max={500}
+              value={cleanAfterCycles}
+              onChange={e => setConfig("cleanAfterCycles", Number(e.target.value))}
+            />
+          </div>
+        </div>
       </div>
 
       {/* ── Instructions ── */}

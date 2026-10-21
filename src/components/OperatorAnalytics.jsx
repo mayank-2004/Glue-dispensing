@@ -1,14 +1,27 @@
 import React from 'react';
 import './OperatorAnalytics.css';
 
-export default function OperatorAnalytics({ jobStatistics, operationReport, onOpen }) {
+export default function OperatorAnalytics({ jobStatistics, operationReport, jobHistory = [], onOpen }) {
   const stats = jobStatistics || {};
   const totalPads = Number(stats.totalPads || 0);
   const distance = Number(stats.totalDistance || 0);
   const average = Number(stats.averageDistance || 0);
   const estimated = Number(stats.estimatedTime || 0);
   const hasData = Boolean(jobStatistics);
-  // const bars = [42, 68, 51, 84, 63, 76, hasData ? 92 : 34];
+
+  // Take up to the last 7 runs from our database
+  const recentRuns = jobHistory.slice(-7);
+  const maxDuration = Math.max(10, ...recentRuns.map(r => parseFloat(r.jobDurationSec) || 0));
+  const bars = Array.from({ length: 7 }).map((_, i) => {
+    const runIndex = recentRuns.length - 7 + i;
+    if (runIndex < 0) return null;
+    const run = recentRuns[runIndex];
+    return {
+      label: `R${jobHistory.length - recentRuns.length + runIndex + 1}`,
+      duration: parseFloat(run.jobDurationSec) || 0,
+      height: Math.max(5, ((parseFloat(run.jobDurationSec) || 0) / maxDuration) * 100)
+    };
+  });
 
   return (
     <section className="operator-analytics">
@@ -49,21 +62,14 @@ export default function OperatorAnalytics({ jobStatistics, operationReport, onOp
             <span className="section-live">LAST 7 RUN WINDOWS</span>
           </div>
           <div className="analytics-bars">
-              <div className="analytics-bar-column"><div className="analytics-bar" style={{ height: '40%' }}></div><div className="bar-label">R1</div></div>
-              <div className="analytics-bar-column"><div className="analytics-bar" style={{ height: '60%' }}></div><div className="bar-label">R2</div></div>
-              <div className="analytics-bar-column"><div className="analytics-bar" style={{ height: '45%' }}></div><div className="bar-label">R3</div></div>
-              <div className="analytics-bar-column"><div className="analytics-bar" style={{ height: '80%' }}></div><div className="bar-label">R4</div></div>
-              <div className="analytics-bar-column"><div className="analytics-bar" style={{ height: '55%' }}></div><div className="bar-label">R5</div></div>
-              <div className="analytics-bar-column"><div className="analytics-bar" style={{ height: '70%' }}></div><div className="bar-label">R6</div></div>
-              <div className="analytics-bar-column"><div className="analytics-bar" style={{ height: '30%' }}></div><div className="bar-label">R7</div></div>
-            </div> */}
-          {/* <div className="analytics-bars">
-            {bars.map((height, index) => <div className="analytics-bar-column" key={index}>
-              <div className="analytics-bar" style={{ height: `${height}%` }} />
-              <small>R{index + 1}</small>
-            </div>)}
-          </div> */}
-        {/* </div> */}
+            {bars.map((bar, index) => (
+              <div className="analytics-bar-column" key={index} title={bar ? `${bar.duration}s` : 'No run'}>
+                <div className="analytics-bar" style={{ height: bar ? `${bar.height}%` : '5%', opacity: bar ? 1 : 0.2 }}></div>
+                <div className="bar-label">{bar ? bar.label : '-'}</div>
+              </div>
+            ))}
+          </div>
+        </div>
         <div className="operator-section analytics-breakdown">
           <div className="operator-section-heading">
             <span>JOB BREAKDOWN</span>

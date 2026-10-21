@@ -1,4 +1,4 @@
-﻿/**
+/**
  * grblCommands.js
  * ───────────────
  * Single source of truth for all GRBL firmware commands used in this app.
@@ -53,10 +53,10 @@ export const fw = {
   accelZ:         (mmS2)  => `$122=${mmS2}`,
 
   // ── Dispenser / valve output ─────────────────────────────────────────────
-  /** Turn ON the dispenser/valve. Duty 0-255 via S parameter. */
-  dispenserOn:    (duty = 255) => `M106 S${Math.min(255, Math.max(0, Math.round(duty)))}`,
-  /** Turn OFF the dispenser/valve output. */
-  dispenserOff:   'M107',
+  /** Turn ON the dispenser/valve (Glue = M3) AND Flux (M8) simultaneously. */
+  dispenserOn:    (duty = 255) => `M3 S${Math.min(255, Math.max(0, Math.round(duty)))} M8`,
+  /** Turn OFF the dispenser/valve (Glue = M5) AND Flux (M9) simultaneously. */
+  dispenserOff:   'M5 M9',
 
   // ── Probe ────────────────────────────────────────────────────────────────
   /**
@@ -115,15 +115,67 @@ export function isGrblBoot(line) {
  * Example: <Idle|MPos:10.000,20.000,-5.000|FS:0,0|Pn:Z>
  * Returns { state, x, y, z, probeTriggered } or null.
  */
+let currentWco = { x: 0, y: 0, z: 0 };
+let lastRawMPos = { x: 0, y: 0, z: 0 };
+
+export function setOriginToCurrent() {
+  currentWco = { ...lastRawMPos };
+}
+
+export function getCurrentWco() {
+  return { ...currentWco };
+}
+
 export function parseGrblStatus(line) {
-  const m = line.match(/<([^|>]+)\|MPos:([-\d.]+),([-\d.]+),([-\d.]+)/);
+  // Support parsing [G54:x,y,z] parameter report
+  const g54Match = line.match(/\[G54:([-\d.]+),([-\d.]+),([-\d.]+)/);
+  if (g54Match) {
+    currentWco = {
+      x: parseFloat(g54Match[1]),
+      y: parseFloat(g54Match[2]),
+      z: parseFloat(g54Match[3]),
+    };
+  }
+
+  const m = line.match(/<([^|>]+)\|(MPos|WPos):([-\d.]+),([-\d.]+),([-\d.]+)/);
   if (!m) return null;
+
+  const coordType = m[2]; // "MPos" or "WPos"
+  let x = parseFloat(m[3]);
+  let y = parseFloat(m[4]);
+  let z = parseFloat(m[5]);
+
+  if (coordType === 'MPos') {
+    lastRawMPos = { x, y, z };
+  }
+
+  const wcoMatch = line.match(/\|WCO:([-\d.]+),([-\d.]+),([-\d.]+)/);
+  if (wcoMatch) {
+    currentWco = {
+      x: parseFloat(wcoMatch[1]),
+      y: parseFloat(wcoMatch[2]),
+      z: parseFloat(wcoMatch[3]),
+    };
+  }
+
+  // Convert MPos to WPos (Work Position) for display
+  if (coordType === 'MPos') {
+    x = x - currentWco.x;
+    y = y - currentWco.y;
+    z = z - currentWco.z;
+  }
+
+  const pn = line.match(/\|Pn:([A-Za-z]+)/);
+  const pinStr = pn ? pn[1] : (line.includes('Pn:') ? line.split('Pn:')[1].split('|')[0] : '');
   return {
     state:          m[1],
-    x:              parseFloat(m[2]),
-    y:              parseFloat(m[3]),
-    z:              parseFloat(m[4]),
-    probeTriggered: line.includes('Pn:Z'),
+    x,
+    y,
+    z,
+    xTriggered:     pinStr.includes('X'),
+    yTriggered:     pinStr.includes('Y'),
+    zTriggered:     pinStr.includes('Z'),
+    probeTriggered: pinStr.includes('Z'),
   };
 }
 

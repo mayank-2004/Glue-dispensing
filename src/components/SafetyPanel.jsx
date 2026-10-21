@@ -102,7 +102,7 @@ export default function SafetyPanel({ safetySystem }) {
         ) : (
           <div className="fault-list">
             {activeFaults.map(fault => (
-              <div key={fault.id || fault.code} className="fault-item">
+              <div key={fault.uid || fault.id || `${fault.code}-${fault.timestamp}`} className="fault-item">
                 <div className="fault-info-stack">
                   <div className="fault-code-title">
                     {fault.code} - {fault.level || 'EMERGENCY'}
@@ -135,8 +135,8 @@ export default function SafetyPanel({ safetySystem }) {
             {history.length === 0 ? (
               <tr><td colSpan="4" style={{ textAlign: 'center', color: '#8b949e', fontStyle: 'italic', padding: '16px' }}>No fault history.</td></tr>
             ) : (
-              history.map((item, i) => (
-                <tr key={i}>
+              history.map((item) => (
+                <tr key={item.uid || item.id || `${item.code}-${item.timestamp}`}>
                   <td>{formatTime(item.timestamp)}</td>
                   <td>{item.code}</td>
                   <td>{item.message}</td>

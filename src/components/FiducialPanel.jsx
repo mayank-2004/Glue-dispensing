@@ -194,41 +194,65 @@ export default function FiducialPanel({
             <th>Fiducial</th>
             <th>Design (mm)</th>
             <th>Machine (mm)</th>
+            <th>Comparison (Δ / Offset)</th>
             <th />
           </tr>
         </thead>
         <tbody>
-          {fiducials.map(f => (
-            <tr key={f.id}>
-              <td>
-                <span style={{ display: "inline-block", width: 10, height: 10, background: f.color, borderRadius: 4, marginRight: 6 }} />
-                <strong>{f.id}</strong>{activeId === f.id ? " (armed)" : ""}
-                {f.confidence && <span style={{ fontSize: '0.8em', color: '#666' }}> ({Math.round(f.confidence * 100)}%)</span>}
-              </td>
-              <td>
-                {f.design ? `X ${f.design.x}, Y ${f.design.y}` : <em>— click/drag on PCB —</em>}
-              </td>
-              <td>
-                <div className="flex-row" style={{ gap: 6, alignItems: 'center' }}>
-                  <input className="in sm" placeholder="Mx"
-                    value={f.machine?.x ?? ""} onChange={(e) => onInputMachine(f.id, { x: parseFloat(e.target.value), y: f.machine?.y })} />
-                  <input className="in sm" placeholder="My"
-                    value={f.machine?.y ?? ""} onChange={(e) => onInputMachine(f.id, { x: f.machine?.x, y: parseFloat(e.target.value) })} />
-                  {f.machine && onClearMachine && (
-                    <button 
-                      className="btn icon-btn" 
-                      style={{ padding: '0px 6px', fontSize: '16px', background: 'transparent', border: 'none', color: '#ff4d4f', cursor: 'pointer', lineHeight: 1 }}
-                      title="Clear Machine Coordinates" 
-                      onClick={() => onClearMachine(f.id)}
-                    >
-                      ×
-                    </button>
+          {fiducials.map(f => {
+            const hasBoth = f.design && f.machine && typeof f.machine.x === 'number' && typeof f.machine.y === 'number';
+            const dx = hasBoth ? (f.machine.x - f.design.x) : null;
+            const dy = hasBoth ? (f.machine.y - f.design.y) : null;
+            const dist = hasBoth ? Math.hypot(dx, dy) : null;
+            return (
+              <tr key={f.id}>
+                <td>
+                  <span style={{ display: "inline-block", width: 10, height: 10, background: f.color, borderRadius: 4, marginRight: 6 }} />
+                  <strong>{f.id}</strong>{activeId === f.id ? " (armed)" : ""}
+                  {f.confidence && <span style={{ fontSize: '0.8em', color: '#666' }}> ({Math.round(f.confidence * 100)}%)</span>}
+                </td>
+                <td style={{ fontSize: '0.85em' }}>
+                  {f.design ? `X ${f.design.x.toFixed(3)}, Y ${f.design.y.toFixed(3)}` : <em>— click/drag on PCB —</em>}
+                </td>
+                <td>
+                  <div className="flex-row" style={{ gap: 6, alignItems: 'center' }}>
+                    <input className="in sm" placeholder="Mx"
+                      value={f.machine?.x ?? ""} onChange={(e) => onInputMachine(f.id, { x: parseFloat(e.target.value), y: f.machine?.y })} />
+                    <input className="in sm" placeholder="My"
+                      value={f.machine?.y ?? ""} onChange={(e) => onInputMachine(f.id, { x: f.machine?.x, y: parseFloat(e.target.value) })} />
+                    {f.machine && onClearMachine && (
+                      <button 
+                        className="btn icon-btn" 
+                        style={{ padding: '0px 6px', fontSize: '16px', background: 'transparent', border: 'none', color: '#ff4d4f', cursor: 'pointer', lineHeight: 1 }}
+                        title="Clear Machine Coordinates" 
+                        onClick={() => onClearMachine(f.id)}
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                </td>
+                <td style={{ fontSize: '0.85em' }}>
+                  {hasBoth ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <span style={{ fontFamily: 'monospace', color: Math.abs(dx) > 5 ? '#ff9800' : '#4caf50' }}>
+                        ΔX: {dx >= 0 ? `+${dx.toFixed(3)}` : dx.toFixed(3)} mm
+                      </span>
+                      <span style={{ fontFamily: 'monospace', color: Math.abs(dy) > 5 ? '#ff9800' : '#4caf50' }}>
+                        ΔY: {dy >= 0 ? `+${dy.toFixed(3)}` : dy.toFixed(3)} mm
+                      </span>
+                      <span style={{ fontSize: '0.8em', color: '#888', fontWeight: 600 }}>
+                        Offset: {dist.toFixed(3)} mm
+                      </span>
+                    </div>
+                  ) : (
+                    <span style={{ color: '#aaa', fontStyle: 'italic' }}>Pending capture</span>
                   )}
-                </div>
-              </td>
-              <td><button className="btn secondary" onClick={() => onClearOne(f.id)}>Clear</button></td>  
-            </tr>
-          ))}
+                </td>
+                <td><button className="btn secondary" onClick={() => onClearOne(f.id)}>Clear</button></td>  
+              </tr>
+            );
+          })}
         </tbody>
       </table>
 
@@ -281,41 +305,66 @@ export default function FiducialPanel({
                     <th>Rail Fid</th>
                     <th>Design (mm)</th>
                     <th>Machine (mm)</th>
+                    <th>Comparison (Δ / Offset)</th>
                     <th />
                   </tr>
                 </thead>
                 <tbody>
-                  {panelRailFiducials.map((f, idx) => (
-                    <tr key={f.id}>
-                      <td>
-                        <span style={{ display: 'inline-block', width: 10, height: 10, background: f.color || '#ff9800', borderRadius: 2, marginRight: 6, transform: 'rotate(45deg)' }} />
-                        <strong style={{ color: '#ff9800' }}>{f.id}</strong>
-                      </td>
-                      <td style={{ fontSize: '0.85em' }}>
-                        {f.design ? `X ${f.design.x.toFixed(3)}, Y ${f.design.y.toFixed(3)}` : <em style={{ color: '#aaa' }}>— not set —</em>}
-                      </td>
-                      <td>
-                        <div className="flex-row" style={{ gap: 6, alignItems: 'center' }}>
-                          <input className="in sm" placeholder="Mx"
-                            value={f.machine?.x ?? ''}
-                            onChange={e => setPanelRailFiducials(prev => prev.map((r, i) => i === idx ? { ...r, machine: { x: parseFloat(e.target.value), y: r.machine?.y } } : r))}
-                          />
-                          <input className="in sm" placeholder="My"
-                            value={f.machine?.y ?? ''}
-                            onChange={e => setPanelRailFiducials(prev => prev.map((r, i) => i === idx ? { ...r, machine: { x: r.machine?.x, y: parseFloat(e.target.value) } } : r))}
-                          />
-                          {f.machine && (
-                            <button className="btn icon-btn" style={{ padding: '0 6px', fontSize: 16, background: 'transparent', border: 'none', color: '#ff4d4f', cursor: 'pointer' }}
-                              onClick={() => setPanelRailFiducials(prev => prev.map((r, i) => i === idx ? { ...r, machine: null } : r))}>×</button>
+                  {panelRailFiducials.map((f, idx) => {
+                    const hasBoth = f.design && f.machine && typeof f.machine.x === 'number' && typeof f.machine.y === 'number';
+                    const dx = hasBoth ? (f.machine.x - f.design.x) : null;
+                    const dy = hasBoth ? (f.machine.y - f.design.y) : null;
+                    const dist = hasBoth ? Math.hypot(dx, dy) : null;
+                    return (
+                      <tr key={f.id}>
+                        <td>
+                          <span style={{ display: 'inline-block', width: 10, height: 10, background: f.color || '#ff9800', borderRadius: 2, marginRight: 6, transform: 'rotate(45deg)' }} />
+                          <strong style={{ color: '#ff9800' }}>{f.id}</strong>
+                          {activeId === f.id && <span style={{ marginLeft: 4, color: '#4fc3f7', fontSize: '0.8em' }}>(armed)</span>}
+                        </td>
+                        <td style={{ fontSize: '0.85em' }}>
+                          {f.design ? `X ${f.design.x.toFixed(3)}, Y ${f.design.y.toFixed(3)}` : <em style={{ color: '#aaa' }}>— not set —</em>}
+                        </td>
+                        <td>
+                          <div className="flex-row" style={{ gap: 6, alignItems: 'center' }}>
+                            <input className="in sm" placeholder="Mx"
+                              value={f.machine?.x ?? ''}
+                              onChange={e => setPanelRailFiducials(prev => prev.map((r, i) => i === idx ? { ...r, machine: { x: parseFloat(e.target.value), y: r.machine?.y } } : r))}
+                            />
+                            <input className="in sm" placeholder="My"
+                              value={f.machine?.y ?? ''}
+                              onChange={e => setPanelRailFiducials(prev => prev.map((r, i) => i === idx ? { ...r, machine: { x: r.machine?.x, y: parseFloat(e.target.value) } } : r))}
+                            />
+                            {f.machine && (
+                              <button className="btn icon-btn" style={{ padding: '0 6px', fontSize: 16, background: 'transparent', border: 'none', color: '#ff4d4f', cursor: 'pointer' }}
+                                onClick={() => setPanelRailFiducials(prev => prev.map((r, i) => i === idx ? { ...r, machine: null } : r))}>×</button>
+                            )}
+                          </div>
+                        </td>
+                        <td style={{ fontSize: '0.85em' }}>
+                          {hasBoth ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                              <span style={{ fontFamily: 'monospace', color: Math.abs(dx) > 5 ? '#ff9800' : '#4caf50' }}>
+                                ΔX: {dx >= 0 ? `+${dx.toFixed(3)}` : dx.toFixed(3)} mm
+                              </span>
+                              <span style={{ fontFamily: 'monospace', color: Math.abs(dy) > 5 ? '#ff9800' : '#4caf50' }}>
+                                ΔY: {dy >= 0 ? `+${dy.toFixed(3)}` : dy.toFixed(3)} mm
+                              </span>
+                              <span style={{ fontSize: '0.8em', color: '#888', fontWeight: 600 }}>
+                                Offset: {dist.toFixed(3)} mm
+                              </span>
+                            </div>
+                          ) : (
+                            <span style={{ color: '#aaa', fontStyle: 'italic' }}>Pending capture</span>
                           )}
-                        </div>
-                      </td>
-                      <td>
-                        <button className="btn secondary" style={{ fontSize: '0.8em' }}
-                          onClick={() => setPanelRailFiducials(prev => prev.filter((_, i) => i !== idx))}>✕</button>
-                      </td>
-                    </tr>
-                  ))}
+                        </td>
+                        <td>
+                          <button className="btn secondary" style={{ fontSize: '0.8em' }}
+                            onClick={() => setPanelRailFiducials(prev => prev.filter((_, i) => i !== idx))}>✕</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
 

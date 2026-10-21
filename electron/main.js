@@ -322,6 +322,15 @@ ipcMain.handle('serial:close', async () => {
   return true;
 });
 
+ipcMain.handle('serial:write', async (e, data) => {
+  if (!serial.port) throw new Error('Not connected');
+  return new Promise((resolve, reject) => {
+    serial.port.write(data, (err) => {
+      if (err) reject(err); else resolve(true);
+    });
+  });
+});
+
 ipcMain.handle('serial:writeLine', async (e, line) => {
   if (!serial.port) throw new Error('Not connected');
   const sanitized = String(line).trim();
