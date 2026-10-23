@@ -199,7 +199,7 @@ export default function SerialPanel({
     isHomingAbortRef.current = true;
     try {
       if (window.serial?.write) await window.serial.write('\x18');
-      await window.serial.writeLine('\x18');
+      else await window.serial.writeLine('\x18');
       await new Promise(r => setTimeout(r, 200));
       await window.serial.writeLine(fw.unlock);
     } catch {}
@@ -217,6 +217,28 @@ export default function SerialPanel({
     isHomingAbortRef.current = false;
     setIsHoming(true);
     setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} Starting Guided 3-Axis Auto-Homing (Z -> X -> Y)...`].slice(-500));
+
+    // Helper: waits for the physical duration of a move + verifies GRBL reports 'Idle'
+    const waitForMotionComplete = async (distMm, feedMmMin = 400, maxWaitMs = 15000) => {
+      // 1. Mandatory wait for the physical travel time (motors cannot move faster than physics!)
+      const moveDurationMs = Math.ceil((distMm / (feedMmMin / 60)) * 1000) + 600;
+      await new Promise(r => setTimeout(r, moveDurationMs));
+
+      // 2. Invalidate status so a stale 'Idle' from before the move cannot cause premature return
+      latestGrblStatusRef.current.state = 'Busy';
+
+      // 3. Poll '?' until GRBL explicitly returns 'Idle'
+      const start = Date.now();
+      while (Date.now() - start < maxWaitMs) {
+        if (isHomingAbortRef.current) throw new Error("Homing cancelled by operator");
+        if (!isConnectedRef.current) throw new Error("Disconnected during homing");
+        if (window.serial?.write) await window.serial.write('?');
+        else await window.serial.writeLine('?');
+        await new Promise(r => setTimeout(r, 120));
+        if (latestGrblStatusRef.current.state === 'Idle') return true;
+      }
+      return true;
+    };
 
     try {
       // 0. Ensure machine is unlocked from any previous alarm
@@ -238,15 +260,16 @@ export default function SerialPanel({
       homingHitDetectedRef.current = false;
       activeHomingAxisRef.current = null;
 
-      await window.serial.writeLine(fw.statusQuery);
+      if (window.serial?.write) await window.serial.write('?');
+      else await window.serial.writeLine('?');
       await new Promise(r => setTimeout(r, 200));
 
       if (!latestGrblStatusRef.current.zTriggered) {
-        setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} Moving Z down towards limit switch at 300 mm/min...`].slice(-500));
+        setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} Moving Z down towards limit switch at 400 mm/min...`].slice(-500));
         activeHomingAxisRef.current = 'Z';
         homingHitDetectedRef.current = false;
         latestGrblStatusRef.current.zTriggered = false;
-        await window.serial.writeLine('$J=G91 G21 Z-300 F300');
+        await window.serial.writeLine('$J=G91 Z-300 F400');
         await new Promise(r => setTimeout(r, 120));
 
         const startTimeZ = Date.now();
@@ -267,10 +290,10 @@ export default function SerialPanel({
         activeHomingAxisRef.current = null;
         if (!hitZ) throw new Error("Z limit switch not reached within 120s search time");
 
-        // HARD HALT: Kill motor immediately with Soft Reset (\x18)
+        // HARD HALT: Kill motor immediately with single Soft Reset (\x18)
         setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} Z limit switch hit! Halting motion instantly via Soft Reset...`].slice(-500));
         if (window.serial?.write) await window.serial.write('\x18');
-        await window.serial.writeLine('\x18');
+        else await window.serial.writeLine('\x18');
         await new Promise(r => setTimeout(r, 800));
 
         // Unlock GRBL ($X) so it can accept normal motion
@@ -284,16 +307,14 @@ export default function SerialPanel({
         latestGrblStatusRef.current.state = 'Idle';
       }
 
-      // Lift Z up by 15mm away from switch at 200 mm/min
+      // Lift Z up by 15mm away from switch at 400 mm/min
       setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} Lifting Z upward 15mm away from switch...`].slice(-500));
-      await window.serial.writeLine(fw.unlock);
-      await new Promise(r => setTimeout(r, 100));
       await window.serial.writeLine(fw.relMode); // G91
       await new Promise(r => setTimeout(r, 80));
-      await window.serial.writeLine('G1 Z15 F200');
+      await window.serial.writeLine('G1 Z15 F400');
 
-      // Wait for physical motion to complete (15mm at 200mm/min = 4.5s + settle)
-      await new Promise(r => setTimeout(r, 4800));
+      // Wait until GRBL physically finishes the Z lift and reports Idle!
+      await waitForMotionComplete(15, 100, 15000);
       await window.serial.writeLine(fw.absMode); // G90
       await new Promise(r => setTimeout(r, 100));
       setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} Z Axis Homed & Lifted 15mm.`].slice(-500));
@@ -304,14 +325,13 @@ export default function SerialPanel({
       // ==========================================
       setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} [2/3] Homing X Axis...`].slice(-500));
 
-      await window.serial.writeLine(fw.unlock);
-      await new Promise(r => setTimeout(r, 150));
       latestGrblStatusRef.current.xTriggered = false;
       latestGrblStatusRef.current.state = 'Idle';
       homingHitDetectedRef.current = false;
       activeHomingAxisRef.current = null;
 
-      await window.serial.writeLine(fw.statusQuery);
+      if (window.serial?.write) await window.serial.write('?');
+      else await window.serial.writeLine('?');
       await new Promise(r => setTimeout(r, 200));
 
       if (!latestGrblStatusRef.current.xTriggered) {
@@ -319,7 +339,7 @@ export default function SerialPanel({
         activeHomingAxisRef.current = 'X';
         homingHitDetectedRef.current = false;
         latestGrblStatusRef.current.xTriggered = false;
-        await window.serial.writeLine('$J=G91 G21 X-2000 F400');
+        await window.serial.writeLine('$J=G91 X-2000 F400');
         await new Promise(r => setTimeout(r, 120));
 
         const startTimeX = Date.now();
@@ -340,10 +360,10 @@ export default function SerialPanel({
         activeHomingAxisRef.current = null;
         if (!hitX) throw new Error("X limit switch not reached within 120s search time");
 
-        // HARD HALT: Kill motor immediately with Soft Reset (\x18)
+        // HARD HALT: Kill motor immediately with single Soft Reset (\x18)
         setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} X limit switch hit! Halting motion instantly via Soft Reset...`].slice(-500));
         if (window.serial?.write) await window.serial.write('\x18');
-        await window.serial.writeLine('\x18');
+        else await window.serial.writeLine('\x18');
         await new Promise(r => setTimeout(r, 800));
 
         // Unlock GRBL ($X) so it can accept normal motion
@@ -359,14 +379,12 @@ export default function SerialPanel({
 
       // Pull off X by 10mm in positive direction away from switch
       setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} Pulling X off switch by 10mm...`].slice(-500));
-      await window.serial.writeLine(fw.unlock);
-      await new Promise(r => setTimeout(r, 100));
       await window.serial.writeLine(fw.relMode); // G91
       await new Promise(r => setTimeout(r, 80));
       await window.serial.writeLine('G1 X10 F400');
 
-      // Wait for physical motion to complete (10mm at 400mm/min = 1.5s + settle)
-      await new Promise(r => setTimeout(r, 2000));
+      // Wait until GRBL physically finishes the X pull-off!
+      await waitForMotionComplete(10, 400, 6000);
       await window.serial.writeLine(fw.absMode); // G90
       await new Promise(r => setTimeout(r, 100));
       setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} X Axis Homed & Pulled Off 10mm.`].slice(-500));
@@ -377,14 +395,13 @@ export default function SerialPanel({
       // ==========================================
       setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} [3/3] Homing Y Axis...`].slice(-500));
 
-      await window.serial.writeLine(fw.unlock);
-      await new Promise(r => setTimeout(r, 150));
       latestGrblStatusRef.current.yTriggered = false;
       latestGrblStatusRef.current.state = 'Idle';
       homingHitDetectedRef.current = false;
       activeHomingAxisRef.current = null;
 
-      await window.serial.writeLine(fw.statusQuery);
+      if (window.serial?.write) await window.serial.write('?');
+      else await window.serial.writeLine('?');
       await new Promise(r => setTimeout(r, 200));
 
       if (!latestGrblStatusRef.current.yTriggered) {
@@ -392,7 +409,7 @@ export default function SerialPanel({
         activeHomingAxisRef.current = 'Y';
         homingHitDetectedRef.current = false;
         latestGrblStatusRef.current.yTriggered = false;
-        await window.serial.writeLine('$J=G91 G21 Y-2000 F400');
+        await window.serial.writeLine('$J=G91 Y-2000 F400');
         await new Promise(r => setTimeout(r, 120));
 
         const startTimeY = Date.now();
@@ -413,10 +430,10 @@ export default function SerialPanel({
         activeHomingAxisRef.current = null;
         if (!hitY) throw new Error("Y limit switch not reached within 120s search time");
 
-        // HARD HALT: Kill motor immediately with Soft Reset (\x18)
+        // HARD HALT: Kill motor immediately with single Soft Reset (\x18)
         setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} Y limit switch hit! Halting motion instantly via Soft Reset...`].slice(-500));
         if (window.serial?.write) await window.serial.write('\x18');
-        await window.serial.writeLine('\x18');
+        else await window.serial.writeLine('\x18');
         await new Promise(r => setTimeout(r, 800));
 
         // Unlock GRBL ($X) so it can accept normal motion
@@ -432,14 +449,12 @@ export default function SerialPanel({
 
       // Pull off Y by 10mm in positive direction away from switch
       setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} Pulling Y off switch by 10mm...`].slice(-500));
-      await window.serial.writeLine(fw.unlock);
-      await new Promise(r => setTimeout(r, 100));
       await window.serial.writeLine(fw.relMode); // G91
       await new Promise(r => setTimeout(r, 80));
       await window.serial.writeLine('G1 Y10 F400');
 
-      // Wait for physical motion to complete (10mm at 400mm/min = 1.5s + settle)
-      await new Promise(r => setTimeout(r, 2000));
+      // Wait until GRBL physically finishes the Y pull-off!
+      await waitForMotionComplete(10, 400, 6000);
       await window.serial.writeLine(fw.absMode); // G90
       await new Promise(r => setTimeout(r, 100));
       setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} Y Axis Homed & Pulled Off 10mm.`].slice(-500));
@@ -466,7 +481,8 @@ export default function SerialPanel({
       // 4. Return to Absolute Mode and query status
       await window.serial.writeLine(fw.absMode); // G90
       await new Promise(r => setTimeout(r, 150));
-      await window.serial.writeLine(fw.statusQuery); // Refresh position for UI
+      if (window.serial?.write) await window.serial.write('?');
+      else await window.serial.writeLine('?');
       await new Promise(r => setTimeout(r, 250));
 
       if (onMachinePositionUpdate) onMachinePositionUpdate({ x: 0, y: 0, z: 0 });

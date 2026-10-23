@@ -54,6 +54,7 @@ export default function AutomatedDispensingPanel({
   fumeManager,
   tipCleanerManager,
   tipRotationManager,
+  motionManager = null,
 }) {
   const toast = useToast();
   const [isJobRunning, setIsJobRunning] = useState(false);

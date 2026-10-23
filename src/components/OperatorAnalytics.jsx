@@ -55,8 +55,8 @@ export default function OperatorAnalytics({ jobStatistics, operationReport, jobH
           <small>{operationReport ? 'Actual duration' : 'Calculated estimate'}</small>
         </div>
       </div>
-      <div className="analytics-grid">
-        {/* <div className="operator-section analytics-chart">
+      {/* <div className="analytics-grid">
+        <div className="operator-section analytics-chart">
           <div className="operator-section-heading">
             <span>CYCLE TREND</span>
             <span className="section-live">LAST 7 RUN WINDOWS</span>
@@ -92,7 +92,7 @@ export default function OperatorAnalytics({ jobStatistics, operationReport, jobH
             <strong>AVAILABLE</strong>
           </div>
         </div>
-      </div>
+      </div> */}
       <div className="analytics-footer">
         <span>{hasData ? 'Metrics reflect the currently loaded dispensing sequence.' : 'Load a Gerber paste layer and calculate a dispensing sequence to populate analytics.'}</span>
         <div className="analytics-actions">

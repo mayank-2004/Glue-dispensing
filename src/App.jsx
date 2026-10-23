@@ -300,8 +300,8 @@ export default function App() {
 
   useEffect(() => {
     const handleFault = (e) => {
-      console.log("[Hardware Fault Event] Received:", e);
-      const { code, message, level } = e.detail;
+      const { code, message, level } = e.detail || {};
+      console.error(`[Hardware Fault Event] Code: ${code} | Level: ${level} | Message: "${message}"`, e);
       safetySystem.triggerFault(code, message, level);
     };
     window.addEventListener('hardware-fault', handleFault);
@@ -1684,24 +1684,29 @@ export default function App() {
     setFidActiveId(currentId => {
       const boardFids = [];
       if (panelBoards && panelBoards.length > 0) {
-        panelBoards.forEach(b => {
+        panelBoards.forEach((b, bIdx) => {
           (b.fiducials || []).forEach(f => {
-            boardFids.push({ ...f, _isRail: false, boardId: b.id });
+            boardFids.push({
+              ...f,
+              _isRail: false,
+              boardId: b.id,
+              uniqueKey: `${b.name || `Board_${bIdx + 1}`}_${f.id}`
+            });
           });
         });
       } else {
         (fiducials || []).forEach(f => {
-          boardFids.push({ ...f, _isRail: false });
+          boardFids.push({ ...f, _isRail: false, uniqueKey: f.id });
         });
       }
       const sequence = [
-        ...panelRailFiducials.map(f => ({ ...f, _isRail: true })),
+        ...panelRailFiducials.map(f => ({ ...f, _isRail: true, uniqueKey: f.id })),
         ...boardFids,
       ];
-      const justSavedIdx = sequence.findIndex(f => f.id === justSavedId);
+      const justSavedIdx = sequence.findIndex(f => (f.uniqueKey || f.id) === justSavedId);
       if (justSavedIdx === -1) return currentId;
       const nextFid = sequence.slice(justSavedIdx + 1).find(f => !f.machine);
-      return nextFid ? nextFid.id : null;
+      return nextFid ? (nextFid.uniqueKey || nextFid.id) : null;
     });
   }, [panelRailFiducials, panelBoards, fiducials]);
 

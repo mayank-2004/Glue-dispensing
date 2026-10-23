@@ -11,7 +11,7 @@ export default function JogPanel({
     const toast = useToast();
     const jogRestoreRef = useRef(null); // debounce handle for G90 restore
     const [stepSize, setStepSize] = useState(10); // mm
-    const [xyFeedRate, setXyFeedRate] = useState(400); // Safe default XY feed rate (450 mm/min)
+    const [xyFeedRate, setXyFeedRate] = useState(400); // Safe default XY feed rate (400 mm/min)
     const [zFeedRate, setZFeedRate] = useState(60);    // Safe Z speed (60 mm/min)
     const [safeZ, setSafeZ] = useState(-5); // mm (Machine coordinate usually negative)
     const [isBusy, setIsBusy] = useState(false);

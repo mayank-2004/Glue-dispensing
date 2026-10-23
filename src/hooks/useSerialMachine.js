@@ -158,22 +158,24 @@ export function useSerialMachine() {
           }));
         }
 
-        // Parse Hardware Faults — includes GRBL ALARM:N codes
+        // Parse Hardware Faults — only true ALARMs and hardware lines should trigger critical safety fault
         const grblErr = parseGrblError(line);
         const customFaultRx = /E-STOP:|FUME_FAIL:|CURTAIN_TRIP:|LOW_WIRE:|HEATER_FAULT:|DRIVER_FAULT:|TOUCH_FAULT:/i;
 
-        if (grblErr || customFaultRx.test(line)) {
+        if ((grblErr && grblErr.isAlarm) || customFaultRx.test(line)) {
           let code = 'E000', level = 'CRITICAL', msg = line.trim();
           if      (/E-STOP:/i.test(line))                         { code = 'E001'; level = 'EMERGENCY'; msg = 'Emergency Stop Activated'; }
           else if (/FUME_FAIL:/i.test(line))                      { code = 'E002'; level = 'CRITICAL';  msg = 'Fume Extraction Failure'; }
           else if (/CURTAIN_TRIP:/i.test(line))                   { code = 'E003'; level = 'EMERGENCY'; msg = 'Light Curtain Triggered'; }
-          else if (grblErr?.isAlarm && grblErr.code === 1)        { code = 'E004'; level = 'CRITICAL';  msg = 'Hard Limit Reached (ALARM:1)'; }
-          else if (grblErr?.isAlarm && grblErr.code === 2)        { code = 'E004'; level = 'CRITICAL';  msg = 'Soft Limit Reached (ALARM:2)'; }
+          else if (grblErr?.code === 1)                           { code = 'E004'; level = 'CRITICAL';  msg = 'Hard Limit Reached (ALARM:1)'; }
+          else if (grblErr?.code === 2)                           { code = 'E004'; level = 'CRITICAL';  msg = 'Soft Limit Reached (ALARM:2)'; }
           else if (/DRIVER_FAULT:/i.test(line))                   { code = 'E005'; level = 'CRITICAL';  msg = 'Motor/Driver Fault'; }
           else if (/HEATER_FAULT:/i.test(line))                   { code = 'E006'; level = 'CRITICAL';  msg = 'Soldering Heater Fault'; }
           else if (/LOW_WIRE:/i.test(line))                       { code = 'E007'; level = 'WARNING';   msg = 'Solder Wire Spool Low'; }
           else if (/TOUCH_FAULT:/i.test(line))                    { code = 'E008'; level = 'CRITICAL';  msg = 'Unwanted Touch Detected'; }
           window.dispatchEvent(new CustomEvent('hardware-fault', { detail: { code, level, message: msg } }));
+        } else if (grblErr && grblErr.isError) {
+          console.warn(`[GRBL Warning] Command rejected with code error:${grblErr.code} ("${grblErr.raw}")`);
         }
       });
     }

@@ -6,8 +6,8 @@ export const defaultAxisMap = {
 };
 
 export const defaultFeeds = {
-  travel: { X: 2000, Y: 2000, Z: 400, R: 400 }, // mm/min — smooth travel, avoids jerk on acceleration
-  work: { X: 600, Y: 600, Z: 240, R: 240 },
+  travel: { X: 400, Y: 400, Z: 400, R: 400 }, // mm/min — smooth travel, avoids jerk on acceleration
+  work: { X: 400, Y: 400, Z: 240, R: 240 },
 };
 
 export function header({ units = "mm", absolute = true } = {}) {

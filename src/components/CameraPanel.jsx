@@ -8,17 +8,35 @@ import { fw } from '../lib/firmware/grblCommands.js';
 import "./CameraPanel.css";
 
 function getFullFiducialSequence(cProps) {
-  const rails = (cProps.panelRailFiducials || []).map(f => ({ ...f, isRail: true }));
+  const rails = (cProps.panelRailFiducials || []).map(f => ({
+    ...f,
+    isRail: true,
+    uniqueKey: f.id,
+    displayLabel: `${f.id} (Rail)`
+  }));
   const boardFids = [];
   if (cProps.panelBoards && cProps.panelBoards.length > 0) {
-    cProps.panelBoards.forEach(b => {
+    cProps.panelBoards.forEach((b, bIdx) => {
       (b.fiducials || []).forEach(f => {
-        boardFids.push({ ...f, boardId: b.id, boardName: b.name, isRail: false });
+        boardFids.push({
+          ...f,
+          boardId: b.id,
+          boardIndex: bIdx,
+          boardName: b.name,
+          isRail: false,
+          uniqueKey: `${b.name || `Board_${bIdx + 1}`}_${f.id}`,
+          displayLabel: `${b.name || `Board ${bIdx + 1}`} ${f.id}`
+        });
       });
     });
   } else if (cProps.fiducials && cProps.fiducials.length > 0) {
     cProps.fiducials.forEach(f => {
-      boardFids.push({ ...f, isRail: false });
+      boardFids.push({
+        ...f,
+        isRail: false,
+        uniqueKey: f.id,
+        displayLabel: f.id
+      });
     });
   }
   return [...rails, ...boardFids];
@@ -37,8 +55,9 @@ function predictFidMachinePos(fid, allFiducials, panelXf, boardXf) {
   }
 
   // 2. Gather ALL solved fiducials across the entire panel (both rails and boards!)
+  const fidKey = fid.uniqueKey || fid.id;
   const solved = (allFiducials || []).filter(
-    f => f.id !== fid.id && f.design && f.machine && typeof f.machine.x === 'number' && typeof f.machine.y === 'number'
+    f => (f.uniqueKey || f.id) !== fidKey && f.design && f.machine && typeof f.machine.x === 'number' && typeof f.machine.y === 'number'
   );
 
   // If 2+ fiducials are solved, fit a similarity transform (rotation + scale + translation)
@@ -303,7 +322,7 @@ export default function CameraPanel({
           const distMm = Math.hypot(dxMm, result.offset.y);
           // Only jog if offset is meaningful (> 20µm) and not a false positive (< 3mm)
           if (distMm > 0.02 && distMm < 3.0) {
-            const cmds = jogRel({ dx: dxMm, dy: result.offset.y, feed: 450 });
+            const cmds = jogRel({ dx: dxMm, dy: result.offset.y, feed: 400 });
             if (window.serial && window.serial.writeLine) {
               for (const line of cmds) await window.serial.writeLine(line);
             }
@@ -667,7 +686,7 @@ export default function CameraPanel({
       if (isBusy) return;
       setIsBusy(true);
       try {
-        const cmds = jogRel({ dx, dy, feed: 450 });
+        const cmds = jogRel({ dx, dy, feed: 400 });
         if (window.serial && window.serial.writeLine) {
           for (const line of cmds) await window.serial.writeLine(line);
           setIsBusy(false);
@@ -867,6 +886,21 @@ export default function CameraPanel({
   // When snap detects a correction jog, it sets this so the next servo convergence routes to the right slot.
   const correctionTargetRef = useRef(null); // { id: string, position: {x,y} }
 
+  // ── Servo & Navigation state ─────────────────────────────────────────────
+  // phase: 'idle' → jogging toward fiducial; 'fine' → sub-pixel snap; 'converged' → done; 'transit' → navigating.
+  const servoStateRef = useRef({ phase: 'idle', lockedAt: null });
+  const settleUntilRef = useRef(0);     // suppress detection until this timestamp (ms)
+  const isJoggingRef = useRef(false);    // lock flag to prevent duplicate / stacked jog commands
+  const isNavigatingRef = useRef(false); // locks visual servo and prevents concurrent transit moves
+  const jogTimeoutRef = useRef(null);    // handle to cancel pending isJoggingRef timeouts
+  const SERVO_FEED = 400;                // mm/min jog speed (smooth 400 mm/min to eliminate jerking)
+  const SERVO_SETTLE_MS = 1000;          // ms to wait after each jog before re-checking
+  const CONVERGE_MM = 0.05;              // crosshair within 0.05mm → declare converged & save
+  const TRULY_CENTRED_MM = 0.008;        // sub-pixel threshold — safe to skip jog requirement
+  const CONVERGE_STABLE_FRAMES = 3;      // fine-phase polls needed before saving (prevents Hough false-centre saves)
+  const convergenceCountRef = useRef(0); // consecutive fine-phase frames within CONVERGE_MM
+  const hasJoggedInCycleRef = useRef(false);
+
   // Clear all correction/servo state on side switch to prevent top-side refs contaminating bottom-side saves.
   useEffect(() => {
     lastAutoSavedRef.current = null;
@@ -874,6 +908,7 @@ export default function CameraPanel({
     hasJoggedInCycleRef.current = false;
     convergenceCountRef.current = 0;
     servoStateRef.current = { phase: 'idle', lockedAt: null };
+    isNavigatingRef.current = false;
   }, [side]);
 
   // ── Auto-fiducial search ──────────────────────────────────────────────────
@@ -888,13 +923,18 @@ export default function CameraPanel({
       return;
     }
 
+    if (isNavigatingRef.current) {
+      console.log(`[AutoNavigate] Already navigating, skipping duplicate call for ${targetFid.displayLabel || targetFid.id}`);
+      return;
+    }
+
     const cProps = latestPropsRef.current;
     const allSeq = getFullFiducialSequence(cProps);
     const solvedList = solvedListOverride || allSeq.filter(f => f.machine && typeof f.machine.x === 'number');
 
     const machPos = predictFidMachinePos(targetFid, solvedList, cProps.panelXf, cProps.xf);
     if (!machPos) {
-      toast.warning(`Cannot predict position for ${targetFid.id}`);
+      toast.warning(`Cannot predict position for ${targetFid.displayLabel || targetFid.id}`);
       return;
     }
 
@@ -906,47 +946,96 @@ export default function CameraPanel({
     const dist = Math.hypot(camX - curPos.x, camY - curPos.y);
 
     if (dist < 0.8) {
-      console.log(`[AutoNavigate] Already within 0.8mm of ${targetFid.id}`);
-      if (cProps.setFidActiveId && cProps.fidActiveId !== targetFid.id) {
-        cProps.setFidActiveId(targetFid.id);
+      console.log(`[AutoNavigate] Already within 0.8mm of ${targetFid.displayLabel || targetFid.id}`);
+      if (cProps.setFidActiveId && cProps.fidActiveId !== (targetFid.uniqueKey || targetFid.id)) {
+        cProps.setFidActiveId(targetFid.uniqueKey || targetFid.id);
       }
       return;
     }
 
-    // Transit time calculation: feed 2000 mm/min = ~33.3 mm/s + 700ms settle
-    const transitMs = Math.max(1000, Math.round((dist / 2000) * 60 * 1000) + 700);
-
-    // Lock servo while moving so it doesn't trigger false convergence during transit
+    // Lock navigation and visual servo completely
+    isNavigatingRef.current = true;
     isJoggingRef.current = true;
+    if (jogTimeoutRef.current) {
+      clearTimeout(jogTimeoutRef.current);
+      jogTimeoutRef.current = null;
+    }
     servoStateRef.current = { phase: 'transit', lockedAt: null };
     convergenceCountRef.current = 0;
     hasJoggedInCycleRef.current = false;
-    settleUntilRef.current = Date.now() + transitMs;
-    saveBlockRef.current = Date.now() + transitMs + 500;
 
-    if (cProps.setFidActiveId && cProps.fidActiveId !== targetFid.id) {
-      cProps.setFidActiveId(targetFid.id);
+    if (cProps.setFidActiveId && cProps.fidActiveId !== (targetFid.uniqueKey || targetFid.id)) {
+      cProps.setFidActiveId(targetFid.uniqueKey || targetFid.id);
     }
 
-    setAutoSearchStatus(`Moving to ${targetFid.id} (${dist.toFixed(1)} mm)...`);
-    console.log(`[AutoNavigate] Moving to ${targetFid.id} at Machine(X${camX}, Y${camY}), dist: ${dist.toFixed(1)}mm, transit: ${transitMs}ms`);
+    const NAV_FEED = 400; // mm/min (smooth, high-torque travel rate to eliminate motor stalls & noise spikes)
+    const transitSec = (dist / NAV_FEED) * 60;
+    const transitMs = Math.max(1200, Math.round(transitSec * 1000) + 1200);
+    settleUntilRef.current = Date.now() + transitMs + 3000;
+    saveBlockRef.current = Date.now() + transitMs + 3000;
+
+    setAutoSearchStatus(`Moving to ${targetFid.displayLabel || targetFid.id} (${dist.toFixed(1)} mm)...`);
+    console.log(`[AutoNavigate] Moving to ${targetFid.displayLabel || targetFid.id} at Machine(X${camX}, Y${camY}), dist: ${dist.toFixed(1)}mm, transit: ~${transitMs}ms`);
+
+    // Temporarily halt Python vision processing during transit to free CPU and prevent false circle locks
+    if (pythonMode) {
+      fetch(`${PYTHON_URL}/api/stop_detect`, { method: 'POST' }).catch(() => {});
+    }
 
     try {
-      await window.serial.writeLine(fw.absMode);
-      await window.serial.writeLine(`G1 X${camX.toFixed(3)} Y${camY.toFixed(3)} F2000`);
+      await window.serial.writeLine('G21');
+      await new Promise(r => setTimeout(r, 60));
+      await window.serial.writeLine(fw.absMode); // G90
+      await new Promise(r => setTimeout(r, 60));
+      await window.serial.writeLine(`G1 X${camX.toFixed(3)} Y${camY.toFixed(3)} F${NAV_FEED}`);
+
+      // Actively wait for machine to arrive at target
+      const startTime = Date.now();
+      const maxWait = transitMs + 8000;
+      let lastPos = { ...(machinePositionRef.current || { x: 0, y: 0 }) };
+      let lastChangeTime = Date.now();
+
+      while (Date.now() - startTime < maxWait) {
+        await new Promise(r => setTimeout(r, 200));
+
+        const pos = machinePositionRef.current || { x: 0, y: 0 };
+        const remainingDist = Math.hypot(camX - pos.x, camY - pos.y);
+
+        if (remainingDist < 0.6) {
+          console.log(`[AutoNavigate] Arrived at target ${targetFid.displayLabel || targetFid.id} (rem: ${remainingDist.toFixed(3)}mm)`);
+          break;
+        }
+
+        if (Math.hypot(pos.x - lastPos.x, pos.y - lastPos.y) > 0.05) {
+          lastPos = { ...pos };
+          lastChangeTime = Date.now();
+        } else if (Date.now() - startTime > 1500 && Date.now() - lastChangeTime > 1200 && remainingDist < 2.0) {
+          console.log(`[AutoNavigate] Motion settled near target ${targetFid.displayLabel || targetFid.id} (rem: ${remainingDist.toFixed(3)}mm)`);
+          break;
+        }
+      }
     } catch (err) {
       console.error("[AutoNavigate] Move command failed:", err);
-      toast.error(`Move to ${targetFid.id} failed: ${err.message}`);
-    }
-
-    setTimeout(() => {
+      toast.error(`Move to ${targetFid.displayLabel || targetFid.id} failed: ${err.message}`);
+    } finally {
+      // Resume Python detection if in pythonMode
+      if (pythonMode) {
+        fetch(`${PYTHON_URL}/api/start_detect`, { method: 'POST' }).catch(() => {});
+      }
+      // Settle camera image before waking up PyServo
+      await new Promise(r => setTimeout(r, 600));
       isJoggingRef.current = false;
+      isNavigatingRef.current = false;
       servoStateRef.current = { phase: 'idle', lockedAt: null };
+      convergenceCountRef.current = 0;
+      hasJoggedInCycleRef.current = false;
+      settleUntilRef.current = Date.now() + 600;
+      saveBlockRef.current = 0;
       setAutoSearchStatus('');
       if (window.serial?.writeLine) {
         window.serial.writeLine(fw.statusQuery).catch(() => {});
       }
-    }, transitMs);
+    }
   };
 
   useEffect(() => {
@@ -956,14 +1045,16 @@ export default function CameraPanel({
 
     const cProps = latestPropsRef.current;
     const allSeq = getFullFiducialSequence(cProps);
-    const fid = allSeq.find(f => f.id === fidActiveId);
+    const fid = allSeq.find(f => (f.uniqueKey || f.id) === fidActiveId);
     if (!fid || !fid.design) { setAutoSearchStatus(''); return; }
 
     // If fiducial is already captured, do not re-move
     if (fid.machine) return;
 
-    autoNavigateToFiducial(fid);
-  }, [fidActiveId, detectionInterval, panelXf]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (autoMoveEnabled && !isNavigatingRef.current) {
+      autoNavigateToFiducial(fid);
+    }
+  }, [fidActiveId, detectionInterval, panelXf, autoMoveEnabled]);
 
   // --- OVERWRITE HELPER: update a specific slot by ID without advancing the arm dropdown ---
   const overwriteFiducialById = (id, coord) => {
@@ -1034,37 +1125,39 @@ export default function CameraPanel({
       return;
     }
 
-    // RAIL ROUTING: if the operator has armed a rail fiducial (or first empty rail fiducial exists), save there and return.
+    // Identify which fiducial in the full sequence is currently targeted
     const armedId = cProps.fidActiveId;
+    const allSeq = getFullFiducialSequence(cProps);
+    const targetFid = allSeq.find(f => (f.uniqueKey === armedId || f.id === armedId)) || allSeq.find(f => !f.machine);
+
+    // RAIL ROUTING: if target is a rail fiducial, save to panelRailFiducials
     const railFids = cProps.panelRailFiducials || [];
     const setRailFids = cProps.setPanelRailFiducials;
-    const targetRail = armedId
-      ? railFids.find(f => f.id === armedId)
-      : (railFids.length > 0 ? railFids.find(f => !f.machine) : null);
 
-    if (targetRail && setRailFids) {
+    if (targetFid && targetFid.isRail && setRailFids) {
       const updatedRailFids = railFids.map(f =>
-        f.id === targetRail.id ? { ...f, machine: estimatedWorld, autoDetected: true } : f
+        f.id === targetFid.id ? { ...f, machine: estimatedWorld, autoDetected: true } : f
       );
       setRailFids(updatedRailFids);
-      lastAutoSavedRef.current = { id: targetRail.id, position: { ...estimatedWorld } };
+      const savedKey = targetFid.uniqueKey || targetFid.id;
+      lastAutoSavedRef.current = { id: savedKey, position: { ...estimatedWorld } };
 
       // Determine next in sequence
-      const allSeq = getFullFiducialSequence({
+      const updatedSeq = getFullFiducialSequence({
         ...cProps,
         panelRailFiducials: updatedRailFids,
       });
-      const savedIdx = allSeq.findIndex(f => f.id === targetRail.id);
-      const nextFid = savedIdx >= 0 ? allSeq.slice(savedIdx + 1).find(f => !f.machine) : null;
+      const savedIdx = updatedSeq.findIndex(f => (f.uniqueKey || f.id) === savedKey);
+      const nextFid = savedIdx >= 0 ? updatedSeq.slice(savedIdx + 1).find(f => !f.machine) : null;
 
-      cProps.onAdvanceArmedFid?.(targetRail.id);
+      cProps.onAdvanceArmedFid?.(savedKey);
 
       if (nextFid) {
-        console.log(`[AutoSequence] Rail fiducial ${targetRail.id} saved. Next target: ${nextFid.id}`);
+        console.log(`[AutoSequence] Rail fiducial ${targetFid.displayLabel || targetFid.id} saved. Next target: ${nextFid.displayLabel || nextFid.id}`);
         if (autoMoveEnabled) {
           setTimeout(() => {
-            autoNavigateToFiducial(nextFid, allSeq.filter(f => f.machine));
-          }, 600);
+            autoNavigateToFiducial(nextFid, updatedSeq.filter(f => f.machine));
+          }, 300);
         }
       } else {
         toast.success("🎉 All panel rail and board fiducials captured!");
@@ -1097,7 +1190,23 @@ export default function CameraPanel({
     // This prevents multiple snap attempts from writing to different rows.
     const OVERWRITE_RADIUS_MM = 5.0;
 
-    if (hasMultiBoards && nextBoards[activeBIdx]) {
+    if (hasMultiBoards && targetFid && targetFid.boardIndex !== undefined && nextBoards[targetFid.boardIndex]) {
+      const bIdx = targetFid.boardIndex;
+      const bFids = [...nextBoards[bIdx].fiducials];
+      const fIdx = bFids.findIndex(f => f.id === targetFid.id);
+      const newFid = {
+        ...(fIdx >= 0 ? bFids[fIdx] : { id: targetFid.id, color: '#2ea8ff' }),
+        design: targetFid.design || (fIdx >= 0 ? bFids[fIdx].design : null),
+        machine: estimatedWorld,
+        autoDetected: true,
+        confidence
+      };
+      if (fIdx >= 0) bFids[fIdx] = newFid;
+      else bFids.push(newFid);
+      nextBoards[bIdx] = { ...nextBoards[bIdx], fiducials: bFids };
+      changedBoards = true;
+      savedFidId = targetFid.uniqueKey || targetFid.id;
+    } else if (hasMultiBoards && nextBoards[activeBIdx]) {
       const newFiducials = [...nextBoards[activeBIdx].fiducials];
 
       // How many slots already have a machine coord from camera snapping?
@@ -1179,22 +1288,22 @@ export default function CameraPanel({
     if (savedFidId) {
       lastAutoSavedRef.current = { id: savedFidId, position: { ...estimatedWorld } };
 
-      const allSeq = getFullFiducialSequence({
+      const updatedSeq = getFullFiducialSequence({
         ...cProps,
         panelBoards: nextBoards,
         fiducials: nextFids,
       });
-      const savedIdx = allSeq.findIndex(f => f.id === savedFidId);
-      const nextFid = savedIdx >= 0 ? allSeq.slice(savedIdx + 1).find(f => !f.machine) : null;
+      const savedIdx = updatedSeq.findIndex(f => (f.uniqueKey || f.id) === savedFidId);
+      const nextFid = savedIdx >= 0 ? updatedSeq.slice(savedIdx + 1).find(f => !f.machine) : null;
 
       cProps.onAdvanceArmedFid?.(savedFidId);
 
       if (nextFid) {
-        console.log(`[AutoSequence] Board fiducial ${savedFidId} saved. Next target: ${nextFid.id}`);
+        console.log(`[AutoSequence] Board fiducial ${savedFidId} saved. Next target: ${nextFid.displayLabel || nextFid.id}`);
         if (autoMoveEnabled) {
           setTimeout(() => {
-            autoNavigateToFiducial(nextFid, allSeq.filter(f => f.machine));
-          }, 600);
+            autoNavigateToFiducial(nextFid, updatedSeq.filter(f => f.machine));
+          }, 300);
         }
       } else {
         toast.success("🎉 All panel rail and board fiducials captured!");
@@ -1274,29 +1383,12 @@ export default function CameraPanel({
       const targetX = designCoord.x - (camOff.dx || 0);
       const targetY = designCoord.y - (camOff.dy || 0);
       await window.serial.writeLine(fw.absMode);
-      await window.serial.writeLine(`G1 X${targetX.toFixed(3)} Y${targetY.toFixed(3)} F2000`);
+      await window.serial.writeLine(`G1 X${targetX.toFixed(3)} Y${targetY.toFixed(3)} F400`);
       toast.info(`Moving machine head near design position (${designCoord.x.toFixed(2)}, ${designCoord.y.toFixed(2)})...`);
     } catch (e) {
       toast.error(`Failed to move: ${e.message}`);
     }
   };
-
-  // ── Servo state ─────────────────────────────────────────────────────────
-  // phase: 'idle' → jogging toward fiducial; 'fine' → sub-pixel snap; 'converged' → done.
-  // lockedAt: machine position when converged, used to detect when user moves to new fiducial.
-  const servoStateRef = useRef({ phase: 'idle', lockedAt: null });
-  const settleUntilRef = useRef(0);     // suppress detection until this timestamp (ms)
-  const isJoggingRef = useRef(false);    // lock flag to prevent duplicate / stacked jog commands
-  const SERVO_FEED = 450;           // mm/min jog speed (smooth 450 mm/min to eliminate jerking)
-  const SERVO_SETTLE_MS = 1000;          // ms to wait after each jog before re-checking
-  const CONVERGE_MM = 0.05;          // crosshair within 0.05mm → declare converged & save
-  const TRULY_CENTRED_MM = 0.008;        // sub-pixel threshold — safe to skip jog requirement
-  const CONVERGE_STABLE_FRAMES = 3;      // fine-phase polls needed before saving (prevents Hough false-centre saves)
-  const convergenceCountRef = useRef(0); // consecutive fine-phase frames within CONVERGE_MM
-  // Guard: servo must have physically jogged at least once per convergence cycle before saving.
-  // Prevents saving at a visually off-centre position when the Python API happens to report
-  // a near-zero offset on the very first poll (e.g. bottom-side fiducials with different reflectance).
-  const hasJoggedInCycleRef = useRef(false);
 
   // Motion guard: whenever the machine position changes significantly (manual jogging between
   // fiducials), extend the settle timer so the detection loop cannot false-trigger on
@@ -1334,20 +1426,17 @@ export default function CameraPanel({
       fetch(`${PYTHON_URL}/api/start_detect`, { method: 'POST' }).catch(() => { });
 
       const pollId = setInterval(async () => {
-        // ── ATOMIC MUTEX ──────────────────────────────────────────────
-        // Set isJoggingRef BEFORE the first await so that a second tick
-        // firing at 300ms cannot also pass this check during the async gap.
-        // if (isJoggingRef.current) return;
-        // if (Date.now() < settleUntilRef.current) return;
-        // if (Date.now() < saveBlockRef.current) return;
-
-        // isJoggingRef.current = true; // Lock immediately
+        if (isNavigatingRef.current) return;
+        if (isJoggingRef.current) return;
+        if (Date.now() < settleUntilRef.current) return;
+        if (Date.now() < saveBlockRef.current) return;
 
         try {
           const r = await fetch(`${PYTHON_URL}/api/vision_data`);
           const data = await r.json();
           setPythonVisionData(data);
 
+          if (isNavigatingRef.current) return;
           if (isJoggingRef.current) return;
           if (Date.now() < settleUntilRef.current) return;
           if (Date.now() < saveBlockRef.current) return; // wait until operator moves to next fiducial
@@ -1431,14 +1520,15 @@ export default function CameraPanel({
             console.log(`[PyServo] Near-zero offset (${dist.toFixed(4)}mm) but haven't jogged yet — micro-jogging to verify centring`);
           }
 
-          // Jog toward fiducial center (steady 450 mm/min to prevent jerking)
+          // Jog toward fiducial center (steady 400 mm/min to prevent jerking)
           const jogFeed = SERVO_FEED;
 
           const moveTimeMs = (dist / (jogFeed / 60)) * 1000;
           const settleMs = Math.max(2500, Math.ceil(moveTimeMs + 2000));
           settleUntilRef.current = Date.now() + settleMs;
           isJoggingRef.current = true;
-          setTimeout(() => { isJoggingRef.current = false; }, settleMs);
+          if (jogTimeoutRef.current) clearTimeout(jogTimeoutRef.current);
+          jogTimeoutRef.current = setTimeout(() => { isJoggingRef.current = false; }, settleMs);
 
           console.log(`[PyServo] ${servoPhase === 'idle' ? 'Coarse' : 'Fine  '} jog ΔX:${dx.toFixed(3)} ΔY:${dy.toFixed(3)} mm (settle ${settleMs}ms)`);
           try {
@@ -1592,7 +1682,7 @@ export default function CameraPanel({
 
                 try {
                   // Step 1: Move camera crosshair to exactly center on the fiducial
-                  const camCorrCmds = jogRel({ dx, dy, feed: 450 });
+                  const camCorrCmds = jogRel({ dx, dy, feed: 400 });
                   if (window.serial && window.serial.writeLine) {
                     for (const line of camCorrCmds) await window.serial.writeLine(line);
                     console.log(`[FiducialAlign] Camera is now perfectly centered on the fiducial.`);
@@ -1680,13 +1770,13 @@ export default function CameraPanel({
       }
 
       const dist = Math.hypot(dx, dy);
-      const moveTimeMs = (dist / (450 / 60)) * 1000;
+      const moveTimeMs = (dist / (400 / 60)) * 1000;
       const settleMs = Math.max(2500, Math.ceil(moveTimeMs + 2000));
       settleUntilRef.current = Date.now() + settleMs;
       isJoggingRef.current = true;
       setTimeout(() => { isJoggingRef.current = false; }, settleMs);
 
-      const cmds = jogRel({ dx, dy, feed: 450 });
+      const cmds = jogRel({ dx, dy, feed: 400 });
       if (window.serial?.writeLine) {
         for (const line of cmds) await window.serial.writeLine(line);
         console.log(`[SnapToFiducial] Jog sent — servo locked for ${settleMs}ms settlement.`);
@@ -1729,7 +1819,7 @@ export default function CameraPanel({
   const jogCameraToNozzle = async (offset) => {
     if (!offset || (offset.dx === 0 && offset.dy === 0)) return;
 
-    const cmds = jogRel({ dx: offset.dx, dy: offset.dy, feed: 450 });
+    const cmds = jogRel({ dx: offset.dx, dy: offset.dy, feed: 400 });
 
     if (window.serial && window.serial.writeLine) {
       for (const cmd of cmds) {
@@ -1759,7 +1849,7 @@ export default function CameraPanel({
     setIsBusy(true);
     try {
       const dist = dir * jogStep;
-      const cmds = jogRel(axis === 'X' ? { dx: dist, feed: 450 } : { dy: dist, feed: 450 });
+      const cmds = jogRel(axis === 'X' ? { dx: dist, feed: 400 } : { dy: dist, feed: 400 });
       if (window.serial && window.serial.writeLine) {
         for (const line of cmds) await window.serial.writeLine(line);
       }
@@ -1774,7 +1864,7 @@ export default function CameraPanel({
     if (isBusy) return;
     setIsBusy(true);
     try {
-      const cmds = jogRel({ dz: dir * 0.5, feed: 500 });
+      const cmds = jogRel({ dz: dir * 0.5, feed: 400 });
       if (window.serial && window.serial.writeLine) {
         for (const line of cmds) await window.serial.writeLine(line);
       }
@@ -1881,11 +1971,8 @@ export default function CameraPanel({
 
           {/* Active Target Fiducial & Comparative Metrics Card */}
           {(() => {
-            const allAvailableFids = [
-              ...(panelRailFiducials || []).map(f => ({ ...f, _isRail: true })),
-              ...(fiducials || []).map(f => ({ ...f, _isRail: false }))
-            ];
-            const activeFid = allAvailableFids.find(f => f.id === fidActiveId) || allAvailableFids[0] || null;
+            const allAvailableFids = getFullFiducialSequence(latestPropsRef.current);
+            const activeFid = allAvailableFids.find(f => (f.uniqueKey || f.id) === fidActiveId) || allAvailableFids[0] || null;
             const curMach = machinePositionRef.current || machinePosition || { x: 0, y: 0 };
             const effectiveCur = {
               x: parseFloat((curMach.x + (cameraOffset?.dx || 0)).toFixed(3)),
@@ -1909,8 +1996,8 @@ export default function CameraPanel({
               <div style={{ background: '#1c1f26', padding: 10, borderRadius: 6, border: '1px solid #333842' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 6 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ color: activeFid?._isRail ? '#ff9800' : '#4fc3f7', fontWeight: 'bold', fontSize: '0.95em' }}>
-                      Target: {activeFid ? `${activeFid.id} ${activeFid._isRail ? '(Panel Rail)' : '(Board)'}` : 'None'}
+                    <span style={{ color: activeFid?.isRail ? '#ff9800' : '#4fc3f7', fontWeight: 'bold', fontSize: '0.95em' }}>
+                      Target: {activeFid ? (activeFid.displayLabel || activeFid.id) : 'None'}
                     </span>
                     {machPos ? (
                       <span style={{ background: '#2e7d32', color: '#fff', padding: '1px 8px', borderRadius: 10, fontSize: '0.75em', fontWeight: 600 }}>
@@ -1941,12 +2028,27 @@ export default function CameraPanel({
                           ))}
                         </optgroup>
                       )}
-                      {fiducials && fiducials.length > 0 && (
-                        <optgroup label="Board Fiducials">
-                          {fiducials.map(f => (
-                            <option key={f.id} value={f.id}>{f.id} {f.machine ? '✓' : ''}</option>
-                          ))}
-                        </optgroup>
+                      {panelBoards && panelBoards.length > 0 ? (
+                        panelBoards.map((b, bIdx) => (
+                          <optgroup key={b.id || b.name || bIdx} label={`${b.name || `Board ${bIdx + 1}`} Fiducials`}>
+                            {(b.fiducials || []).map(f => {
+                              const key = `${b.name || `Board_${bIdx + 1}`}_${f.id}`;
+                              return (
+                                <option key={key} value={key}>
+                                  {b.name || `Board ${bIdx + 1}`} {f.id} {f.machine ? '✓' : ''}
+                                </option>
+                              );
+                            })}
+                          </optgroup>
+                        ))
+                      ) : (
+                        fiducials && fiducials.length > 0 && (
+                          <optgroup label="Board Fiducials">
+                            {fiducials.map(f => (
+                              <option key={f.id} value={f.id}>{f.id} {f.machine ? '✓' : ''}</option>
+                            ))}
+                          </optgroup>
+                        )
                       )}
                     </select>
                   </div>
@@ -2165,7 +2267,7 @@ export default function CameraPanel({
                 if (Math.abs(dx) < 0.005 && Math.abs(dy) < 0.005) return;
 
                 const dist = Math.hypot(dx, dy);
-                const moveTimeMs = (dist / (450 / 60)) * 1000;
+                const moveTimeMs = (dist / (400 / 60)) * 1000;
                 const settleMs = Math.max(2500, Math.ceil(moveTimeMs + 2000));
                 settleUntilRef.current = Date.now() + settleMs;
                 isJoggingRef.current = true;
@@ -2173,7 +2275,7 @@ export default function CameraPanel({
 
                 setIsBusy(true);
                 try {
-                  const cmds = jogRel({ dx, dy, feed: 450 });
+                  const cmds = jogRel({ dx, dy, feed: 400 });
                   if (window.serial && window.serial.writeLine) {
                     for (const line of cmds) await window.serial.writeLine(line);
                     console.log(`[PythonClick] Jogged ΔX:${dx.toFixed(3)} ΔY:${dy.toFixed(3)} mm (settle ${settleMs}ms)`);
