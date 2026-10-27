@@ -80,14 +80,20 @@ const Field = ({ label, value, onChange, step, min, max, disabled, unit }) => (
 );
 
 // ─── Inline jog panel (used during ANCHOR step) ───────────────────────────────
-function InlineJog({ onSend, disabled }) {
+function InlineJog({ onSend, disabled, xySpeed = 500, zSpeed = 300 }) {
   const [step, setStep] = useState(1);
   const send = useCallback(async (cmd) => {
     try { await onSend(cmd); } catch (e) { console.error('[Jog]', e); }
   }, [onSend]);
 
-  const jogXY = (axis, dir) => send(`G91\nG1 ${axis}${(dir * step).toFixed(3)} F1500\nG90`);
-  const jogZ  = (dir)       => send(`G91\nG1 Z${(dir * 0.5).toFixed(3)} F300\nG90`);
+  const jogXY = (axis, dir) => {
+    const dist = (dir * step).toFixed(3);
+    send(`$J=G91 ${axis}${dist} F${xySpeed}`);
+  };
+  const jogZ  = (dir) => {
+    const dist = (dir * 0.5).toFixed(3);
+    send(`$J=G91 Z${dist} F${zSpeed}`);
+  };
 
   const btn = (label, onClick, w = 44) => (
     <button onClick={onClick} disabled={disabled}
@@ -286,6 +292,7 @@ export default function BedCalibrationPanel({
   const [probeStartZ,   setProbeStartZ]   = useState(() => ls('probeStartZ',   '3'));
   const [stepSize,      setStepSize]      = useState(() => ls('probeStepSize', '0.1'));
   const [probeSpeed,    setProbeSpeed]    = useState(() => ls('probeSpeed',    '60'));
+  const [xySpeed,       setXySpeed]       = useState(() => ls('bedProbeXySpeed', '300'));
   const [maxDepth,      setMaxDepth]      = useState(() => ls('probeMaxDepth', '-5'));
   const [dispensingGap, setDispensingGap] = useState(() => ls('dispensingGap', '0.1'));
   const [liftHeight,    setLiftHeight]    = useState(() => ls('liftHeight',    '5'));
@@ -294,6 +301,7 @@ export default function BedCalibrationPanel({
   useEffect(() => { localStorage.setItem('probeStartZ',        String(probeStartZ));   }, [probeStartZ]);
   useEffect(() => { localStorage.setItem('probeStepSize',      String(stepSize));      }, [stepSize]);
   useEffect(() => { localStorage.setItem('probeSpeed',         String(probeSpeed));    }, [probeSpeed]);
+  useEffect(() => { localStorage.setItem('bedProbeXySpeed',    String(xySpeed));       }, [xySpeed]);
   useEffect(() => { localStorage.setItem('probeMaxDepth',      String(maxDepth));      }, [maxDepth]);
   useEffect(() => { localStorage.setItem('dispensingGap',      String(dispensingGap)); }, [dispensingGap]);
   useEffect(() => { localStorage.setItem('liftHeight',         String(liftHeight));    }, [liftHeight]);
@@ -315,13 +323,154 @@ export default function BedCalibrationPanel({
   const mPosRef     = useRef(machinePosition);
   useEffect(() => { mPosRef.current = machinePosition; }, [machinePosition]);
 
-  // ── Send helper ───────────────────────────────────────────────────────────────
-  const send = useCallback(async (cmd) => {
-    if (window.serial?.writeLine) {
-      for (const line of cmd.split('\n').map(l => l.trim()).filter(Boolean)) {
-        await window.serial.writeLine(line);
+  // ── GRBL communication & state management ──────────────────────────────────
+  const ackQueue = useRef([]);
+  const grblStateRef = useRef('Idle');
+  const probeTriggeredRef = useRef(false);
+  const firmwareFaultRef = useRef(null);
+
+  // Subscribe to serial stream for GRBL ACKs ('ok'), real-time status (<Idle...|Pn:Z>), and alarms
+  useEffect(() => {
+    if (!window.serial?.onData) return;
+    const unsub = window.serial.onData((line) => {
+      const trimmed = line.trim();
+
+      // Check for ACK
+      const isAck = trimmed === 'ok' || trimmed.startsWith('ok') || /^ok\b/i.test(trimmed);
+      if (isAck) {
+        const entry = ackQueue.current.shift();
+        if (entry) entry.resolve(true);
       }
+
+      // Check for GRBL real-time status: <Idle|MPos:...> or <Run|...>
+      const statusMatch = trimmed.match(/<([A-Za-z]+)\|/);
+      if (statusMatch) {
+        grblStateRef.current = statusMatch[1];
+        // Auto-recover from Feed Hold if controller entered Hold state
+        if (statusMatch[1] === 'Hold') {
+          if (window.serial?.write) window.serial.write('~').catch(() => {});
+        }
+      }
+
+      // Check for probe pin in status or probe response [PRB:...:1]
+      if (/\|?Pn:[A-Za-z]*(Z|P)/i.test(trimmed) || /\[PRB:.*:1\]/i.test(trimmed)) {
+        probeTriggeredRef.current = true;
+      } else if (trimmed.startsWith('<') && !/\|Pn:/i.test(trimmed)) {
+        probeTriggeredRef.current = false;
+      }
+
+      // Detect Alarm or Error
+      if (/^ALARM[:\s]*\d+/i.test(trimmed) || trimmed === '!!' || /<Alarm/i.test(trimmed)) {
+        firmwareFaultRef.current = trimmed;
+        const pending = ackQueue.current.splice(0);
+        for (const entry of pending) {
+          entry.reject(new Error(`GRBL Alarm: ${trimmed}`));
+        }
+      } else if (/^error[:\s]*\d+/i.test(trimmed)) {
+        const entry = ackQueue.current.shift();
+        if (entry) entry.reject(new Error(`GRBL Error: ${trimmed}`));
+      }
+    });
+
+    // Also listen for probe DOM events from SerialPanel's bridge
+    const onTrig = () => { probeTriggeredRef.current = true; };
+    const onOpen = () => { probeTriggeredRef.current = false; };
+    window.addEventListener('endstop-z-probe-triggered', onTrig);
+    window.addEventListener('endstop-z-probe-open', onOpen);
+
+    return () => {
+      if (typeof unsub === 'function') unsub();
+      window.removeEventListener('endstop-z-probe-triggered', onTrig);
+      window.removeEventListener('endstop-z-probe-open', onOpen);
+    };
+  }, []);
+
+  // ── Send helper: waits for controller ACK ('ok') ────────────────────────────
+  const sendGcodeWait = useCallback(async (cmd, timeoutMs = 15000) => {
+    if (abortRef.current) throw new Error('Operation aborted');
+    if (!window.serial?.writeLine) return;
+
+    const trimmed = cmd.trim();
+    if (!trimmed) return;
+
+    // Real-time single byte commands (write directly without waiting for ok)
+    if (trimmed === '?' || trimmed === fw.statusQuery) {
+      if (window.serial.write) await window.serial.write(fw.statusQuery);
+      else await window.serial.writeLine(fw.statusQuery);
+      return;
     }
+    if (trimmed === '!' || trimmed === fw.pause) {
+      if (window.serial.write) await window.serial.write(fw.pause);
+      else await window.serial.writeLine(fw.pause);
+      return;
+    }
+    if (trimmed === '~' || trimmed === fw.resume) {
+      if (window.serial.write) await window.serial.write(fw.resume);
+      else await window.serial.writeLine(fw.resume);
+      return;
+    }
+    if (trimmed === '\x18' || trimmed === fw.reset) {
+      if (window.serial.write) await window.serial.write(fw.reset);
+      else await window.serial.writeLine(fw.reset);
+      return;
+    }
+
+    const lines = trimmed.split('\n').map(l => l.trim()).filter(Boolean);
+    for (const line of lines) {
+      if (abortRef.current) throw new Error('Operation aborted');
+      if (firmwareFaultRef.current) {
+        throw new Error(`Machine fault: ${firmwareFaultRef.current}`);
+      }
+
+      await new Promise((resolve, reject) => {
+        let timer = null;
+        const entry = {
+          resolve: () => {
+            if (timer) clearTimeout(timer);
+            resolve();
+          },
+          reject: (err) => {
+            if (timer) clearTimeout(timer);
+            reject(err);
+          }
+        };
+        ackQueue.current.push(entry);
+
+        timer = setTimeout(() => {
+          const idx = ackQueue.current.indexOf(entry);
+          if (idx !== -1) ackQueue.current.splice(idx, 1);
+          console.warn(`[BedCalibration] Timeout waiting for ok on: ${line}`);
+          resolve();
+        }, timeoutMs);
+
+        window.serial.writeLine(line).catch(err => {
+          if (timer) clearTimeout(timer);
+          const idx = ackQueue.current.indexOf(entry);
+          if (idx !== -1) ackQueue.current.splice(idx, 1);
+          reject(err);
+        });
+      });
+    }
+  }, []);
+
+  // Backwards-compatible send alias
+  const send = sendGcodeWait;
+
+  // ── Wait for GRBL motion to complete and state to become 'Idle' ─────────────
+  const waitForIdle = useCallback(async (maxWaitMs = 15000) => {
+    const start = Date.now();
+    grblStateRef.current = 'Busy';
+    await delay(120);
+
+    while (Date.now() - start < maxWaitMs) {
+      if (abortRef.current) throw new Error('Operation aborted');
+      if (window.serial?.write) await window.serial.write(fw.statusQuery);
+      else if (window.serial?.writeLine) await window.serial.writeLine(fw.statusQuery);
+
+      await delay(80);
+      if (grblStateRef.current === 'Idle') return true;
+    }
+    return true;
   }, []);
 
   // ── Coordinate mapping: design → machine ────────────────────────────────────
@@ -380,6 +529,7 @@ export default function BedCalibrationPanel({
     if (!boardOutline) { toast.warning('Load a Gerber board outline file first (must include an outline/edge layer).'); return; }
 
     abortRef.current = false;
+    firmwareFaultRef.current = null;
     setProgress(0);
     setCurrentPtIdx(-1);
     setPcbOrigin(null);
@@ -427,8 +577,9 @@ export default function BedCalibrationPanel({
               `${pts.length} probe points generated. Ready to probe.`);
 
     // Lift nozzle to safe height before probing begins
-    await send(`G1 Z${liftHeight} F600`);
-    await delay(1000);
+    await sendGcodeWait(fw.absMode);
+    await sendGcodeWait(`G1 Z${liftHeight} F300`);
+    await waitForIdle(6000);
 
     if (probeMode === 'auto') {
       setFlowStep(FLOW.PROBING);
@@ -437,37 +588,20 @@ export default function BedCalibrationPanel({
       setFlowStep(FLOW.PROBING);
       runManualProbe(pts, 0);
     }
-  }, [buildProbePoints, liftHeight, onSetPcbOrigin, probeMode, send]);
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Endstop poll (waits for 'endstop-z-probe-triggered' or 'endstop-z-probe-open'
-  // DOM events fired by SerialPanel's onData bridge)
-  // ─────────────────────────────────────────────────────────────────────────────
-  const pollEndstop = (timeoutMs = 600) =>
-    new Promise(resolve => {
-      const onTrig = () => { cleanup(); resolve(true);  };
-      const onOpen = () => { cleanup(); resolve(false); };
-      const timer  = setTimeout(() => { cleanup(); resolve(false); }, timeoutMs);
-      const cleanup = () => {
-        window.removeEventListener('endstop-z-probe-triggered', onTrig);
-        window.removeEventListener('endstop-z-probe-open',      onOpen);
-        clearTimeout(timer);
-      };
-      window.addEventListener('endstop-z-probe-triggered', onTrig, { once: true });
-      window.addEventListener('endstop-z-probe-open',      onOpen, { once: true });
-    });
+  }, [buildProbePoints, liftHeight, onSetPcbOrigin, probeMode, sendGcodeWait, waitForIdle]);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Single-point auto probe
   // ─────────────────────────────────────────────────────────────────────────────
   const probeOnePoint = useCallback(async (ptName) => {
-    const msPerStep = Math.ceil((stepSize / probeSpeed) * 60 * 1000) + 150;
+    const msPerStep = Math.max(80, Math.ceil((stepSize / probeSpeed) * 60 * 1000) + 80);
 
     // Confirm endstop open at start height
     setStatus(`[${ptName}] Checking sensor state at Z=${probeStartZ}…`);
-    await send(fw.probeQuery); // '?'
-    const alreadyHit = await pollEndstop(700);
-    if (alreadyHit) {
+    if (window.serial?.write) await window.serial.write(fw.probeQuery);
+    await delay(150);
+
+    if (probeTriggeredRef.current) {
       setStatus(`⚠️ [${ptName}] Sensor already triggered at Z=${probeStartZ} — increase Start Z.`);
       return null;
     }
@@ -478,11 +612,14 @@ export default function BedCalibrationPanel({
     while (z > maxDepth) {
       if (abortRef.current) return null;
       z = parseFloat((z - stepSize).toFixed(4));
-      await send(`G1 Z${z} F${probeSpeed}`);
+      await sendGcodeWait(`G1 Z${z} F${probeSpeed}`);
       await delay(msPerStep);
-      await send(fw.probeQuery); // '?'
-      const hit = await pollEndstop(500);
-      if (hit) {
+
+      // Query sensor status
+      if (window.serial?.write) await window.serial.write(fw.probeQuery);
+      await delay(60);
+
+      if (probeTriggeredRef.current) {
         console.log(`✅ Contact at Z=${z} for ${ptName}`);
         return z;
       }
@@ -491,7 +628,7 @@ export default function BedCalibrationPanel({
 
     setStatus(`⚠️ [${ptName}] Reached max depth (${maxDepth}) without contact.`);
     return null;
-  }, [stepSize, probeSpeed, probeStartZ, maxDepth, send]);
+  }, [stepSize, probeSpeed, probeStartZ, maxDepth, sendGcodeWait]);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // FLOW STEP 3a: Full auto-probe loop through all 5 points
@@ -501,23 +638,25 @@ export default function BedCalibrationPanel({
     if (!serial?.writeLine) return;
 
     abortRef.current = false;
+    firmwareFaultRef.current = null;
     const updated = pts.map(p => ({ ...p, zParam: 0 }));
 
     try {
-      await send('G90');      // absolute
+      await sendGcodeWait(fw.unitsMm); // G21
+      await sendGcodeWait(fw.absMode); // G90
 
       for (let i = 0; i < pts.length; i++) {
         if (abortRef.current) break;
         const pt = pts[i];
         setCurrentPtIdx(i);
 
-        // Move to safe Z, then travel to XY
+        // Move to safe Z, then travel to XY smoothly at xySpeed
         setStatus(`Moving to ${pt.name} (X${pt.x.toFixed(2)} Y${pt.y.toFixed(2)})…`);
-        await send(`G1 Z${probeStartZ} F600`);
-        await delay(1500);
-        await send(`G1 X${pt.x.toFixed(3)} Y${pt.y.toFixed(3)} F3000`);
-        // Wait for XY travel — proportional to estimated distance
-        await delay(5000);
+        await sendGcodeWait(`G1 Z${probeStartZ} F300`);
+        await waitForIdle(6000);
+
+        await sendGcodeWait(`G1 X${pt.x.toFixed(3)} Y${pt.y.toFixed(3)} F${xySpeed}`);
+        await waitForIdle(20000);
 
         const probedZ = await probeOnePoint(pt.name);
 
@@ -531,15 +670,17 @@ export default function BedCalibrationPanel({
         setMesh([...updated]);
 
         setStatus(`✅ ${pt.name}: surface Z=${probedZ.toFixed(3)}, dispense Z=${updated[i].zParam.toFixed(3)}. Retracting…`);
-        await send(`G1 Z${probeStartZ} F600`);
-        await delay(1000);
+        await sendGcodeWait(`G1 Z${probeStartZ} F300`);
+        await waitForIdle(6000);
         setProgress(Math.round(((i + 1) / pts.length) * 100));
       }
 
       if (!abortRef.current) {
         // Return to PCB origin (BL corner) at safe height
-        await send(`G1 Z${liftHeight} F600`);
-        await send(`G1 X${pts[0].x.toFixed(3)} Y${pts[0].y.toFixed(3)} F3000`);
+        await sendGcodeWait(`G1 Z${liftHeight} F300`);
+        await waitForIdle(6000);
+        await sendGcodeWait(`G1 X${pts[0].x.toFixed(3)} Y${pts[0].y.toFixed(3)} F${xySpeed}`);
+        await waitForIdle(20000);
         setFlowStep(FLOW.DONE);
         setStatus(`✅ PCB leveling complete! ${pts.length} points probed. Z-compensation is now active.`);
       } else {
@@ -554,14 +695,16 @@ export default function BedCalibrationPanel({
     } finally {
       setCurrentPtIdx(-1);
     }
-  }, [probeStartZ, liftHeight, dispensingGap, probeOnePoint, send]);
+  }, [probeStartZ, liftHeight, xySpeed, dispensingGap, probeOnePoint, sendGcodeWait, waitForIdle]);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // FLOW STEP 3b: Manual probe — drive to point, user jogs Z, clicks Save
   // ─────────────────────────────────────────────────────────────────────────────
   const runManualProbe = useCallback(async (pts, idx) => {
     if (idx >= pts.length) {
-      await send(`G1 Z${liftHeight} F600`);
+      await sendGcodeWait(fw.absMode);
+      await sendGcodeWait(`G1 Z${liftHeight} F300`);
+      await waitForIdle(6000);
       setFlowStep(FLOW.DONE);
       setStatus('✅ Manual leveling complete!');
       setManualIdx(-1);
@@ -571,12 +714,13 @@ export default function BedCalibrationPanel({
     setManualIdx(idx);
     setCurrentPtIdx(idx);
     setManualStatus(`Moving to ${pt.name}…`);
-    await send(`G1 Z${probeStartZ} F600`);
-    await delay(1500);
-    await send(`G1 X${pt.x.toFixed(3)} Y${pt.y.toFixed(3)} F3000`);
-    await delay(5000);
+    await sendGcodeWait(fw.absMode);
+    await sendGcodeWait(`G1 Z${probeStartZ} F300`);
+    await waitForIdle(6000);
+    await sendGcodeWait(`G1 X${pt.x.toFixed(3)} Y${pt.y.toFixed(3)} F${xySpeed}`);
+    await waitForIdle(20000);
     setManualStatus(`Jog nozzle down until it JUST touches the PCB at ${pt.name}, then click Save Z.`);
-  }, [probeStartZ, liftHeight, send]);
+  }, [probeStartZ, liftHeight, xySpeed, sendGcodeWait, waitForIdle]);
 
   // Mesh ref needed inside saveManualZ closure
   const meshRef = useRef(mesh);
@@ -604,14 +748,25 @@ export default function BedCalibrationPanel({
   // ─────────────────────────────────────────────────────────────────────────────
   const abortFlow = useCallback(async () => {
     abortRef.current = true;
-    try { await send('M211 S1'); } catch (_) {}
+    firmwareFaultRef.current = null;
+    try {
+      if (window.serial?.write) await window.serial.write('\x85'); // Cancel GRBL jog
+      await delay(50);
+      if (window.serial?.write) await window.serial.write(fw.pause); // Feed hold '!'
+      await delay(100);
+      if (window.serial?.write) await window.serial.write(fw.reset); // Soft reset \x18
+      await delay(250);
+      if (window.serial?.writeLine) await window.serial.writeLine(fw.unlock); // Unlock $X
+      await delay(150);
+      if (window.serial?.writeLine) await window.serial.writeLine(`${fw.absMode}\n${fw.unitsMm}`);
+    } catch (_) {}
     setFlowStep(FLOW.IDLE);
     setCurrentPtIdx(-1);
     setManualIdx(-1);
     setProgress(0);
     setStatus('⚠️ Leveling aborted.');
     setManualStatus('Aborted.');
-  }, [send]);
+  }, []);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Reset (clear mesh data, go back to idle)
@@ -738,6 +893,7 @@ export default function BedCalibrationPanel({
               <Field label="Edge Inset (mm)"      value={edgeInset}     onChange={setEdgeInset}     step={1}    min={0}    max={30}  unit="mm" />
               <Field label="Dispense Gap (mm)"    value={dispensingGap} onChange={setDispensingGap} step={0.05} min={0}    max={2}   unit="mm" />
               <Field label="Travel Lift (mm)"     value={liftHeight}    onChange={setLiftHeight}    step={0.5}  min={1}    max={20}  unit="mm" />
+              <Field label="XY Speed (mm/min)"   value={xySpeed}       onChange={setXySpeed}       step={50}   min={50}   max={1000} unit="mm/min" />
               {probeMode === 'auto' && <>
                 <Field label="Step Size (mm)"       value={stepSize}      onChange={setStepSize}      step={0.025} min={0.025} max={0.5} unit="mm" />
                 <Field label="Speed (mm/min)"        value={probeSpeed}    onChange={setProbeSpeed}    step={10}   min={10}   max={300} unit="mm/min" />
@@ -822,7 +978,7 @@ export default function BedCalibrationPanel({
               <span>Z <strong style={{ color: '#0f0' }}>{machinePosition.z.toFixed(3)}</strong></span>
             </div>
 
-            <InlineJog onSend={send} disabled={!isConnected} />
+            <InlineJog onSend={send} disabled={!isConnected} xySpeed={xySpeed} />
           </div>
 
           <div style={{ display: 'flex', gap: 8 }}>
@@ -894,7 +1050,7 @@ export default function BedCalibrationPanel({
                   (+{dispensingGap} mm gap)
                 </span>
               </div>
-              <InlineJog onSend={send} disabled={!isConnected} />
+              <InlineJog onSend={send} disabled={!isConnected} xySpeed={xySpeed} />
               <Btn onClick={saveManualZ} style={{ marginTop: 10, width: '100%' }}>
                 💾 Save Z & Move to Next Point
               </Btn>
@@ -962,15 +1118,12 @@ export default function BedCalibrationPanel({
           borderRadius: 3 }}>getZOffsetForPoint(x,y)</code> returns the correct Z for any pad location.
           {probeMode === 'auto' && (
             <><br /><br />
-            <strong>Serial bridge required in SerialPanel.jsx <code>onData</code>:</strong>
-            <pre style={{ background: '#111', padding: 6, borderRadius: 3, marginTop: 4,
-              whiteSpace: 'pre-wrap', color: '#adf', fontSize: '0.95em' }}>{`if (line.includes('z_min:')) {
-  const hit = /z_min:\\s*TRIGGERED/i.test(line);
-  window.dispatchEvent(new CustomEvent(
-    hit ? 'endstop-z-probe-triggered'
-        : 'endstop-z-probe-open'
-  ));
-}`}</pre>
+            <strong>GRBL Surface Probing:</strong>
+            <p style={{ margin: '4px 0 0 0', color: '#adf', fontSize: '0.92em' }}>
+              Communicates with GRBL via real-time status queries (<code>?</code>).
+              When the touch sensor contacts the board, GRBL reports <code>Pn:Z</code> (or <code>Pn:P</code>),
+              which triggers contact detection and records the surface Z height.
+            </p>
             </>
           )}
         </div>

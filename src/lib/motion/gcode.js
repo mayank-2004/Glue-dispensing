@@ -1,3 +1,5 @@
+import { fw } from '../firmware/grblCommands.js';
+
 export const defaultAxisMap = {
   X: "X",
   Y: "Y",
@@ -70,7 +72,10 @@ export function jogRel({ dx, dy, dz, dr, feed }, axisMap = defaultAxisMap) {
 }
 
 export function dwell(ms = 50) {
-  return [`G4 P${Math.max(0, Math.round(ms))}`];
+  // In GRBL, G4 P is in seconds
+  const sec = Math.max(0, ms) / 1000;
+  console.log("dwell sec: ", sec);
+  return [`G4 P${sec.toFixed(3)}`];
 }
 
 function fmt(n) {
@@ -96,14 +101,14 @@ export function dispensePoint({
   // Move down to work height
   cmds.push(...moveAbs({ z: zWork, feed: feedZ }, axisMap));
 
-  // Trigger ON — M106 controls fan/relay output (0-255 PWM duty)
-  if (pressure > 0) cmds.push(`M106 S${Math.min(255, Math.max(0, Math.round(pwmDuty)))}`);
+  // Trigger ON — using fw.dispenserOn
+  if (pressure > 0) cmds.push(fw.dispenserOn(pwmDuty));
 
   // Dwell
   if (dwellMs > 0) cmds.push(...dwell(dwellMs));
 
-  // Trigger OFF
-  if (pressure > 0) cmds.push('M107');
+  // Trigger OFF — using fw.dispenserOff
+  if (pressure > 0) cmds.push(fw.dispenserOff);
 
   // Retract to safe height
   cmds.push(...moveAbs({ z: zSafe, feed: feedZ }, axisMap));
@@ -144,12 +149,12 @@ export function dispenseBead({
   cmds.push(...moveAbs({ x: startX, y: startY, z: zSafe, feed: feedXY }, axisMap));
   // Lower to work height
   cmds.push(...moveAbs({ z: zWork, feed: feedZ }, axisMap));
-  // Trigger ON — M106 controls fan/relay output (0-255 PWM duty)
-  if (pressure > 0) cmds.push(`M106 S${Math.min(255, Math.max(0, Math.round(pwmDuty)))}`);
+  // Trigger ON — using fw.dispenserOn
+  if (pressure > 0) cmds.push(fw.dispenserOn(pwmDuty));
   // Sweep to bead end with valve open
   cmds.push(...moveAbs({ x: endX, y: endY, feed: feedBead }, axisMap));
-  // Trigger OFF
-  if (pressure > 0) cmds.push('M107');
+  // Trigger OFF — using fw.dispenserOff
+  if (pressure > 0) cmds.push(fw.dispenserOff);
   // Retract to safe height
   cmds.push(...moveAbs({ z: zSafe, feed: feedZ }, axisMap));
 

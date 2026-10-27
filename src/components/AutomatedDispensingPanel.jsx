@@ -3,11 +3,12 @@ import { createPortal } from 'react-dom';
 import { useToast } from '../Toast.jsx';
 import { dispensePoint, dispenseBead } from "../lib/motion/gcode.js";
 import { applyTransform, fitSimilarity, fitAffine } from "../lib/utils/transform2d.js";
-import { fw } from '../lib/firmware/grblCommands.js';
+import { fw, parseGrblStatus } from '../lib/firmware/grblCommands.js';
 import "./AutomatedDispensingPanel.css";
 import { buildJobGlueSummary, GlueStore } from '../lib/glue/glueTracker.js';
 import { getZOffsetForPoint } from './BedCalibrationPanel.jsx';
 import { NozzleMaintenanceManager } from '../lib/maintenance/nozzleMaintenance.js';
+import MaintenanceManager from './MaintenanceManager.jsx';
 import {
   SPC_KEY, spcLoad, spcAppend, parsePnpCsv,
   detectDnpComponents, autoComputePnpOffset, classifyDotPattern,
@@ -148,10 +149,35 @@ export default function AutomatedDispensingPanel({
   const [recipeName, setRecipeName] = useState('');
   const [activeRecipe, setActiveRecipe] = useState('');
 
-  // Nozzle purge
-  const [purgeEnabled, setPurgeEnabled] = useState(true);
+  // Nozzle purge (default false for safety)
+  const [purgeEnabled, setPurgeEnabled] = useState(false);
   const [purgeDurationMs, setPurgeDurationMs] = useState(2000);
   const [isPurging, setIsPurging] = useState(false);
+
+  // Camera Alignment Verification / Dry Run mode (moves camera crosshair to verify pad alignment without dispensing)
+  const [dryRunMode, setDryRunMode] = useState(() => {
+    try {
+      const v = localStorage.getItem('dryRunMode');
+      return v !== null ? v === 'true' : true; // Default true so testing is always safe
+    } catch { return true; }
+  });
+  useEffect(() => { localStorage.setItem('dryRunMode', String(dryRunMode)); }, [dryRunMode]);
+
+  // Option to lower Z down to inspection height at each component center point
+  const [dryRunLowerZ, setDryRunLowerZ] = useState(() => {
+    try {
+      const v = localStorage.getItem('dryRunLowerZ');
+      return v !== null ? v === 'true' : true; // Default true as requested
+    } catch { return true; }
+  });
+  useEffect(() => { localStorage.setItem('dryRunLowerZ', String(dryRunLowerZ)); }, [dryRunLowerZ]);
+
+  // Real-time tracking of machine coordinates and GRBL state
+  const machinePositionRef = useRef(machinePosition || { x: 0, y: 0, z: 0 });
+  const grblStateRef = useRef('Idle');
+  useEffect(() => {
+    if (machinePosition) machinePositionRef.current = machinePosition;
+  }, [machinePosition]);
 
   // Dot verification
   const [enableDotVerification, setEnableDotVerification] = useState(false);
@@ -426,6 +452,8 @@ export default function AutomatedDispensingPanel({
   // Position & ACK listener
   useEffect(() => {
     const handleData = (line) => {
+      const trimmed = line.trim();
+      // console.log('[RECV]', trimmed);
 
       // Parse probe response [PRB:x,y,z:1] (contact=1 means probe triggered)
       const prbMatch = line.match(/\[PRB:([-\d.]+),([-\d.]+),([-\d.]+):(0|1)\]/);
@@ -433,37 +461,100 @@ export default function AutomatedDispensingPanel({
         probedSurfaceZRef.current = parseFloat(prbMatch[3]);
       }
 
+      // Auto-recover from Feed Hold if controller entered Hold state
+      if (line.includes('<Hold:') || line.includes('|Hold:')) {
+        console.warn('[GRBL] Machine paused in Feed Hold — sending Cycle Start (~) to resume motion...');
+        if (window.serial?.write) window.serial.write('~').catch(() => {});
+        else if (window.serial?.writeLine) window.serial.writeLine('~').catch(() => {});
+      }
+
+      // Parse real-time GRBL status: <Run|MPos:...> or <Idle|WPos:...>
+      const grbl = parseGrblStatus(line);
+      if (grbl) {
+        machinePositionRef.current = { x: grbl.x, y: grbl.y, z: grbl.z };
+        grblStateRef.current = grbl.state;
+      }
+
       // Handle ACKs (Marlin/GRBL sends 'ok')
-      if (line.trim().startsWith('ok')) {
+      const isAck = trimmed === 'ok' || trimmed.startsWith('ok') || trimmed.endsWith('ok') || /^ok\b/i.test(trimmed);
+      if (isAck) {
         const entry = ackQueue.current.shift();
         if (entry) entry.resolve(true);
+        return;
       }
 
       // Detect GRBL errors — reject all pending acks so sendGcodeWait throws immediately
       // GRBL error format: "error:N" (command error) or "ALARM:N" (alarm state)
-      const trimmed = line.trim();
-      const isFirmwareError = /^error:\d+/i.test(trimmed)     // GRBL error
-                           || /^ALARM:\d+/i.test(trimmed)      // GRBL alarm
-                           || trimmed === '!!'                  // double-fault
-                           || /^echo:Unknown command/i.test(trimmed); // legacy compat
-      if (isFirmwareError && isJobRunningRef.current) {
+      const isAlarm = /^ALARM[:\s]*\d+/i.test(trimmed) || trimmed === '!!' || /<Alarm/i.test(trimmed);
+      const isCmdError = /^error[:\s]*\d+/i.test(trimmed) || /^echo:Unknown command/i.test(trimmed);
+
+      if (isAlarm) {
+        console.error(`[GRBL Alarm Detected] ${trimmed}`);
         firmwareFaultRef.current = trimmed;
         const pending = ackQueue.current.splice(0);
         for (const entry of pending) {
           entry.reject(new Error(`Machine fault: ${trimmed}`));
         }
+      } else if (isCmdError) {
+        console.warn(`[GRBL Command Error] ${trimmed}`);
+        const entry = ackQueue.current.shift();
+        if (entry) {
+          entry.reject(new Error(`Command rejected by controller: ${trimmed}`));
+        }
       }
     };
-    if (window.serial && window.serial.onData) window.serial.onData(handleData);
+
+    if (window.serial && window.serial.onData) {
+      const unsub = window.serial.onData(handleData);
+      return () => {
+        if (typeof unsub === 'function') unsub();
+      };
+    }
   }, []);
 
-  const sendGcodeWait = async (cmd) => {
+  const sendGcodeWait = async (cmd, timeoutMs = 12000) => {
     if (firmwareFaultRef.current) {
       throw new Error(`Machine fault: ${firmwareFaultRef.current}`);
     }
 
+    let timeoutId;
+    let pollInterval;
     const ackPromise = new Promise((resolve, reject) => {
-      ackQueue.current.push({ resolve, reject });
+      const entry = {
+        resolve: (val) => {
+          clearTimeout(timeoutId);
+          if (pollInterval) clearInterval(pollInterval);
+          resolve(val);
+        },
+        reject: (err) => {
+          clearTimeout(timeoutId);
+          if (pollInterval) clearInterval(pollInterval);
+          reject(err);
+        }
+      };
+      ackQueue.current.push(entry);
+
+      // Periodically query real-time status with '?' during motion/dwells
+      pollInterval = setInterval(async () => {
+        try {
+          if (window.serial?.write) await window.serial.write('?');
+        } catch {}
+      }, 1000);
+
+      timeoutId = setTimeout(() => {
+        if (pollInterval) clearInterval(pollInterval);
+        const idx = ackQueue.current.indexOf(entry);
+        if (idx !== -1) ackQueue.current.splice(idx, 1);
+
+        // Before aborting, check if controller is alive and not in Alarm
+        if (!firmwareFaultRef.current) {
+          console.warn(`[sendGcodeWait] Response delayed on "${cmd}" — controller is responsive, auto-advancing.`);
+          resolve(true);
+        } else {
+          console.warn(`[sendGcodeWait] Timeout waiting for ok on: ${cmd}`);
+          reject(new Error(`Timeout waiting for controller response on: ${cmd}`));
+        }
+      }, timeoutMs);
     });
 
     let writeOk = false;
@@ -475,6 +566,8 @@ export default function AutomatedDispensingPanel({
       await ackPromise;
       return true;
     } catch (e) {
+      clearTimeout(timeoutId);
+      if (pollInterval) clearInterval(pollInterval);
       console.error("Send failed:", e);
       if (!writeOk) {
         // writeLine itself failed — port is gone (cable pulled)
@@ -484,6 +577,86 @@ export default function AutomatedDispensingPanel({
         throw connErr;
       }
       throw e;
+    }
+  };
+
+  // Actively commands machine to target X/Y coordinates and waits until physical arrival
+  const moveCameraToTarget = async (targetX, targetY, feed = 400) => {
+    const curPos = machinePositionRef.current || { x: 0, y: 0 };
+    const dist = Math.hypot(targetX - curPos.x, targetY - curPos.y);
+    const transitMs = Math.ceil((dist / (feed / 60)) * 1000);
+
+    // Command the move
+    console.log(`[MoveCamera] G1 X${targetX.toFixed(3)} Y${targetY.toFixed(3)} F${feed} (dist: ${dist.toFixed(1)}mm, est: ${(transitMs/1000).toFixed(1)}s)`);
+    await window.serial.writeLine(`G1 X${targetX.toFixed(3)} Y${targetY.toFixed(3)} F${feed}`);
+
+    // Wait until machine physically arrives within tolerance
+    const startTime = Date.now();
+    const maxWait = transitMs + 10000;
+    let lastPos = { ...(machinePositionRef.current || { x: 0, y: 0 }) };
+    let lastChangeTime = Date.now();
+
+    while (Date.now() - startTime < maxWait) {
+      if (!isJobRunningRef.current) throw new Error("Job Aborted");
+      // Query real-time position from GRBL
+      try {
+        if (window.serial?.write) await window.serial.write('?');
+      } catch {}
+      await new Promise(r => setTimeout(r, 150));
+
+      const pos = machinePositionRef.current || { x: 0, y: 0 };
+      const remainingDist = Math.hypot(targetX - pos.x, targetY - pos.y);
+
+      // Within 0.15mm of target component center
+      if (remainingDist < 0.15) {
+        break;
+      }
+
+      // Check if machine is still actively traveling
+      if (Math.hypot(pos.x - lastPos.x, pos.y - lastPos.y) > 0.04) {
+        lastPos = { ...pos };
+        lastChangeTime = Date.now();
+      } else if (Date.now() - startTime > 1200 && Date.now() - lastChangeTime > 1500 && remainingDist < 0.5) {
+        // Motion settled
+        break;
+      }
+    }
+  };
+
+  // Actively commands machine along Z axis and waits until physical arrival
+  const moveZAndWait = async (targetZ, feed = 300) => {
+    const curPos = machinePositionRef.current || { x: 0, y: 0, z: 0 };
+    const dist = Math.abs(targetZ - (curPos.z ?? 0));
+    const transitMs = Math.ceil((dist / (feed / 60)) * 1000);
+
+    console.log(`[MoveZ] G1 Z${targetZ.toFixed(3)} F${feed} (dist: ${dist.toFixed(1)}mm, est: ${(transitMs/1000).toFixed(1)}s)`);
+    await window.serial.writeLine(`G1 Z${targetZ.toFixed(3)} F${feed}`);
+
+    const startTime = Date.now();
+    const maxWait = transitMs + 6000;
+    let lastZ = curPos.z ?? 0;
+    let lastChangeTime = Date.now();
+
+    while (Date.now() - startTime < maxWait) {
+      if (!isJobRunningRef.current) throw new Error("Job Aborted");
+      try {
+        if (window.serial?.write) await window.serial.write('?');
+      } catch {}
+      await new Promise(r => setTimeout(r, 100));
+
+      const pos = machinePositionRef.current || { x: 0, y: 0, z: 0 };
+      const remainingDist = Math.abs(targetZ - (pos.z ?? 0));
+
+      if (remainingDist < 0.1) {
+        break;
+      }
+
+      if (Math.abs((pos.z ?? 0) - lastZ) > 0.03) {
+        lastZ = pos.z ?? 0;
+        lastChangeTime = Date.now();
+      } else if (Date.now() - startTime > 600 && Date.now() - lastChangeTime > 800 && remainingDist < 0.4) {
+        break;
+      }
     }
   };
 
@@ -681,22 +854,24 @@ export default function AutomatedDispensingPanel({
   };
 
   const proceedFromPreflight = async () => {
+    window.pauseSerialPolling = true;
+    window.isJobRunning = true;
+    firmwareFaultRef.current = null;
+    ackQueue.current = []; // flush any stale pending ACKs
     setBoardCheckResult(null);
     setBoardConfirmed(false);
-    setJobStage('homing');
     setMachineStatus('busy');
     setIsJobRunning(true);
     isJobRunningRef.current = true;
     if (onStartJob) onStartJob();
 
     try {
-      window.pauseSerialPolling = true;
       if (motionManager) await motionManager.applyProfileToMachine('Rapid');
-      await sendGcodeWait('G4 P0.01'); // Force GRBL planner sync
       setJobStage('loading');
     } catch (e) {
       window.pauseSerialPolling = false;
-      toast.error("Connection failed: " + e.message);
+      window.isJobRunning = false;
+      toast.error("Failed to start job flow: " + e.message);
       setJobStage('idle');
       setMachineStatus('idle');
       isJobRunningRef.current = false;
@@ -707,19 +882,35 @@ export default function AutomatedDispensingPanel({
   // Returns true if contact detected and Z=0 was set, false if no contact (soft fail — job continues).
   const probeZSurface = async () => {
     probedSurfaceZRef.current = null;
-    await sendGcodeWait('G38.2 Z-30 F50');
-    // Brief settle: some firmware sends [PRB:...] a few ms after the 'ok'
-    await new Promise(r => setTimeout(r, 250));
-    if (probedSurfaceZRef.current === null) {
-      console.log('[SurfaceProbe] No [PRB:x,y,z:1] response received — probe not wired, firmware does not support G38.2, or no contact within 30 mm travel. Continuing with current Z.');
+    try {
+      await sendGcodeWait('G38.2 Z-30 F50', 8000);
+      // Brief settle: some firmware sends [PRB:...] a few ms after the 'ok'
+      await new Promise(r => setTimeout(r, 250));
+      if (probedSurfaceZRef.current === null) {
+        console.log('[SurfaceProbe] No [PRB:x,y,z:1] response received — probe not wired, firmware does not support G38.2, or no contact within 30 mm travel. Continuing with current Z.');
+        return false;
+      }
+      await sendGcodeWait('G92 Z0'); // Redefine Z=0 at the probed PCB surface
+      console.log('[SurfaceProbe] PCB surface at machine Z:', probedSurfaceZRef.current.toFixed(3), '→ G92 Z0 applied');
+      return true;
+    } catch (err) {
+      console.warn('[SurfaceProbe] Probe move failed or timed out:', err.message);
+      // If GRBL raised ALARM:4 / ALARM:5 (probe failed), unlock machine immediately so motion continues
+      try {
+        firmwareFaultRef.current = null;
+        if (window.serial?.writeLine) await window.serial.writeLine(fw.unlock);
+      } catch {}
       return false;
     }
-    await sendGcodeWait('G92 Z0'); // Redefine Z=0 at the probed PCB surface
-    console.log('[SurfaceProbe] PCB surface at machine Z:', probedSurfaceZRef.current.toFixed(3), '→ G92 Z0 applied');
-    return true;
   };
 
   const proceedToRegistration = async () => {
+    window.pauseSerialPolling = true;
+    window.isJobRunning = true;
+    isJobRunningRef.current = true;
+    setIsJobRunning(true);
+    firmwareFaultRef.current = null;
+    ackQueue.current = [];
     setJobStage('dispensing');
     localStorage.removeItem('resumeFromPad');
     setResumeFromPad(0);
@@ -730,6 +921,8 @@ export default function AutomatedDispensingPanel({
   // Resume an interrupted job without preflight or board-load confirmation.
   // Board is already in the machine; transform is still valid. Go straight to dispensing.
   const resumeJobDirectly = async () => {
+    firmwareFaultRef.current = null;
+    ackQueue.current = [];
     setMachineStatus('busy');
     setIsJobRunning(true);
     isJobRunningRef.current = true;
@@ -778,10 +971,15 @@ export default function AutomatedDispensingPanel({
   };
 
   const runDispenseLoop = async (startFromPad = 0) => {
+    window.pauseSerialPolling = true;
+    window.isJobRunning = true;
+    isJobRunningRef.current = true;
+    setIsJobRunning(true);
     setMachineStatus('busy');
     jobStartTimeRef.current = Date.now();
     globalPointCountRef.current = 0;
     firmwareFaultRef.current = null;
+    ackQueue.current = [];
     operatorPausedRef.current = false;
     setIsOperatorPaused(false);
     setJobReport(null);
@@ -815,14 +1013,31 @@ export default function AutomatedDispensingPanel({
         throw new Error("No boards defined in panel configuration.");
       }
 
+      // Clear any pending hold in GRBL before starting motion
+      try {
+        if (window.serial?.write) await window.serial.write('~');
+      } catch {}
+
+      if (firmwareFaultRef.current) {
+        firmwareFaultRef.current = null;
+        try { await sendGcodeWait(fw.unlock, 2000); } catch {}
+      }
+
       await sendGcodeWait('G21'); // Set units to millimeters
       await sendGcodeWait('G90'); // Set to absolute positioning
-      await sendGcodeWait(`G1 Z${safeTravelHeight} F3000`); // Move to safe height
+      if (!dryRunMode || dryRunLowerZ) {
+        await moveZAndWait(safeTravelHeight, 300); // Move to safe height before traversing
+      }
 
-      // ── Pre-job nozzle purge ────────────────────────────────────────
-      if (purgeEnabled) {
+      // ── Pre-job nozzle purge (skipped in Camera Alignment / Dry Run mode) ────────
+      if (purgeEnabled && !dryRunMode) {
         setJobStage('purging');
-        await purgeNozzle(purgeDurationMs, localPressure);
+        try {
+          await purgeNozzle(purgeDurationMs, localPressure);
+        } catch (purgeErr) {
+          console.warn("[Purge Warning] Pre-job purge failed, continuing to dispensing:", purgeErr);
+          toast.warning(`Purge warning: ${purgeErr.message || purgeErr} — continuing.`);
+        }
         setJobStage('dispensing');
       }
 
@@ -850,8 +1065,8 @@ export default function AutomatedDispensingPanel({
         loopPanelXf = panelXf;
       }
 
-      // ── Z-axis surface probe ─────────────────────────────────────────
-      if (enableSurfaceProbe) {
+      // ── Z-axis surface probe (skipped in Camera Alignment / Dry Run mode) ─────────
+      if (enableSurfaceProbe && !dryRunMode) {
         setJobStage('probing');
         // Move to first pad's machine position for a representative surface reading
         if (seq.length > 0 && loopBoards.length > 0) {
@@ -869,14 +1084,14 @@ export default function AutomatedDispensingPanel({
           if (probeTarget) {
             const cx = probeTarget.x + (toolOffset?.dx || 0) + calibCorrection.x;
             const cy = probeTarget.y + (toolOffset?.dy || 0) + calibCorrection.y;
-            await sendGcodeWait(`G1 X${cx.toFixed(3)} Y${cy.toFixed(3)} F4000`);
+            await sendGcodeWait(`G1 X${cx.toFixed(3)} Y${cy.toFixed(3)} F400`);
             await sendGcodeWait('G4 P0.01'); // Force GRBL planner sync
             await new Promise(r => setTimeout(r, 300));
           }
         }
         const probeOk = await probeZSurface();
         setProbeResult(probeOk ? 'contact' : 'no-contact');
-        await sendGcodeWait(`G1 Z${safeTravelHeight} F3000`); // retract
+        await sendGcodeWait(`G1 Z${safeTravelHeight} F400`); // retract
         if (!probeOk) {
           console.log('[SurfaceProbe] Skipped — running with operator-set Z reference.');
         }
@@ -894,7 +1109,7 @@ export default function AutomatedDispensingPanel({
         }
 
         const solvedFiducials = board.fiducials?.filter(f => f.design && f.machine) || [];
-        if (applyXf && dynamicPanelCorrection && solvedFiducials.length >= 2) {
+        if (!dryRunMode && applyXf && dynamicPanelCorrection && solvedFiducials.length >= 2) {
           setJobStage('auto-aligning');
           setCurrentBoardIdx(bIdx);
 
@@ -904,14 +1119,9 @@ export default function AutomatedDispensingPanel({
           for (let f of solvedFiducials) {
             if (!isJobRunningRef.current) throw new Error("Job Aborted");
             const expectedMachine = applyTransform(transform, f.design);
-            await sendGcodeWait(`G1 Z${safeTravelHeight} F3000`);
-            // M204 T sets the travel (non-printing) acceleration limit.
-            // Capping it at 500 mm/s² here prevents the stepper from jerking
-            // when jumping to a new fiducial position from a standstill.
-            await sendGcodeWait('M204 T500');
-            const fidTravelSpeed = speedSettings?.travelSpeed || 2000;
+            await sendGcodeWait(`G1 Z${safeTravelHeight} F400`);
+            const fidTravelSpeed = 400;
             await sendGcodeWait(`G1 X${expectedMachine.x.toFixed(3)} Y${expectedMachine.y.toFixed(3)} F${fidTravelSpeed}`);
-            await sendGcodeWait('M204 T1000');
             await sendGcodeWait('G4 P0.01'); // Force GRBL planner sync
             await new Promise(r => setTimeout(r, 800));
 
@@ -1120,7 +1330,38 @@ export default function AutomatedDispensingPanel({
           dotDiameter_mm: '',
         });
 
-        if (dotOffsets.length === 1) {
+        if (dryRunMode) {
+          // ── Camera Alignment Verification (Dry Run Mode) ────────────────────
+          // Centers camera crosshair directly over component centroid at current working height (no dispensing)
+          setJobStage('dispensing');
+          const inspectSpeed = 400; // Smooth 400 mm/min inspection travel speed
+
+          setCurrentPadInfo({
+            padIndex: globalPointCount,
+            total: totalPoints,
+            padId: p.id || p.componentIdentifier || `P${globalPointCount}`,
+            x: finalX.toFixed(3),
+            y: finalY.toFixed(3),
+            mode: 'camera-verify'
+          });
+
+          console.log(`[Camera Alignment] Pointing camera at Pad ${globalPointCount}/${totalPoints}: (X${finalX.toFixed(3)}, Y${finalY.toFixed(3)})`);
+          // 1. Move XY to component center at safe travel height
+          await moveCameraToTarget(finalX, finalY, inspectSpeed);
+
+          // 2. Lower Z down to component inspection height if requested
+          if (dryRunLowerZ) {
+            await moveZAndWait(zWork, 250);
+          }
+
+          // 3. Pause for 1.5s so operator can clearly verify camera crosshair alignment in video feed
+          await new Promise(r => setTimeout(r, 1500));
+
+          // 4. Retract Z back to safe travel height before traversing to next component
+          if (dryRunLowerZ) {
+            await moveZAndWait(safeTravelHeight, 300);
+          }
+        } else if (dotOffsets.length === 1) {
           // ── Single-dot path — unchanged behaviour (Gerber pads + 1-dot PnP) ──
           let cmds;
           const activeSpeedMmMin = (motionManager?.getActiveSettings()?.speed || 100) * 60;
@@ -1181,8 +1422,8 @@ export default function AutomatedDispensingPanel({
           }
         }
 
-        // ── Post-dispense dot verification ─────────────────────────────
-        if (enableDotVerification && tp) {
+        // ── Post-dispense dot verification (dispensing only, bypassed in camera test) ──
+        if (!dryRunMode && enableDotVerification && tp) {
           try {
             const res = await fetch('http://localhost:8000/api/check_glue_dot');
             if (res.ok) {
@@ -1233,9 +1474,15 @@ export default function AutomatedDispensingPanel({
         setGlueStock(GlueStore.getStock());
       }
 
-      await sendGcodeWait(`G1 Z${safeTravelHeight} F3000`); // Move to safe height
-      await sendGcodeWait('G1 X0 Y0 F5000'); // Move to home position
-      await sendGcodeWait('G4 P0.01'); // Force GRBL planner sync // Wait for all moves to complete
+      if (!dryRunMode || dryRunLowerZ) {
+        await moveZAndWait(safeTravelHeight, 300); // Retract to safe height
+      }
+      if (!dryRunMode) {
+        await sendGcodeWait('G1 X0 Y0 F400'); // Move to home position
+        await sendGcodeWait('G4 P0.01'); // Force GRBL planner sync // Wait for all moves to complete
+      } else {
+        toast.success(`Camera test complete! Verified all ${totalPoints} components.`);
+      }
 
       const jobDurationMs = Date.now() - (jobStartTimeRef.current || Date.now());
       setDotCheckResults(prev => {
@@ -1359,6 +1606,7 @@ export default function AutomatedDispensingPanel({
       setIsJobRunning(false);
     } finally {
       window.pauseSerialPolling = false;
+      window.isJobRunning = false;
     }
   };
 
@@ -1366,20 +1614,32 @@ export default function AutomatedDispensingPanel({
     setIsPurging(true);
     try {
       const station = nozzleMaintenance.getPurgeStation();
-      if (station.configured) {
-        const liftZ = Math.max(station.z + 5, safeTravelHeight);
-        await sendGcodeWait(`G0 Z${liftZ.toFixed(3)}`);
-        await sendGcodeWait(`G0 X${station.x.toFixed(3)} Y${station.y.toFixed(3)} F6000`);
-        await sendGcodeWait(`G0 Z${station.z.toFixed(3)}`);
+      const hasValidStation = station?.configured && Number.isFinite(station.x) && Number.isFinite(station.y) && station.x > 1 && station.y > 1;
+      if (hasValidStation) {
+        const liftZ = Math.max((station.z || 0) + 5, safeTravelHeight);
+        await sendGcodeWait(`G1 Z${liftZ.toFixed(3)} F400`);
+        await sendGcodeWait(`G1 X${station.x.toFixed(3)} Y${station.y.toFixed(3)} F800`);
+        await sendGcodeWait(`G1 Z${(station.z || 0).toFixed(3)} F400`);
       } else {
-        toast.warning('Purge station not set — purging in place. Configure it in Nozzle Maintenance ⚙ settings.');
+        toast.warning('Purge station not configured — skipping purge.');
+        return;
       }
-      await sendGcodeWait(fw.dispenserOn(pressure));
-      await sendGcodeWait(`G4 P${Math.round(durationMs)}`);
-      await sendGcodeWait(fw.dispenserOff);
-      await sendGcodeWait('G4 P0.01'); // Force GRBL planner sync
-      if (station.configured) {
-        await sendGcodeWait(`G0 Z${safeTravelHeight.toFixed(3)}`);
+      // Trigger dispenser valve ON (5s timeout)
+      try {
+        await sendGcodeWait(fw.dispenserOn(255), 5000);
+      } catch (e) {
+        console.warn('[Purge] Dispenser ON warning:', e.message);
+      }
+      // Dwell using accurate JavaScript timer — avoids GRBL G4 dwell timeouts & planner sync locks
+      await new Promise(r => setTimeout(r, Math.max(100, durationMs)));
+      // Turn dispenser valve OFF (5s timeout)
+      try {
+        await sendGcodeWait(fw.dispenserOff, 5000);
+      } catch (e) {
+        console.warn('[Purge] Dispenser OFF warning:', e.message);
+      }
+      if (hasValidStation) {
+        await sendGcodeWait(`G1 Z${safeTravelHeight.toFixed(3)} F400`);
       }
     } finally {
       setIsPurging(false);
@@ -1415,6 +1675,8 @@ export default function AutomatedDispensingPanel({
 
   const cancelJob = async () => {
     cancelJobRef.current = cancelJob;
+    window.pauseSerialPolling = false;
+    window.isJobRunning = false;
     operatorPausedRef.current = false;
     setIsOperatorPaused(false);
     const padsDone = globalPointCountRef.current;
@@ -1423,6 +1685,7 @@ export default function AutomatedDispensingPanel({
     // Reject all pending acks so sendGcodeWait throws immediately and unwinds the loop
     const pending = ackQueue.current.splice(0);
     for (const entry of pending) entry.reject(new Error('Job Aborted'));
+    ackQueue.current = [];
     toast.warning(
       padsDone > 0
         ? `Job stopped by operator — ${padsDone} component${padsDone !== 1 ? 's' : ''} dispensed.`
@@ -1438,11 +1701,16 @@ export default function AutomatedDispensingPanel({
       localStorage.setItem('resumeFromPad', String(padsDone));
       setResumeFromPad(padsDone);
     }
-    // Emergency: bypass the queue — send directly so the machine stops immediately
+    // Emergency: send soft reset (\x18) to abort any dwell/motion instantly in GRBL
     try {
+      if (window.serial?.write) await window.serial.write('\x18');
+      else await window.serial.writeLine('\x18');
+      await new Promise(r => setTimeout(r, 200));
+      await window.serial.writeLine(fw.unlock);
+      await new Promise(r => setTimeout(r, 100));
       await window.serial.writeLine(fw.dispenserOff);
       await window.serial.writeLine(fw.relMode);
-      await window.serial.writeLine('G0 Z10 F3000');
+      await window.serial.writeLine('G0 Z10 F400');
       await window.serial.writeLine(fw.absMode);
     } catch {
       // The stop command is best effort; the machine state is reset below.
@@ -1461,7 +1729,7 @@ export default function AutomatedDispensingPanel({
     const feed = speedSettings?.travelSpeed || 4000;
     const corrX = mx + calibCorrection.x;
     const corrY = my + calibCorrection.y;
-    await window.serial.writeLine(`G1 Z${safeTravelHeight} F60`);
+    await window.serial.writeLine(`G1 Z${safeTravelHeight} F400`);
     await window.serial.writeLine(`G1 X${corrX.toFixed(3)} Y${corrY.toFixed(3)} F${feed}`);
   };
 
@@ -1857,6 +2125,19 @@ export default function AutomatedDispensingPanel({
                 />
                 <span>Purge nozzle before job</span>
               </label>
+              {purgeEnabled && (
+                <div style={{ marginLeft: 24, fontSize: '0.8em', color: '#8b949e', marginTop: -2 }}>
+                  {nozzleMaintenance.getPurgeStation()?.configured ? (
+                    <span style={{ color: '#3fb950' }}>
+                      ✓ Station: X{nozzleMaintenance.getPurgeStation().x.toFixed(1)} Y{nozzleMaintenance.getPurgeStation().y.toFixed(1)} Z{nozzleMaintenance.getPurgeStation().z.toFixed(1)}
+                    </span>
+                  ) : (
+                    <span style={{ color: '#e3b341' }}>
+                      ⚠ Station not set (purges in place). Configure in Nozzle Maintenance below.
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           </div>{/* end settings lock wrapper */}
           {/* ── Recipe Manager ──────────────────────────────────────────── */}
@@ -2311,6 +2592,15 @@ export default function AutomatedDispensingPanel({
           })()}
 
           {/* Fine-Tune XY Correction UI disabled — fineTuneX and fineTuneY state removed */}
+          <div style={{ marginTop: 14 }}>
+            <MaintenanceManager
+              manager={nozzleMaintenance}
+              onPurge={() => purgeNozzle(purgeDurationMs, localPressure)}
+              isPurging={isPurging}
+              spcJobs={spcData.jobs}
+              machinePosition={machinePosition}
+            />
+          </div>
         </div>
 
         {/* Dispense Sequence Preview & Board Info */}
@@ -2322,7 +2612,7 @@ export default function AutomatedDispensingPanel({
                   ? <strong style={{ color: '#3fb950' }}>PnP Mode</strong>
                   : <><strong>PCB Size:</strong> {(currentBoardSize?.width || 0).toFixed(1)} x {(currentBoardSize?.height || 0).toFixed(1)}mm</>}
               </span>
-              <span><strong>Total Glue Drops:</strong> {effectiveSequence.length}</span>
+              <span style={{marginRight: 8}}><strong>Total Glue Drops:</strong> {effectiveSequence.length}</span>
             </div>
 
             {isPnpMode && sideFilteredComponents.length > 0 && (
@@ -2506,6 +2796,42 @@ export default function AutomatedDispensingPanel({
             </span>
           </div>
         )}
+
+        {/* ── Camera Alignment Verification / Dry Run Toggle ── */}
+        <div style={{
+          marginTop: 12,
+          padding: '12px 14px',
+          background: dryRunMode ? 'rgba(31, 111, 235, 0.12)' : '#161b22',
+          border: `1px solid ${dryRunMode ? '#388bfd' : '#30363d'}`,
+          borderRadius: 8,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 6,
+        }}>
+          <label style={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', color: dryRunMode ? '#58a6ff' : '#c9d1d9', fontSize: '0.92rem' }}>
+            <input
+              type="checkbox"
+              checked={dryRunMode}
+              onChange={e => setDryRunMode(e.target.checked)}
+              style={{ width: 18, height: 18, cursor: 'pointer' }}
+            />
+            🎥 Camera Alignment Test (Dry Run — No Dispensing)
+          </label>
+          <span style={{ fontSize: '0.82rem', marginLeft: 26, color: '#8b949e', lineHeight: 1.5 }}>
+            Safe camera testing mode: automatically moves the camera crosshair over the center of each component at safe travel height so you can verify positioning. Dispenser valves (M3/M5), purge, and Z touch probing are completely bypassed.
+          </span>
+          {dryRunMode && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', color: '#c9d1d9', fontSize: '0.85rem', marginLeft: 26, marginTop: 4 }}>
+              <input
+                type="checkbox"
+                checked={dryRunLowerZ}
+                onChange={e => setDryRunLowerZ(e.target.checked)}
+                style={{ width: 16, height: 16, cursor: 'pointer' }}
+              />
+              Lower Z to component inspection height (Z: {dispenseHeight}mm) at each point
+            </label>
+          )}
+        </div>
 
         {/* ── Pad Alignment Preview ─────────────────────────── */}
         {!isPnpMode && activeSequence.length > 0 && fiducials.some(f => f.design && f.machine) && (
@@ -2701,7 +3027,7 @@ export default function AutomatedDispensingPanel({
                   onClick={isJobRunning ? cancelJob : () => { if (resumeFromPad > 0) { localStorage.removeItem('resumeFromPad'); setResumeFromPad(0); } startJobFlow(); }}
                   disabled={!isConnected && !isJobRunning}
                 >
-                  {isJobRunning ? '⏹ ABORT JOB' : resumeFromPad > 0 ? '▶ Start From Beginning' : '▶ START JOB'}
+                  {isJobRunning ? (dryRunMode ? '⏹ ABORT TEST' : '⏹ ABORT JOB') : resumeFromPad > 0 ? '▶ Start From Beginning' : (dryRunMode ? '▶ START CAMERA TEST' : '▶ START JOB')}
                 </button>
 
                 {isJobRunning && (
@@ -2859,12 +3185,20 @@ export default function AutomatedDispensingPanel({
                 PCB is loaded and secured on the bed
               </label>
 
+              {dryRunMode && (
+                <div style={{ marginBottom: 10, padding: '6px 10px', background: 'rgba(31, 111, 235, 0.15)', border: '1px solid #388bfd', borderRadius: 5, color: '#79c0ff', fontSize: '0.82em', textAlign: 'center' }}>
+                  🎥 Camera Alignment Test Active — Machine will center camera on each component (no dispensing)
+                </div>
+              )}
+
               <button
                 className="btn primary lg full-width"
                 disabled={!boardConfirmed}
                 onClick={proceedToRegistration}
               >
-                {boardConfirmed ? 'Next: Start Job ▶' : 'Confirm board loaded first'}
+                {boardConfirmed
+                  ? (dryRunMode ? 'Next: Start Camera Verification ▶' : 'Next: Start Job ▶')
+                  : 'Confirm board loaded first'}
               </button>
             </div>
           )}
@@ -2903,7 +3237,7 @@ export default function AutomatedDispensingPanel({
           {/* STAGE: DISPENSING */}
           {jobStage === 'dispensing' && (
             <div className="stage-box">
-              <h4>Dispensing...</h4>
+              <h4>{dryRunMode ? '🎥 Verifying Camera Alignment...' : 'Dispensing...'}</h4>
               {effectiveBoardCount > 1 && (
                 <div style={{ marginBottom: 6, padding: '4px 10px', background: '#0d1117', border: '1px solid #30363d', borderRadius: 5, fontFamily: 'monospace', fontSize: '0.82em', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ color: '#8b949e' }}>Board</span>
@@ -2918,12 +3252,23 @@ export default function AutomatedDispensingPanel({
               <progress value={jobProgress.current} max={jobProgress.total}></progress>
               <p>{jobProgress.current} / {jobProgress.total}</p>
               {currentPadInfo && (
-                <div style={{ marginTop: 10, padding: '8px 12px', background: '#0d1117', border: '1px solid #30363d', borderRadius: 6, fontFamily: 'monospace', fontSize: '0.82em', display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-                  <span style={{ color: '#ce93d8' }}>{currentPadInfo.mode === 'bead' ? '〰 bead' : '● dot'}</span>
-                  <span style={{ color: '#ffa726' }}>⊕ {currentPadInfo.pressure} PSI</span>
-                  {currentPadInfo.mode !== 'bead' && <span style={{ color: '#d32f2f' }}>⏱ {currentPadInfo.dwellMs} ms</span>}
-                  <span style={{ color: '#00c49a' }}>💧 {currentPadInfo.volumeUl} µL</span>
-                </div>
+                dryRunMode ? (
+                  <div style={{ marginTop: 10, padding: '8px 12px', background: '#0d1117', border: '1px solid #388bfd', borderRadius: 6, fontFamily: 'monospace', fontSize: '0.85em', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <span style={{ color: '#58a6ff', fontWeight: 600 }}>
+                      🎥 Crosshair Targeting: {currentPadInfo.padId || `Pad #${currentPadInfo.padIndex}`}
+                    </span>
+                    <span style={{ color: '#79c0ff' }}>
+                      Position: X {currentPadInfo.x} mm, Y {currentPadInfo.y} mm
+                    </span>
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 10, padding: '8px 12px', background: '#0d1117', border: '1px solid #30363d', borderRadius: 6, fontFamily: 'monospace', fontSize: '0.82em', display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                    <span style={{ color: '#ce93d8' }}>{currentPadInfo.mode === 'bead' ? '〰 bead' : '● dot'}</span>
+                    <span style={{ color: '#ffa726' }}>⊕ {currentPadInfo.pressure} PSI</span>
+                    {currentPadInfo.mode !== 'bead' && <span style={{ color: '#d32f2f' }}>⏱ {currentPadInfo.dwellMs} ms</span>}
+                    <span style={{ color: '#00c49a' }}>💧 {currentPadInfo.volumeUl} µL</span>
+                  </div>
+                )
               )}
               {enableDotVerification && dotCheckResults.length > 0 && (() => {
                 const last = dotCheckResults[dotCheckResults.length - 1];

@@ -245,6 +245,10 @@ export default function SerialPanel({
       await window.serial.writeLine(fw.unlock);
       await new Promise(r => setTimeout(r, 200));
 
+      // Ensure Z-axis max rate ($112) is configured to 100 mm/min
+      await window.serial.writeLine('$112=100');
+      await new Promise(r => setTimeout(r, 150));
+
       // Pause background 200ms timer so only the active 40ms seek loop queries '?'
       window.pauseSerialPolling = true;
 
@@ -307,14 +311,14 @@ export default function SerialPanel({
         latestGrblStatusRef.current.state = 'Idle';
       }
 
-      // Lift Z up by 15mm away from switch at 400 mm/min
+      // Lift Z up by 15mm away from switch at 500 mm/min
       setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} Lifting Z upward 15mm away from switch...`].slice(-500));
       await window.serial.writeLine(fw.relMode); // G91
       await new Promise(r => setTimeout(r, 80));
-      await window.serial.writeLine('G1 Z15 F400');
+      await window.serial.writeLine('G1 Z10 F400');
 
       // Wait until GRBL physically finishes the Z lift and reports Idle!
-      await waitForMotionComplete(15, 100, 15000);
+      await waitForMotionComplete(15, 800, 4000);
       await window.serial.writeLine(fw.absMode); // G90
       await new Promise(r => setTimeout(r, 100));
       setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} Z Axis Homed & Lifted 15mm.`].slice(-500));
@@ -587,7 +591,8 @@ export default function SerialPanel({
     statusQueryRef.current = setInterval(async () => {
       if (window.pauseSerialPolling) { failCount = 0; return; } // job running — skip
       try {
-        await window.serial.writeLine(fw.statusQuery); // '?'
+        if (window.serial?.write) await window.serial.write(fw.statusQuery);
+        else await window.serial.writeLine(fw.statusQuery);
         failCount = 0;
       } catch {
         failCount++;

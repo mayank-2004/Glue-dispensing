@@ -53,10 +53,10 @@ export const fw = {
   accelZ:         (mmS2)  => `$122=${mmS2}`,
 
   // ── Dispenser / valve output ─────────────────────────────────────────────
-  /** Turn ON the dispenser/valve (Glue = M3) AND Flux (M8) simultaneously. */
-  dispenserOn:    (duty = 255) => `M3 S${Math.min(255, Math.max(0, Math.round(duty)))} M8`,
-  /** Turn OFF the dispenser/valve (Glue = M5) AND Flux (M9) simultaneously. */
-  dispenserOff:   'M5 M9',
+  /** Turn ON the dispenser/valve (Glue = M3). */
+  dispenserOn:    (duty = 255) => `M3 S${Math.min(255, Math.max(0, Math.round(duty)))}`,
+  /** Turn OFF the dispenser/valve (Glue = M5). */
+  dispenserOff:   'M5',
 
   // ── Probe ────────────────────────────────────────────────────────────────
   /**

@@ -1,3 +1,5 @@
+import { fw } from '../firmware/grblCommands.js';
+
 // Nozzle maintenance and cleaning reminders
 export class NozzleMaintenanceManager {
   constructor() {
@@ -209,9 +211,9 @@ export class NozzleMaintenanceManager {
 
     // Purge material
     gcode.push(`; Purge ${purgeAmount}mm of material`);
-    gcode.push('M106 S255 ; Turn on purge valve');
+    gcode.push(`${fw.dispenserOn(255)} ; Turn on purge valve`);
     gcode.push(`G4 P${purgeAmount * 1000 / (purgeSpeed / 60)} ; Purge time`);
-    gcode.push('M107 ; Turn off purge valve');
+    gcode.push(`${fw.dispenserOff} ; Turn off purge valve`);
 
     // Wipe pattern
     if (wipePattern === 'linear') {

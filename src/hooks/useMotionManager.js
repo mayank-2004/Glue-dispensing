@@ -53,30 +53,8 @@ export function useMotionManager(payloadStatus, isEmergencyStopped) {
 
   const applyProfileToMachine = useCallback(async (profileName) => {
     setActiveProfileName(profileName);
-
-    if (window.serial?.writeLine) {
-      const settings = profiles[profileName];
-      let speed = settings.speed;
-
-      if (!isSafeToMoveFast) {
-        speed = Math.min(speed, 20); // enforce safe speed
-      }
-
-      const speedMmMin = speed * 60;
-      try {
-        // GRBL acceleration settings (mm/s²): $120=X, $121=Y, $122=Z
-        await window.serial.writeLine(fw.accelX(settings.accel));
-        await window.serial.writeLine(fw.accelY(settings.accel));
-        await window.serial.writeLine(fw.accelZ(settings.accel));
-        // GRBL max rate settings (mm/min): $110=X, $111=Y, $112=Z
-        await window.serial.writeLine(fw.maxRateX(speedMmMin));
-        await window.serial.writeLine(fw.maxRateY(speedMmMin));
-        await window.serial.writeLine(fw.maxRateZ(speedMmMin));
-      } catch (err) {
-        console.error('[MotionManager] Failed to apply profile:', err);
-      }
-    }
-  }, [profiles, isSafeToMoveFast]);
+    console.log('[MotionManager] Switched active profile to: ' + profileName);
+  }, []);
 
   return {
     profiles,

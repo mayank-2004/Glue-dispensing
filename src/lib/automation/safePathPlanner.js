@@ -1,4 +1,5 @@
 import { applyTransform } from '../utils/transform2d.js';
+import { fw } from '../firmware/grblCommands.js';
 
 export class SafePathPlanner {
   constructor(options = {}) {
@@ -130,9 +131,9 @@ export class SafePathPlanner {
       });
 
       // Dispense
-      gcode.push('M106 S25 ; Start dispensing');
-      gcode.push('G4 P120 ; Dwell 120ms');
-      gcode.push('M107 ; Stop dispensing');
+      gcode.push(`${fw.dispenserOn(25)} ; Start dispensing`);
+      gcode.push('G4 P0.12 ; Dwell 120ms (GRBL seconds)');
+      gcode.push(`${fw.dispenserOff} ; Stop dispensing`);
       gcode.push('');
     });
 

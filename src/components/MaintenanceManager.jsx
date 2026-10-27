@@ -9,7 +9,7 @@ export default function MaintenanceManager({ manager, onPurge, isPurging = false
   const wasCleaningNeeded = useRef(false);
 
   const savePurgeStation = (updates) => {
-    const next = { ...purgeStation, ...updates };
+    const next = { ...purgeStation, ...updates, configured: true };
     setPurgeStationState(next);
     manager?.setPurgeStation(next);
   };

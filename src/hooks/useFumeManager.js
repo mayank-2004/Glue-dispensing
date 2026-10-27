@@ -133,7 +133,7 @@ export function useFumeManager() {
     logEvent('START', 'Fume extraction started for soldering cycle.');
     
     try {
-      if (window.serial?.writeLine) {
+      if (window.serial?.writeLine && !window.isJobRunning) {
         const { fw } = await import('../lib/firmware/grblCommands.js');
         await window.serial.writeLine(fw.fume.on);
       }
@@ -157,7 +157,7 @@ export function useFumeManager() {
         patch(prev => ({ status: prev.operatingHours >= prev.serviceThresholdHours ? FUME_STATUS.SERVICE_REQUIRED : FUME_STATUS.READY }));
         logEvent('STOP', 'Post-run complete. Extractor off.');
         try {
-          if (window.serial?.writeLine) {
+          if (window.serial?.writeLine && !window.isJobRunning) {
             const { fw } = await import('../lib/firmware/grblCommands.js');
             await window.serial.writeLine(fw.fume.off);
           }
@@ -168,7 +168,7 @@ export function useFumeManager() {
       patch(prev => ({ status: prev.operatingHours >= prev.serviceThresholdHours ? FUME_STATUS.SERVICE_REQUIRED : FUME_STATUS.READY }));
       logEvent('STOP', 'Extractor off.');
       try {
-        if (window.serial?.writeLine) {
+        if (window.serial?.writeLine && !window.isJobRunning) {
           import('../lib/firmware/grblCommands.js').then(({ fw }) => {
             window.serial.writeLine(fw.fume.off);
           }).catch(console.error);
