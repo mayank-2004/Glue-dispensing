@@ -119,27 +119,124 @@ export function getComponentDotOffsets(comp, spacingMm, customPatterns = {}) {
 }
 
 export function detectPanelFromFiducials(fiducials) {
-  const valid = fiducials.filter(f => f.design && typeof f.design.x === 'number' && typeof f.design.y === 'number');
+  if (!fiducials || !Array.isArray(fiducials)) return null;
+
+  const getPos = f => {
+    if (f.design && typeof f.design.x === 'number' && typeof f.design.y === 'number') {
+      return { x: f.design.x, y: f.design.y };
+    }
+    if (typeof f.x === 'number' && typeof f.y === 'number') {
+      return { x: f.x, y: f.y };
+    }
+    return null;
+  };
+
+  // Exclude rail fiducials (which sit on external waste strips)
+  const valid = fiducials
+    .map(f => ({ ...f, pos: getPos(f) }))
+    .filter(f => f.pos && !f.isRail && !/^R\d+/i.test(f.id || '') && !/rail/i.test(f.id || ''));
+
   if (valid.length < 4) return null;
+
+  // 1. Group fiducials by similar X coordinate (tolerance 1.5mm) to detect rows & stepY
   const xGroups = [];
   for (const fid of valid) {
-    const group = xGroups.find(g => Math.abs(g.cx - fid.design.x) < 2);
-    if (group) group.ys.push(fid.design.y); else xGroups.push({ cx: fid.design.x, ys: [fid.design.y] });
+    const { x, y } = fid.pos;
+    const group = xGroups.find(g => Math.abs(g.cx - x) < 1.5);
+    if (group) {
+      group.ys.push(y);
+      group.cx = (group.cx * (group.ys.length - 1) + x) / group.ys.length;
+    } else {
+      xGroups.push({ cx: x, ys: [y] });
+    }
   }
-  const rows = Math.max(...xGroups.map(g => g.ys.length));
-  if (rows < 2) return null;
-  let totalStep = 0, count = 0;
-  for (const group of xGroups) if (group.ys.length === rows) {
-    const sortedYs = [...group.ys].sort((a, b) => a - b);
-    for (let i = 1; i < sortedYs.length; i++) { totalStep += sortedYs[i] - sortedYs[i - 1]; count++; }
+
+  let rows = Math.max(...xGroups.map(g => g.ys.length));
+  let stepY = 0;
+  if (rows >= 2) {
+    const ySteps = [];
+    for (const group of xGroups) {
+      if (group.ys.length >= 2) {
+        const sorted = [...group.ys].sort((a, b) => a - b);
+        for (let i = 1; i < sorted.length; i++) {
+          const dy = sorted[i] - sorted[i - 1];
+          if (dy > 4) ySteps.push(dy);
+        }
+      }
+    }
+    if (ySteps.length > 0) {
+      ySteps.sort((a, b) => a - b);
+      const medianStep = ySteps[Math.floor(ySteps.length / 2)];
+      const closeSteps = ySteps.filter(s => Math.abs(s - medianStep) < 3);
+      if (closeSteps.length > 0) {
+        stepY = parseFloat((closeSteps.reduce((a, b) => a + b, 0) / closeSteps.length).toFixed(3));
+      }
+    }
+  } else {
+    rows = 1;
   }
-  if (!count) return null;
-  const stepY = parseFloat((totalStep / count).toFixed(2));
-  for (const group of xGroups) if (group.ys.length === rows) {
-    const sortedYs = [...group.ys].sort((a, b) => a - b);
-    for (let i = 1; i < sortedYs.length; i++) if (Math.abs(sortedYs[i] - sortedYs[i - 1] - stepY) > 5) return null;
+
+  // 2. Group fiducials by similar Y coordinate (tolerance 1.5mm) to detect cols & stepX
+  const yGroups = [];
+  for (const fid of valid) {
+    const { x, y } = fid.pos;
+    const group = yGroups.find(g => Math.abs(g.cy - y) < 1.5);
+    if (group) {
+      group.xs.push(x);
+      group.cy = (group.cy * (group.xs.length - 1) + y) / group.xs.length;
+    } else {
+      yGroups.push({ cy: y, xs: [x] });
+    }
   }
-  return { rows, stepY };
+
+  let cols = Math.max(...yGroups.map(g => g.xs.length));
+  let stepX = 0;
+  if (cols >= 2) {
+    const xSteps = [];
+    for (const group of yGroups) {
+      if (group.xs.length >= 2) {
+        const sorted = [...group.xs].sort((a, b) => a - b);
+        for (let i = 1; i < sorted.length; i++) {
+          const dx = sorted[i] - sorted[i - 1];
+          if (dx > 4) xSteps.push(dx);
+        }
+      }
+    }
+    if (xSteps.length > 0) {
+      xSteps.sort((a, b) => a - b);
+      const medianStep = xSteps[Math.floor(xSteps.length / 2)];
+      const closeSteps = xSteps.filter(s => Math.abs(s - medianStep) < 3);
+      if (closeSteps.length > 0) {
+        stepX = parseFloat((closeSteps.reduce((a, b) => a + b, 0) / closeSteps.length).toFixed(3));
+      }
+    }
+  } else {
+    // If fiducials on each board are diagonal and don't share exact horizontal Y,
+    // compute stepX from the distance between xGroup centers
+    if (xGroups.length >= 2) {
+      const sortedCxs = xGroups.map(g => g.cx).sort((a, b) => a - b);
+      const diffs = [];
+      for (let i = 0; i < sortedCxs.length; i++) {
+        for (let j = i + 1; j < sortedCxs.length; j++) {
+          const d = sortedCxs[j] - sortedCxs[i];
+          if (d > 10) diffs.push(d);
+        }
+      }
+      if (diffs.length > 0) {
+        diffs.sort((a, b) => a - b);
+        const medianDiff = diffs[Math.floor(diffs.length / 2)];
+        const closeDiffs = diffs.filter(d => Math.abs(d - medianDiff) < 3);
+        if (closeDiffs.length >= 2) {
+          cols = 2;
+          stepX = parseFloat((closeDiffs.reduce((a, b) => a + b, 0) / closeDiffs.length).toFixed(3));
+        }
+      }
+    }
+    if (cols < 2) cols = 1;
+  }
+
+  if (rows <= 1 && cols <= 1) return null;
+  return { rows, cols, stepX, stepY };
 }
 
 export function nearestNeighborSort(components, startX = 0, startY = 0) {

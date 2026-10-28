@@ -22,6 +22,7 @@ import { generatePath } from "./lib/motion/pathGeneration.js";
 import { DispensingSequencer } from "./lib/automation/dispensingSequence.js";
 import { SafePathPlanner } from "./lib/automation/safePathPlanner.js";
 import { extractPadsWithPanel } from "./lib/gerber/extractPads.js";
+import { detectPanelFromFiducials } from "./components/dispensingHelpers.jsx";
 import ToolOffsetCalibration from "./components/ToolOffsetCalibration.jsx";
 import { useSerialMachine } from "./hooks/useSerialMachine.js";
 import { useGerberFiles } from "./hooks/useGerberFiles.js";
@@ -610,8 +611,16 @@ export default function App() {
     setFidActiveId(autoRailFids[0]?.id ?? null); // default arm to R1 on every Gerber load
     setPanelXf(null);
 
-    if (detectedPanelGrid && (detectedPanelGrid.dimX > 1 || detectedPanelGrid.dimY > 1)) {
-      const { dimX, dimY, stepX, stepY } = detectedPanelGrid;
+    const autoPanel = detectedPanelGrid || (detectedFiducials?.length >= 4 ? detectPanelFromFiducials(detectedFiducials) : null);
+    const effectivePanelGrid = autoPanel ? {
+      dimX: autoPanel.dimX || autoPanel.cols || 1,
+      dimY: autoPanel.dimY || autoPanel.rows || 1,
+      stepX: autoPanel.stepX != null ? autoPanel.stepX : 0,
+      stepY: autoPanel.stepY != null ? autoPanel.stepY : 0,
+    } : null;
+
+    if (effectivePanelGrid && (effectivePanelGrid.dimX > 1 || effectivePanelGrid.dimY > 1)) {
+      const { dimX, dimY, stepX, stepY } = effectivePanelGrid;
       const boards = [];
       let bid = 1;
       for (let j = 0; j < dimY; j++) {
@@ -625,7 +634,7 @@ export default function App() {
       }
       setPanelBoards(boards);
       _setActiveBoardIndex(0);
-      setPanelInfo(detectedPanelGrid);
+      setPanelInfo(effectivePanelGrid);
       setApplyXf(true);
     } else {
       setPanelBoards([{ id: 1, name: 'Board 1', fiducials: makeBoardFiducials(), xf: null }]);

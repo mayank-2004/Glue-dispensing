@@ -128,6 +128,8 @@ export default function AutomatedDispensingPanel({
   const [pnpPanelCols, setPnpPanelCols] = useState(1);
   const [pnpPanelStepX, setPnpPanelStepX] = useState(0);
   const [pnpPanelStepY, setPnpPanelStepY] = useState(0);
+  const [pnpPanelSequence, setPnpPanelSequence] = useState('row'); // 'row' | 'snake' | 'col'
+  const activeLoopBoardsRef = useRef([]);
 
   // Tracks which sub-board within the panel is currently being dispensed (0-based)
   const [currentBoardIdx, setCurrentBoardIdx] = useState(0);
@@ -350,17 +352,20 @@ export default function AutomatedDispensingPanel({
     }
 
     // Priority 3: Flat-panelized Gerber (no SR) — detect from repeated fiducial positions.
-    // The fiducial detector places ALL sub-board fiducials in panelBoards[0].fiducials.
-    // Grouping them by X reveals how many times each fiducial repeats in Y → rows & stepY.
-    const fids = panelBoards?.[0]?.fiducials || [];
+    // The fiducial detector places sub-board fiducials in panelBoards or fiducials prop.
+    const fids = [
+      ...(panelBoards?.[0]?.fiducials || []),
+      ...(panelBoards?.flatMap(b => b.fiducials || []) || []),
+      ...(fiducials || [])
+    ];
     const detected = detectPanelFromFiducials(fids);
     if (detected) {
-      setPnpPanelRows(detected.rows);
-      setPnpPanelCols(1);
-      setPnpPanelStepX(0);
-      setPnpPanelStepY(detected.stepY);
+      setPnpPanelRows(detected.rows || 1);
+      setPnpPanelCols(detected.cols || 1);
+      setPnpPanelStepX(detected.stepX || 0);
+      setPnpPanelStepY(detected.stepY || 0);
     }
-  }, [panelInfo, panelBoards, isPnpMode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [panelInfo, panelBoards, isPnpMode, fiducials]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-resume after reconnect — delegates to startResumeCountdown (defined after resumeJobDirectly)
   useEffect(() => {
@@ -1047,16 +1052,51 @@ export default function AutomatedDispensingPanel({
       let loopBoards, loopPanelXf;
       if (isPnpPanel) {
         loopBoards = [];
-        for (let row = 0; row < pnpPanelRows; row++) {
+        if (pnpPanelSequence === 'col') {
+          // Column-first sequence: cover column 1 bottom-to-top, then column 2 bottom-to-top
           for (let col = 0; col < pnpPanelCols; col++) {
-            loopBoards.push({
-              id: row * pnpPanelCols + col + 1,
-              name: `Sub-board R${row + 1}C${col + 1}`,
-              offsetX: col * pnpPanelStepX,
-              offsetY: row * pnpPanelStepY,
-              xf: null,
-              fiducials: [],
-            });
+            for (let row = 0; row < pnpPanelRows; row++) {
+              loopBoards.push({
+                id: row * pnpPanelCols + col + 1,
+                name: `Sub-board R${row + 1}C${col + 1}`,
+                offsetX: col * pnpPanelStepX,
+                offsetY: row * pnpPanelStepY,
+                xf: null,
+                fiducials: [],
+              });
+            }
+          }
+        } else if (pnpPanelSequence === 'snake') {
+          // Snake / zigzag sequence: Row 1 L->R, Row 2 R->L, etc. (minimizes diagonal gantry travel)
+          for (let row = 0; row < pnpPanelRows; row++) {
+            const cols = (row % 2 === 0)
+              ? Array.from({ length: pnpPanelCols }, (_, i) => i)
+              : Array.from({ length: pnpPanelCols }, (_, i) => pnpPanelCols - 1 - i);
+            for (const col of cols) {
+              loopBoards.push({
+                id: row * pnpPanelCols + col + 1,
+                name: `Sub-board R${row + 1}C${col + 1}`,
+                offsetX: col * pnpPanelStepX,
+                offsetY: row * pnpPanelStepY,
+                xf: null,
+                fiducials: [],
+              });
+            }
+          }
+        } else {
+          // Standard row-by-row sequence (L->R across each row):
+          // R1C1 -> R1C2 -> R2C1 -> R2C2 -> R3C1 -> R3C2...
+          for (let row = 0; row < pnpPanelRows; row++) {
+            for (let col = 0; col < pnpPanelCols; col++) {
+              loopBoards.push({
+                id: row * pnpPanelCols + col + 1,
+                name: `Sub-board R${row + 1}C${col + 1}`,
+                offsetX: col * pnpPanelStepX,
+                offsetY: row * pnpPanelStepY,
+                xf: null,
+                fiducials: [],
+              });
+            }
           }
         }
         loopPanelXf = applyXf ? xf : null;
@@ -1064,6 +1104,7 @@ export default function AutomatedDispensingPanel({
         loopBoards = panelBoards;
         loopPanelXf = panelXf;
       }
+      activeLoopBoardsRef.current = loopBoards;
 
       // ── Z-axis surface probe (skipped in Camera Alignment / Dry Run mode) ─────────
       if (enableSurfaceProbe && !dryRunMode) {
@@ -2424,9 +2465,25 @@ export default function AutomatedDispensingPanel({
                       </label>
                     </div>
                     {(pnpPanelRows > 1 || pnpPanelCols > 1) && (
-                      <div style={{ marginTop: 5, padding: '4px 8px', background: 'rgba(63,185,80,0.08)', border: '1px solid #3fb95044', borderRadius: 4, color: '#3fb950', fontSize: '0.82em' }}>
-                        ✓ Panel mode — {pnpPanelRows * pnpPanelCols} sub-boards ({pnpPanelRows}×{pnpPanelCols}), step X={pnpPanelStepX} mm, Y={pnpPanelStepY} mm
-                      </div>
+                      <>
+                        <div style={{ marginTop: 6 }}>
+                          <label style={{ fontSize: '0.85em', color: '#c9d1d9' }}>
+                            Board Sequence Order:
+                            <select
+                              value={pnpPanelSequence}
+                              onChange={e => setPnpPanelSequence(e.target.value)}
+                              style={{ width: '100%', marginTop: 3, padding: '4px 8px', fontSize: '0.85em' }}
+                            >
+                              <option value="row">Row-by-Row (R1C1 → R1C2 → R2C1 → R2C2)</option>
+                              <option value="snake">Snake / Zigzag (R1C1 → R1C2 → R2C2 → R2C1)</option>
+                              <option value="col">Column-by-Column (Left col bottom-to-top, then Right col)</option>
+                            </select>
+                          </label>
+                        </div>
+                        <div style={{ marginTop: 5, padding: '4px 8px', background: 'rgba(63,185,80,0.08)', border: '1px solid #3fb95044', borderRadius: 4, color: '#3fb950', fontSize: '0.82em' }}>
+                          ✓ Panel mode — {pnpPanelRows * pnpPanelCols} sub-boards ({pnpPanelRows}×{pnpPanelCols}), step X={pnpPanelStepX} mm, Y={pnpPanelStepY} mm
+                        </div>
+                      </>
                     )}
                     <small style={{ color: '#8b949e', fontSize: '0.78em', display: 'block', marginTop: 4 }}>
                       Set rows/columns to match your panel. Step = center-to-center distance between identical sub-boards.
@@ -3243,9 +3300,11 @@ export default function AutomatedDispensingPanel({
                   <span style={{ color: '#8b949e' }}>Board</span>
                   <span style={{ color: '#58a6ff', fontWeight: 700 }}>
                     {currentBoardIdx + 1} / {effectiveBoardCount}
-                    {isPnpPanel
-                      ? ` — R${Math.floor(currentBoardIdx / pnpPanelCols) + 1}C${(currentBoardIdx % pnpPanelCols) + 1}`
-                      : (panelBoards[currentBoardIdx]?.name ? ` — ${panelBoards[currentBoardIdx].name}` : '')}
+                    {activeLoopBoardsRef.current?.[currentBoardIdx]?.name
+                      ? ` — ${activeLoopBoardsRef.current[currentBoardIdx].name}`
+                      : (isPnpPanel
+                        ? ` — R${Math.floor(currentBoardIdx / pnpPanelCols) + 1}C${(currentBoardIdx % pnpPanelCols) + 1}`
+                        : (panelBoards[currentBoardIdx]?.name ? ` — ${panelBoards[currentBoardIdx].name}` : ''))}
                   </span>
                 </div>
               )}
