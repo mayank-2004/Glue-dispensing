@@ -64,11 +64,12 @@ export function jogRel({ dx, dy, dz, dr, feed }, axisMap = defaultAxisMap) {
   if (dr) parts.push(`${axisMap.R}${fmt(dr)}`);
   if (!parts.length) return [];
   const f = feed != null ? ` F${Math.max(1, Math.round(feed))}` : "";
-  // IMPORTANT: G91 and G1 are returned as SEPARATE array elements.
+  // IMPORTANT: G91, G1, and G90 are returned as SEPARATE array elements.
   // Each element is sent as its own writeLine() call so the firmware serial
   // parser receives them on separate lines — prevents command merging that
-  // causes sudden uncontrolled motion (jerk).
-  return ['G91', `G1 ${parts.join(" ")}${f}`];
+  // causes sudden uncontrolled motion (jerk), and automatically restores
+  // absolute positioning mode (G90) so subsequent commands are not corrupted.
+  return ['G91', `G1 ${parts.join(" ")}${f}`, 'G90'];
 }
 
 export function dwell(ms = 50) {

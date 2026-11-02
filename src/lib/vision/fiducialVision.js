@@ -208,31 +208,31 @@ export class FiducialVisionDetector {
         let rejectReason = null;
 
         // Rule 1: overall core must be bright enough to be metallic copper
-        // (lowered from 90 → 75 to accept fiducials dimmed by auto-exposure bias)
-        if (coreMean < 75) {
+        if (coreMean < 95 || innerCoreMean < 90) {
           rejectReason = 'Dark Center (Not Copper)';
         }
         // Rule 2: ring/donut pattern — the primary through-hole signature.
         // Through-hole: innerCore (drill hole) significantly darker than overall core (annular rim).
         // Solid fiducial: innerCoreMean ≈ coreMean (uniform bright pad, no dip at centre).
-        else if (innerCoreMean < coreMean - 22 && innerCoreMean < 115) {
+        else if (innerCoreMean < coreMean - 15) {
           rejectReason = 'Ring Pattern (Through-Hole: Dark Drill Centre)';
         }
-        // Rule 3: viewed from above, through-hole barrel wall reflects — dark core, bright ring
-        else if (coreMean < boundaryMean - 12) {
-          rejectReason = 'Through-Hole (Dark Core / Bright Ring)';
+        // Rule 3: Core must be significantly brighter than soldermask clearance ring (boundary)
+        // For through-holes with copper pads: core is dark hole, boundary is bright pad (core < boundary).
+        // For bed surface: core ≈ boundary (flat contrast, no pad/clearance distinction).
+        else if (coreMean <= boundaryMean + 18) {
+          rejectReason = 'Inverted or Flat Contrast (Through-Hole or Bed Surface)';
         }
-        // Rule 4: outer zone must be darker than core (solder mask surrounding the pad is dark)
-        else if (outerMean > coreMean + 20) {
+        // Rule 4: outer zone must not have an overpowering bright halo
+        else if (outerMean > coreMean + 15) {
           rejectReason = 'Via/Hole (Bright Outer Halo)';
         }
         // Rule 5: fill ratio — solid pad vs hollow hole
-        // (lowered from 0.55 → 0.48 to be less aggressive with real fiducials near edges)
-        else if (fillRatio < 0.48) {
+        else if (fillRatio < 0.55) {
           rejectReason = 'Low Fill (Hollow — Likely Via)';
         }
-        // Rule 6: outer zone must not be bright copper flood (not on solder mask)
-        else if (outerMean > 165) {
+        // Rule 6: clearance ring must be dark bare substrate / solder mask opening
+        else if (boundaryMean > 150) {
           rejectReason = 'No Mask Isolation (Copper Flood)';
         }
 

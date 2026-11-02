@@ -528,6 +528,117 @@ export default function App() {
   const FID_COLORS = ["#2ea8ff", "#8e2bff", "#b7c400", "#ff6b35", "#9c27b0", "#25d9be"];
   const RAIL_COLORS = ["#ff9800", "#ff5722", "#ffc107", "#ff6d00"];
 
+  const buildPanelBoards = (detectedFiducials, effectivePanelGrid, isFlatPanel) => {
+    if (effectivePanelGrid && (effectivePanelGrid.dimX > 1 || effectivePanelGrid.dimY > 1)) {
+      const { dimX, dimY, stepX, stepY } = effectivePanelGrid;
+      const boards = [];
+      let bid = 1;
+
+      if (isFlatPanel && detectedFiducials && detectedFiducials.length > 0) {
+        // Flat panel: detectedFiducials contains fiducials for ALL boards across the panel.
+        // Partition them to individual boards based on their spatial grid position.
+        const xs = detectedFiducials.map(f => f.x);
+        const ys = detectedFiducials.map(f => f.y);
+        const minX = Math.min(...xs);
+        const minY = Math.min(...ys);
+
+        for (let j = 0; j < dimY; j++) {
+          for (let i = 0; i < dimX; i++) {
+            const ox = parseFloat((i * stepX).toFixed(4));
+            const oy = parseFloat((j * stepY).toFixed(4));
+            const currentBid = bid++;
+            const label = `Board ${currentBid}`;
+
+            // Filter fiducials belonging to this board cell (j, i)
+            const cellFids = detectedFiducials.filter(f => {
+              const col = stepX > 0 ? Math.max(0, Math.min(dimX - 1, Math.floor((f.x - minX + 0.1) / stepX))) : 0;
+              const row = stepY > 0 ? Math.max(0, Math.min(dimY - 1, Math.floor((f.y - minY + 0.1) / stepY))) : 0;
+              return col === i && row === j;
+            });
+
+            // Sort fiducials deterministically within this board (ascending Y, then X)
+            const sorted = [...cellFids].sort((a, b) => Math.abs(a.y - b.y) < 1.5 ? a.x - b.x : a.y - b.y);
+
+            const bFids = sorted.length > 0
+              ? sorted.map((fid, idx) => ({
+                  id: `F${idx + 1}`,
+                  design: { x: parseFloat(fid.x.toFixed(4)), y: parseFloat(fid.y.toFixed(4)) },
+                  machine: null,
+                  color: FID_COLORS[idx % FID_COLORS.length],
+                  confidence: fid.confidence,
+                }))
+              : [
+                  { id: "F1", design: null, machine: null, color: "#2ea8ff" },
+                  { id: "F2", design: null, machine: null, color: "#8e2bff" },
+                ];
+
+            boards.push({
+              id: currentBid,
+              name: label,
+              gridRow: j + 1,
+              gridCol: i + 1,
+              offsetX: ox,
+              offsetY: oy,
+              isFlatPanel: true,
+              fiducials: bFids,
+              xf: null,
+            });
+          }
+        }
+      } else {
+        // Step-and-repeat (%SR%) or replicated single-board panel:
+        for (let j = 0; j < dimY; j++) {
+          for (let i = 0; i < dimX; i++) {
+            const ox = parseFloat((i * stepX).toFixed(4));
+            const oy = parseFloat((j * stepY).toFixed(4));
+            const currentBid = bid++;
+            const label = `Board ${currentBid}`;
+            const bFids = detectedFiducials && detectedFiducials.length > 0
+              ? detectedFiducials.map((fid, idx) => ({
+                  id: fid.id || `F${idx + 1}`,
+                  design: { x: parseFloat((fid.x + ox).toFixed(4)), y: parseFloat((fid.y + oy).toFixed(4)) },
+                  machine: null,
+                  color: FID_COLORS[idx % FID_COLORS.length],
+                  confidence: fid.confidence,
+                }))
+              : [
+                  { id: "F1", design: null, machine: null, color: "#2ea8ff" },
+                  { id: "F2", design: null, machine: null, color: "#8e2bff" },
+                ];
+            const defaultXf = { type: 'translation', a: 1, b: 0, c: 0, d: 1, tx: ox, ty: oy };
+            boards.push({
+              id: currentBid,
+              name: label,
+              gridRow: j + 1,
+              gridCol: i + 1,
+              offsetX: ox,
+              offsetY: oy,
+              isFlatPanel: false,
+              fiducials: bFids,
+              xf: defaultXf,
+            });
+          }
+        }
+      }
+      return boards;
+    }
+
+    // Single board
+    const singleFids = detectedFiducials && detectedFiducials.length > 0
+      ? detectedFiducials.map((fid, idx) => ({
+          id: fid.id || `F${idx + 1}`,
+          design: { x: parseFloat(fid.x.toFixed(4)), y: parseFloat(fid.y.toFixed(4)) },
+          machine: null,
+          color: FID_COLORS[idx % FID_COLORS.length],
+          confidence: fid.confidence,
+        }))
+      : [
+          { id: "F1", design: null, machine: null, color: "#2ea8ff" },
+          { id: "F2", design: null, machine: null, color: "#8e2bff" },
+        ];
+    return [{ id: 1, name: 'Board 1', fiducials: singleFids, xf: null }];
+  };
+
   // Full re-initialisation for a given side: re-detects fiducials, replaces the fiducial
   // table, clears machine coords and the transform. Called on side-switch and on file load.
   const reinitSideState = useCallback((s, currentLayers) => {
@@ -538,35 +649,21 @@ export default function App() {
 
     setFiducialDetectionResult(detected.length > 0 ? detected : []);
 
-    const makeBoardFids = (offsetX = 0, offsetY = 0) =>
-      detected.length > 0
-        ? detected.map((fid, idx) => ({
-          id: fid.id || `F${idx + 1}`,
-          design: { x: parseFloat((fid.x + offsetX).toFixed(4)), y: parseFloat((fid.y + offsetY).toFixed(4)) },
-          machine: null, color: FID_COLORS[idx % FID_COLORS.length], confidence: fid.confidence,
-        }))
-        : [
-          { id: 'F1', design: null, machine: null, color: '#2ea8ff' },
-          { id: 'F2', design: null, machine: null, color: '#8e2bff' },
-        ];
-
     const newRailFids = detectedRail.map((fid, idx) => ({
       id: fid.id || `R${idx + 1}`,
       design: { x: parseFloat(fid.x.toFixed(4)), y: parseFloat(fid.y.toFixed(4)) },
       machine: null, color: RAIL_COLORS[idx % RAIL_COLORS.length], isRail: true,
     }));
 
-    setPanelBoards(prev => prev.map(board => ({
-      ...board,
-      fiducials: makeBoardFids(board.offsetX || 0, board.offsetY || 0),
-      xf: null,
-    })));
+    const isFlat = !panelInfo?.fromSr;
+    const newBoards = buildPanelBoards(detected, panelInfo, isFlat);
+    setPanelBoards(newBoards);
 
     setPanelRailFiducials(newRailFids);
-    setFidActiveId(newRailFids[0]?.id ?? (detected[0]?.id || 'F1'));
+    setFidActiveId(newRailFids[0]?.id ?? (newBoards[0]?.fiducials?.[0]?.id ? `${newBoards[0].name}_${newBoards[0].fiducials[0].id}` : 'F1'));
     setXf(null);
     setPanelXf(null);
-  }, [analyzeFiducialsWithRails]);
+  }, [analyzeFiducialsWithRails, panelInfo]);
 
   const changeSide = (s, skip = false) => {
     changeSideFn(s, layers, skip);
@@ -587,25 +684,10 @@ export default function App() {
 
     setFiducialDetectionResult(detectedFiducials);
 
-    const fidColors = ["#2ea8ff", "#8e2bff", "#b7c400", "#ff6b35", "#9c27b0", "#25d9be"];
-    const railColors = ["#ff9800", "#ff5722", "#ffc107", "#ff6d00"];
-
-    const makeBoardFiducials = (offsetX = 0, offsetY = 0) =>
-      detectedFiducials.length > 0
-        ? detectedFiducials.map((fid, idx) => ({
-          id: fid.id || `F${idx + 1}`,
-          design: { x: parseFloat((fid.x + offsetX).toFixed(4)), y: parseFloat((fid.y + offsetY).toFixed(4)) },
-          machine: null, color: fidColors[idx % fidColors.length], confidence: fid.confidence,
-        }))
-        : [
-          { id: "F1", design: null, machine: null, color: "#2ea8ff" },
-          { id: "F2", design: null, machine: null, color: "#8e2bff" },
-        ];
-
     const autoRailFids = detectedRailFiducials.map((fid, idx) => ({
       id: fid.id || `R${idx + 1}`,
       design: { x: parseFloat(fid.x.toFixed(4)), y: parseFloat(fid.y.toFixed(4)) },
-      machine: null, color: railColors[idx % railColors.length], isRail: true,
+      machine: null, color: RAIL_COLORS[idx % RAIL_COLORS.length], isRail: true,
     }));
     setPanelRailFiducials(autoRailFids);
     setFidActiveId(autoRailFids[0]?.id ?? null); // default arm to R1 on every Gerber load
@@ -617,30 +699,17 @@ export default function App() {
       dimY: autoPanel.dimY || autoPanel.rows || 1,
       stepX: autoPanel.stepX != null ? autoPanel.stepX : 0,
       stepY: autoPanel.stepY != null ? autoPanel.stepY : 0,
+      fromSr: !!detectedPanelGrid,
     } : null;
 
-    if (effectivePanelGrid && (effectivePanelGrid.dimX > 1 || effectivePanelGrid.dimY > 1)) {
-      const { dimX, dimY, stepX, stepY } = effectivePanelGrid;
-      const boards = [];
-      let bid = 1;
-      for (let j = 0; j < dimY; j++) {
-        for (let i = 0; i < dimX; i++) {
-          const ox = parseFloat((i * stepX).toFixed(4));
-          const oy = parseFloat((j * stepY).toFixed(4));
-          const defaultXf = { type: 'translation', a: 1, b: 0, c: 0, d: 1, tx: ox, ty: oy };
-          const label = dimY > 1 ? `Board R${j + 1}C${i + 1}` : `Board ${i + 1}`;
-          boards.push({ id: bid++, name: label, offsetX: ox, offsetY: oy, fiducials: makeBoardFiducials(ox, oy), xf: defaultXf });
-        }
-      }
-      setPanelBoards(boards);
-      _setActiveBoardIndex(0);
-      setPanelInfo(effectivePanelGrid);
-      setApplyXf(true);
-    } else {
-      setPanelBoards([{ id: 1, name: 'Board 1', fiducials: makeBoardFiducials(), xf: null }]);
-      _setActiveBoardIndex(0);
-      setPanelInfo(null);
-      if (!detectedFiducials.length) setFiducialDetectionResult([]);
+    const isFlatPanel = !detectedPanelGrid && (effectivePanelGrid && (effectivePanelGrid.dimX > 1 || effectivePanelGrid.dimY > 1));
+    const boards = buildPanelBoards(detectedFiducials, effectivePanelGrid, isFlatPanel);
+    setPanelBoards(boards);
+    _setActiveBoardIndex(0);
+    setPanelInfo(effectivePanelGrid);
+    setApplyXf(true);
+    if (!autoRailFids.length && boards[0]?.fiducials?.[0]?.id) {
+      setFidActiveId(`${boards[0].name}_${boards[0].fiducials[0].id}`);
     }
 
     if (origins.length > 0) {
@@ -1681,12 +1750,60 @@ export default function App() {
     getEventMm
   ]);
 
-  const onInputMachine = (id, partial) => {
-    setFiducials(prev => prev.map(f => f.id === id ? { ...f, machine: { x: (partial.x ?? f.machine?.x ?? null), y: (partial.y ?? f.machine?.y ?? null) } } : f));
+  const onInputMachine = (id, partial, targetBoardIdx) => {
+    if (targetBoardIdx !== undefined && targetBoardIdx !== null && typeof targetBoardIdx === 'number') {
+      setPanelBoards(prev => {
+        const newBoards = [...prev];
+        if (!newBoards[targetBoardIdx]) return prev;
+        const b = { ...newBoards[targetBoardIdx] };
+        b.fiducials = (b.fiducials || []).map(f => f.id === id ? {
+          ...f,
+          machine: { x: (partial.x ?? f.machine?.x ?? null), y: (partial.y ?? f.machine?.y ?? null) }
+        } : f);
+        newBoards[targetBoardIdx] = b;
+        return newBoards;
+      });
+    } else {
+      setFiducials(prev => prev.map(f => f.id === id ? { ...f, machine: { x: (partial.x ?? f.machine?.x ?? null), y: (partial.y ?? f.machine?.y ?? null) } } : f));
+    }
   };
-  const onClearMachine = (id) => setFiducials(prev => prev.map(f => f.id === id ? { ...f, machine: null } : f));
-  const onClearOne = (id) => setFiducials(prev => prev.map(f => f.id === id ? { ...f, design: null, machine: null } : f));
-  const onClearAll = () => { setFiducials(prev => prev.map(f => ({ ...f, design: null, machine: null }))); setXf(null); };
+  const onClearMachine = (id, targetBoardIdx) => {
+    if (targetBoardIdx !== undefined && targetBoardIdx !== null && typeof targetBoardIdx === 'number') {
+      setPanelBoards(prev => {
+        const newBoards = [...prev];
+        if (!newBoards[targetBoardIdx]) return prev;
+        const b = { ...newBoards[targetBoardIdx] };
+        b.fiducials = (b.fiducials || []).map(f => f.id === id ? { ...f, machine: null } : f);
+        newBoards[targetBoardIdx] = b;
+        return newBoards;
+      });
+    } else {
+      setFiducials(prev => prev.map(f => f.id === id ? { ...f, machine: null } : f));
+    }
+  };
+  const onClearOne = (id, targetBoardIdx) => {
+    if (targetBoardIdx !== undefined && targetBoardIdx !== null && typeof targetBoardIdx === 'number') {
+      setPanelBoards(prev => {
+        const newBoards = [...prev];
+        if (!newBoards[targetBoardIdx]) return prev;
+        const b = { ...newBoards[targetBoardIdx] };
+        b.fiducials = (b.fiducials || []).map(f => f.id === id ? { ...f, design: null, machine: null } : f);
+        newBoards[targetBoardIdx] = b;
+        return newBoards;
+      });
+    } else {
+      setFiducials(prev => prev.map(f => f.id === id ? { ...f, design: null, machine: null } : f));
+    }
+  };
+  const onClearAll = () => {
+    setPanelBoards(prev => prev.map(b => ({
+      ...b,
+      fiducials: (b.fiducials || []).map(f => ({ ...f, machine: null })),
+      xf: null,
+    })));
+    setFiducials(prev => prev.map(f => ({ ...f, design: null, machine: null })));
+    setXf(null);
+  };
 
   // Auto-advance arm dropdown after each successful fiducial save.
   const onAdvanceArmedFid = useCallback((justSavedId) => {
@@ -1771,6 +1888,33 @@ export default function App() {
         : fitSimilarity(withDesign.map(f => f.design), withDesign.map(f => f.machine));
     setPanelXf(T);
   }, [panelRailFiducials]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Auto-solve board transform for ANY board in panelBoards once 2+ fiducials have machine coords ──
+  useEffect(() => {
+    if (!panelBoards || panelBoards.length === 0) return;
+    let anyChanged = false;
+    const updated = panelBoards.map(board => {
+      const solved = (board.fiducials || []).filter(f => f.design && f.machine);
+      if (solved.length >= 2 && !board.xf) {
+        try {
+          const T = solved.length >= 4
+            ? fitHomography(solved.map(f => f.design), solved.map(f => f.machine))
+            : solved.length >= 3
+              ? fitAffine(solved.map(f => f.design), solved.map(f => f.machine))
+              : fitSimilarity(solved.map(f => f.design), solved.map(f => f.machine));
+          anyChanged = true;
+          return { ...board, xf: T };
+        } catch (e) {
+          console.warn(`[App] Auto-solve failed for ${board.name}:`, e);
+        }
+      }
+      return board;
+    });
+    if (anyChanged) {
+      setPanelBoards(updated);
+      setApplyXf(true);
+    }
+  }, [panelBoards]);
 
   const onRedetectFiducials = () => {
     if (layers.length === 0) return;
@@ -1895,11 +2039,20 @@ export default function App() {
     { id: 'NetworkManagerPanel', num: '📡', label: 'Network', sub: 'Wi-Fi / Bluetooth / Fleet' },
   ];
 
+  // Compute whether all fiducials (across all panel boards and rails) have been captured
+  const allFidsCaptured = useMemo(() => {
+    const railsDone = !panelRailFiducials?.length || panelRailFiducials.every(f => f.machine);
+    const boardsDone = panelBoards && panelBoards.length > 0
+      ? panelBoards.every(b => b.fiducials?.length > 0 && b.fiducials.every(f => f.machine))
+      : (fiducials && fiducials.length > 0 && fiducials.every(f => f.machine));
+    return Boolean(railsDone && boardsDone);
+  }, [panelRailFiducials, panelBoards, fiducials]);
+
   // Step done heuristics
   const stepDone = (id) => {
     if (id === 'SerialPanel') return isSerialConnected;
     if (id === 'Viewer') return layers.length > 0;
-    if (id === 'FiducialPanel') return fiducials.some(f => f.machine);
+    if (id === 'FiducialPanel') return allFidsCaptured;
     return false;
   };
 
@@ -1909,7 +2062,7 @@ export default function App() {
         isConnected={isSerialConnected}
         isHomed={isHomed}
         hasFileLoaded={generatedPath !== null && generatedPath.segments && generatedPath.segments.length > 0}
-        hasFiducialsSet={panelBoards && panelBoards.length > 0 && panelBoards[0].fiducials?.every(f => f.machine)}
+        hasFiducialsSet={allFidsCaptured}
         isJobRunning={isJobRunning}
         jobStage={panelJobStage}
       />

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useToast } from '../Toast.jsx';
 import { dispensePoint, dispenseBead } from "../lib/motion/gcode.js";
@@ -174,6 +174,15 @@ export default function AutomatedDispensingPanel({
   });
   useEffect(() => { localStorage.setItem('dryRunLowerZ', String(dryRunLowerZ)); }, [dryRunLowerZ]);
 
+  // Option to automatically center camera crosshair directly over component centroid via optical vision
+  const [dryRunAutoCenter, setDryRunAutoCenter] = useState(() => {
+    try {
+      const v = localStorage.getItem('dryRunAutoCenter');
+      return v !== null ? v === 'true' : true;
+    } catch { return true; }
+  });
+  useEffect(() => { localStorage.setItem('dryRunAutoCenter', String(dryRunAutoCenter)); }, [dryRunAutoCenter]);
+
   // Real-time tracking of machine coordinates and GRBL state
   const machinePositionRef = useRef(machinePosition || { x: 0, y: 0, z: 0 });
   const grblStateRef = useRef('Idle');
@@ -247,6 +256,45 @@ export default function AutomatedDispensingPanel({
     return nearestNeighborSort(filteredPnpComponents);
   }, [filteredPnpComponents, optimizePath, isPnpMode]);
 
+  const effectiveSequence = isPnpMode ? optimizedPnpComponents : activeSequence;
+
+  // Find which board a given pad belongs to by spatial proximity
+  const getPadBoard = useCallback((pad) => {
+    if (!panelBoards || panelBoards.length === 0) return null;
+    if (panelBoards.length === 1) return panelBoards[0];
+    let bestBoard = panelBoards[0];
+    let bestDist = Infinity;
+    for (const b of panelBoards) {
+      const fids = b.fiducials?.filter(f => f.design);
+      let bx, by;
+      if (fids && fids.length > 0) {
+        bx = fids.reduce((sum, f) => sum + f.design.x, 0) / fids.length;
+        by = fids.reduce((sum, f) => sum + f.design.y, 0) / fids.length;
+      } else {
+        bx = b.offsetX || 0;
+        by = b.offsetY || 0;
+      }
+      const d = Math.hypot(pad.x - bx, pad.y - by);
+      if (d < bestDist) {
+        bestDist = d;
+        bestBoard = b;
+      }
+    }
+    return bestBoard;
+  }, [panelBoards]);
+
+  // Determine whether pads/components are already placed across the full flat panel.
+  // A sequence is ONLY flat if components actually populate at least 2 distinct boards!
+  const isFlatPads = useMemo(() => {
+    if (!panelBoards || panelBoards.length <= 1 || !effectiveSequence || effectiveSequence.length === 0) return false;
+    const boardsWithPads = new Set();
+    for (const pad of effectiveSequence) {
+      const b = getPadBoard(pad);
+      if (b) boardsWithPads.add(b.id);
+    }
+    return boardsWithPads.size >= Math.min(2, panelBoards.length);
+  }, [panelBoards, effectiveSequence, getPadBoard]);
+
   // Travel savings vs original CSV order — computed in machine space across ALL panel boards.
   const pathStats = useMemo(() => {
     if (!isPnpMode || filteredPnpComponents.length < 2) return null;
@@ -254,11 +302,14 @@ export default function AutomatedDispensingPanel({
 
     // Helper: approximate machine coord for a component on a given board
     const toMC = (comp, board) => {
-      if (panelXf && board?.offsetX != null) {
-        return applyTransform(panelXf, { x: comp.x + board.offsetX, y: comp.y + board.offsetY });
-      }
-      if (applyXf && board?.xf) return applyTransform(board.xf, comp);
-      return { x: comp.x, y: comp.y };
+      const addOffset = !isFlatPads;
+      const pt = {
+        x: comp.x + (addOffset && board?.offsetX != null ? board.offsetX : 0),
+        y: comp.y + (addOffset && board?.offsetY != null ? board.offsetY : 0),
+      };
+      if (applyXf && board?.xf) return applyTransform(board.xf, pt);
+      if (panelXf) return applyTransform(panelXf, pt);
+      return pt;
     };
 
     if (nBoards === 1 || !panelBoards?.length) {
@@ -281,9 +332,33 @@ export default function AutomatedDispensingPanel({
     const opt = totalTravelMm(optFlat);
     const pct = orig > 0 ? Math.round((orig - opt) / orig * 100) : 0;
     return { orig: Math.round(orig), opt: Math.round(opt), pct, boards: nBoards };
-  }, [filteredPnpComponents, optimizedPnpComponents, isPnpMode, panelBoards, panelXf, applyXf]);
+  }, [filteredPnpComponents, optimizedPnpComponents, isPnpMode, panelBoards, panelXf, applyXf, isFlatPads]);
 
-  const effectiveSequence = isPnpMode ? optimizedPnpComponents : activeSequence;
+  // Compute predicted machine coordinate for a pad or PnP component on a specified board
+  const getPadPredictedMachineCoord = useCallback((pad, boardIdx = 0) => {
+    if (!pad) return null;
+    const boards = (panelBoards && panelBoards.length > 0) ? panelBoards : [{ id: 1, offsetX: 0, offsetY: 0 }];
+    const bIdx = Math.max(0, Math.min(boards.length - 1, boardIdx));
+    const board = boards[bIdx];
+    const boardXf = board?.xf || xf;
+    const hasBoardSpecificXf = boardXf && boardXf !== panelXf;
+    const effectiveXf = hasBoardSpecificXf ? boardXf : panelXf;
+
+    if (effectiveXf) {
+      const addOffset = !isFlatPads;
+      const panelSpacePt = {
+        x: pad.x + (addOffset && board?.offsetX != null ? board.offsetX : 0),
+        y: pad.y + (addOffset && board?.offsetY != null ? board.offsetY : 0)
+      };
+      return applyTransform(effectiveXf, panelSpacePt);
+    } else {
+      const ox = selectedOrigin ? selectedOrigin.x : (boardOutline ? boardOutline.minX : 0);
+      const oy = selectedOrigin ? selectedOrigin.y : (boardOutline ? boardOutline.minY : 0);
+      const boardOffX = isPnpPanel && board?.offsetX != null ? board.offsetX : 0;
+      const boardOffY = isPnpPanel && board?.offsetY != null ? board.offsetY : 0;
+      return { x: pad.x - ox + boardOffX, y: pad.y - oy + boardOffY };
+    }
+  }, [panelBoards, xf, panelXf, isFlatPads, selectedOrigin, boardOutline, isPnpPanel]);
 
   const togglePnpExclude = (id) => setPnpExcluded(prev => {
     const next = new Set(prev);
@@ -339,13 +414,14 @@ export default function AutomatedDispensingPanel({
       return;
     }
 
-    // Priority 2: panelBoards already has multiple boards (SR-built by App)
+    // Priority 2: panelBoards already has multiple boards (SR-built by App or flat panel)
     if (panelBoards && panelBoards.length > 1) {
       const xOff = [...new Set(panelBoards.map(b => b.offsetX || 0))].sort((a, b) => a - b);
       const yOff = [...new Set(panelBoards.map(b => b.offsetY || 0))].sort((a, b) => a - b);
-      const cols = xOff.length, rows = yOff.length;
-      const stepX = cols > 1 ? parseFloat((xOff[1] - xOff[0]).toFixed(4)) : 0;
-      const stepY = rows > 1 ? parseFloat((yOff[1] - yOff[0]).toFixed(4)) : 0;
+      const cols = panelInfo?.dimX || Math.max(1, xOff.length);
+      const rows = panelInfo?.dimY || Math.max(1, yOff.length);
+      const stepX = panelInfo?.stepX ?? (cols > 1 ? parseFloat((xOff[1] - xOff[0]).toFixed(4)) : 0);
+      const stepY = panelInfo?.stepY ?? (rows > 1 ? parseFloat((yOff[1] - yOff[0]).toFixed(4)) : 0);
       setPnpPanelRows(rows); setPnpPanelCols(cols);
       setPnpPanelStepX(stepX); setPnpPanelStepY(stepY);
       return;
@@ -591,9 +667,9 @@ export default function AutomatedDispensingPanel({
     const dist = Math.hypot(targetX - curPos.x, targetY - curPos.y);
     const transitMs = Math.ceil((dist / (feed / 60)) * 1000);
 
-    // Command the move
-    console.log(`[MoveCamera] G1 X${targetX.toFixed(3)} Y${targetY.toFixed(3)} F${feed} (dist: ${dist.toFixed(1)}mm, est: ${(transitMs/1000).toFixed(1)}s)`);
-    await window.serial.writeLine(`G1 X${targetX.toFixed(3)} Y${targetY.toFixed(3)} F${feed}`);
+    // Command the move (explicitly prepending G90 to ensure absolute positioning mode)
+    console.log(`[MoveCamera] G90 G1 X${targetX.toFixed(3)} Y${targetY.toFixed(3)} F${feed} (dist: ${dist.toFixed(1)}mm, est: ${(transitMs/1000).toFixed(1)}s)`);
+    await window.serial.writeLine(`G90 G1 X${targetX.toFixed(3)} Y${targetY.toFixed(3)} F${feed}`);
 
     // Wait until machine physically arrives within tolerance
     const startTime = Date.now();
@@ -775,15 +851,34 @@ export default function AutomatedDispensingPanel({
         let outCount = 0;
         let firstOut = null;
         if (effectiveSequence?.length > 0 && panelBoards?.length > 0) {
-          for (const board of panelBoards) {
-            const xfm = applyXf ? board.xf : null;
+          if (isFlatPads) {
             for (const pad of effectiveSequence) {
+              const board = getPadBoard(pad);
+              const xfm = applyXf ? (board?.xf || panelXf) : null;
               let tp = xfm ? applyTransform(xfm, pad) : pad;
               const px = tp.x + (toolOffset?.dx || 0);
               const py = tp.y + (toolOffset?.dy || 0);
               if (px < 0 || px > maxX || py < 0 || py > maxY) {
                 outCount++;
                 if (!firstOut) firstOut = `${pad.id || 'pad'} @ X${px.toFixed(1)}, Y${py.toFixed(1)}`;
+              }
+            }
+          } else {
+            for (const board of panelBoards) {
+              const xfm = applyXf ? (board.xf || panelXf) : null;
+              for (const pad of effectiveSequence) {
+                const addOffset = !isFlatPads;
+                const panelPt = {
+                  x: pad.x + (addOffset && board.offsetX != null ? board.offsetX : 0),
+                  y: pad.y + (addOffset && board.offsetY != null ? board.offsetY : 0)
+                };
+                let tp = xfm ? applyTransform(xfm, panelPt) : panelPt;
+                const px = tp.x + (toolOffset?.dx || 0) + calibCorrection.x;
+                const py = tp.y + (toolOffset?.dy || 0) + calibCorrection.y;
+                if (px < 0 || px > maxX || py < 0 || py > maxY) {
+                  outCount++;
+                  if (!firstOut) firstOut = `${pad.id || 'pad'} @ X${px.toFixed(1)}, Y${py.toFixed(1)}`;
+                }
               }
             }
           }
@@ -1048,9 +1143,9 @@ export default function AutomatedDispensingPanel({
 
       const seq = effectiveSequence;
 
-      // PnP Panel override: synthesize virtual boards for each sub-board in the panel grid
+      // PnP Panel override: synthesize virtual boards only if panelBoards doesn't already have real boards
       let loopBoards, loopPanelXf;
-      if (isPnpPanel) {
+      if (isPnpPanel && (!panelBoards || panelBoards.length <= 1)) {
         loopBoards = [];
         if (pnpPanelSequence === 'col') {
           // Column-first sequence: cover column 1 bottom-to-top, then column 2 bottom-to-top
@@ -1101,7 +1196,7 @@ export default function AutomatedDispensingPanel({
         }
         loopPanelXf = applyXf ? xf : null;
       } else {
-        loopBoards = panelBoards;
+        loopBoards = panelBoards && panelBoards.length > 0 ? panelBoards : [{ id: 1, name: 'Board 1', xf: null }];
         loopPanelXf = panelXf;
       }
       activeLoopBoardsRef.current = loopBoards;
@@ -1115,12 +1210,14 @@ export default function AutomatedDispensingPanel({
           const firstXf = applyXf ? firstBoard.xf : null;
           const fp = seq[0];
           let probeTarget = null;
-          if (loopPanelXf && firstBoard.offsetX != null) {
+          if (loopPanelXf && firstBoard.offsetX != null && !isFlatPads) {
             const ps = { x: fp.x + firstBoard.offsetX, y: fp.y + firstBoard.offsetY };
             probeTarget = applyTransform(loopPanelXf, ps);
             if (firstXf && firstXf !== loopPanelXf) probeTarget = applyTransform(firstXf, probeTarget);
           } else if (firstXf) {
             probeTarget = applyTransform(firstXf, fp);
+          } else if (loopPanelXf) {
+            probeTarget = applyTransform(loopPanelXf, fp);
           }
           if (probeTarget) {
             const cx = probeTarget.x + (toolOffset?.dx || 0) + calibCorrection.x;
@@ -1144,6 +1241,10 @@ export default function AutomatedDispensingPanel({
       for (let bIdx = 0; bIdx < loopBoards.length; bIdx++) {
         const board = loopBoards[bIdx];
         let transform = applyXf ? board.xf : null;
+
+        if (applyXf && !transform && loopPanelXf) {
+          transform = loopPanelXf;
+        }
 
         if (applyXf && !transform && !isPnpPanel) {
           throw new Error(`Board "${board.name}" has no alignment transform (xf) calculated! Please solve its fiducials first.`);
@@ -1219,11 +1320,22 @@ export default function AutomatedDispensingPanel({
       }
 
       // ── Phase 2: Build flat job plan ─────────────────────────────────────
-      // Process board-by-board in sequence. The points within each board are already optimized by the global sequencer.
+      // Process board-by-board in sequence.
       let jobPlan = [];
-      for (let bIdx = 0; bIdx < loopBoards.length; bIdx++) {
-        for (let seqIdx = 0; seqIdx < seq.length; seqIdx++) {
-          jobPlan.push({ bIdx, seqIdx });
+      if (isFlatPads) {
+        for (let bIdx = 0; bIdx < loopBoards.length; bIdx++) {
+          const board = loopBoards[bIdx];
+          for (let seqIdx = 0; seqIdx < seq.length; seqIdx++) {
+            if (getPadBoard(seq[seqIdx])?.id === board.id) {
+              jobPlan.push({ bIdx, seqIdx });
+            }
+          }
+        }
+      } else {
+        for (let bIdx = 0; bIdx < loopBoards.length; bIdx++) {
+          for (let seqIdx = 0; seqIdx < seq.length; seqIdx++) {
+            jobPlan.push({ bIdx, seqIdx });
+          }
         }
       }
 
@@ -1280,11 +1392,8 @@ export default function AutomatedDispensingPanel({
         const effectiveXf = hasBoardSpecificXf ? transform : loopPanelXf;
 
         if (effectiveXf) {
-          // When using the global panelXf, add board offsets before transforming
-          // because panelXf maps from panel-space (design + board offset) to machine-space.
-          // When using individual board.xf, do NOT add offsets — the board's own xf
-          // already encodes the offset in its tx/ty translation component.
-          const addOffset = !hasBoardSpecificXf;
+          // When using board or panel transform, add board offsets for single-board sequence
+          const addOffset = !isFlatPads;
           const panelSpacePt = {
             x: p.x + (addOffset && board.offsetX != null ? board.offsetX : 0),
             y: p.y + (addOffset && board.offsetY != null ? board.offsetY : 0)
@@ -1313,7 +1422,7 @@ export default function AutomatedDispensingPanel({
           const dp = { x: origDesignX + dx, y: origDesignY + dy };
           let mx, my;
           if (effectiveXf) {
-            const addOffset = !hasBoardSpecificXf;
+            const addOffset = !isFlatPads;
             const panelSpacePt = {
               x: dp.x + (addOffset && board.offsetX != null ? board.offsetX : 0),
               y: dp.y + (addOffset && board.offsetY != null ? board.offsetY : 0)
@@ -1390,15 +1499,65 @@ export default function AutomatedDispensingPanel({
           // 1. Move XY to component center at safe travel height
           await moveCameraToTarget(finalX, finalY, inspectSpeed);
 
-          // 2. Lower Z down to component inspection height if requested
+          // 2. Optical Auto-Centering (vision servo snaps to component centroid)
+          if (dryRunAutoCenter) {
+            try {
+              // Settle time for gantry vibration & camera stream stability
+              await new Promise(r => setTimeout(r, 250));
+              const res = await fetch('http://localhost:8000/api/find_component_center', { method: 'POST' });
+              if (res.ok) {
+                const data = await res.json();
+                if (data.found && data.offset_dx !== undefined && data.offset_dy !== undefined) {
+                  let dist = Math.hypot(data.offset_dx, data.offset_dy);
+                  if (dist > 0.015 && dist < 6.0) {
+                    console.log(`[Camera Alignment] Auto-centering component ${p.id || globalPointCount} (${data.comp_type || 'component'}): ΔX:${data.offset_dx >= 0 ? '+' : ''}${data.offset_dx} ΔY:${data.offset_dy >= 0 ? '+' : ''}${data.offset_dy} mm`);
+                    const cmds = jogRel({ dx: data.offset_dx, dy: data.offset_dy, feed: 150 });
+                    for (const line of cmds) {
+                      await sendGcodeWait(line, 4000);
+                    }
+                    await sendGcodeWait('G4 P0.05', 4000);
+                    if (window.serial?.write) await window.serial.write('?');
+                    await new Promise(r => setTimeout(r, 200));
+
+                    // Micro-refinement pass for larger corrections (>0.12mm) to guarantee sub-0.02mm centering
+                    if (dist > 0.12) {
+                      try {
+                        const refRes = await fetch('http://localhost:8000/api/find_component_center', { method: 'POST' });
+                        if (refRes.ok) {
+                          const refData = await refRes.json();
+                          if (refData.found && refData.offset_dx !== undefined && refData.offset_dy !== undefined) {
+                            const refDist = Math.hypot(refData.offset_dx, refData.offset_dy);
+                            if (refDist > 0.02 && refDist < 0.35) {
+                              console.log(`[Camera Alignment] Fine micro-refinement: ΔX:${refData.offset_dx >= 0 ? '+' : ''}${refData.offset_dx} ΔY:${refData.offset_dy >= 0 ? '+' : ''}${refData.offset_dy} mm`);
+                              const refCmds = jogRel({ dx: refData.offset_dx, dy: refData.offset_dy, feed: 100 });
+                              for (const line of refCmds) await sendGcodeWait(line, 3000);
+                              await sendGcodeWait('G4 P0.03', 3000);
+                            }
+                          }
+                        }
+                      } catch {}
+                    }
+                  } else {
+                    console.log(`[Camera Alignment] Component ${p.id || globalPointCount} already centered (residual: ${dist.toFixed(3)}mm)`);
+                  }
+                } else {
+                  console.log(`[Camera Alignment] Component center scan: ${data.error || 'no distinct pads found'}`);
+                }
+              }
+            } catch (err) {
+              console.warn(`[Camera Alignment] Auto-center fetch error: ${err.message}`);
+            }
+          }
+
+          // 3. Lower Z down to component inspection height if requested
           if (dryRunLowerZ) {
             await moveZAndWait(zWork, 250);
           }
 
-          // 3. Pause for 1.5s so operator can clearly verify camera crosshair alignment in video feed
+          // 4. Pause for 1.5s so operator can clearly verify camera crosshair alignment in video feed
           await new Promise(r => setTimeout(r, 1500));
 
-          // 4. Retract Z back to safe travel height before traversing to next component
+          // 5. Retract Z back to safe travel height before traversing to next component
           if (dryRunLowerZ) {
             await moveZAndWait(safeTravelHeight, 300);
           }
@@ -1767,9 +1926,10 @@ export default function AutomatedDispensingPanel({
   // Applies the live calibration correction so the crosshair lands precisely on-center
   const moveCameraToMachineCoord = async (mx, my) => {
     if (!window.serial || !window.serial.writeLine) { toast.warning('Serial not connected'); return; }
-    const feed = speedSettings?.travelSpeed || 4000;
+    const feed = 400; // Smooth inspection speed
     const corrX = mx + calibCorrection.x;
     const corrY = my + calibCorrection.y;
+    await window.serial.writeLine(fw.absMode);
     await window.serial.writeLine(`G1 Z${safeTravelHeight} F400`);
     await window.serial.writeLine(`G1 X${corrX.toFixed(3)} Y${corrY.toFixed(3)} F${feed}`);
   };
@@ -2305,6 +2465,10 @@ export default function AutomatedDispensingPanel({
                     if (offset) {
                       setPnpOffsetX(parseFloat(offset.x.toFixed(3)));
                       setPnpOffsetY(parseFloat(offset.y.toFixed(3)));
+                      if (typeof offset.flipY === 'boolean') {
+                        setPnpFlipY(offset.flipY);
+                      }
+                      toast.success(`Matched ${offset.matches} fiducials! Offset: X${offset.x.toFixed(3)}, Y${offset.y.toFixed(3)} mm`);
                     } else {
                       setPnpOffsetX(0);
                       setPnpOffsetY(0);
@@ -2372,17 +2536,43 @@ export default function AutomatedDispensingPanel({
                     </span>
                   </label>
                   <div style={{ fontSize: '0.85em' }}>
-                    <div style={{ marginBottom: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                    <div style={{ marginBottom: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <span style={{ color: '#e6edf3' }}>Origin offset (mm)</span>
-                      {(pnpOffsetX !== 0 || pnpOffsetY !== 0) ? (
-                        <span style={{ fontSize: '0.76em', color: '#3fb950', background: 'rgba(63,185,80,0.1)', border: '1px solid #3fb95044', borderRadius: 3, padding: '1px 6px' }}>
-                          ✓ Auto-detected
-                        </span>
-                      ) : (
-                        <span style={{ fontSize: '0.76em', color: '#8b949e' }}>
-                          0,0 — no fiducials matched
-                        </span>
-                      )}
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        {(pnpOffsetX !== 0 || pnpOffsetY !== 0) ? (
+                          <span style={{ fontSize: '0.76em', color: '#3fb950', background: 'rgba(63,185,80,0.1)', border: '1px solid #3fb95044', borderRadius: 3, padding: '1px 6px' }}>
+                            ✓ Auto-detected
+                          </span>
+                        ) : (
+                          <span style={{ fontSize: '0.76em', color: '#8b949e' }}>
+                            0,0 — no fiducials matched
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          className="btn secondary sm"
+                          style={{ fontSize: '0.74em', padding: '1px 6px', cursor: 'pointer' }}
+                          title="Re-compute offset by matching CSV fiducials against Gerber fiducials"
+                          onClick={() => {
+                            const allAppFiducials = [
+                              ...fiducials,
+                              ...panelRailFiducials,
+                              ...panelBoards.flatMap(b => b.fiducials || []),
+                            ];
+                            const offset = autoComputePnpOffset(pnpComponents, allAppFiducials);
+                            if (offset) {
+                              setPnpOffsetX(parseFloat(offset.x.toFixed(3)));
+                              setPnpOffsetY(parseFloat(offset.y.toFixed(3)));
+                              if (typeof offset.flipY === 'boolean') setPnpFlipY(offset.flipY);
+                              toast.success(`Matched ${offset.matches} fiducials! Offset: X${offset.x.toFixed(3)}, Y${offset.y.toFixed(3)} mm`);
+                            } else {
+                              toast.warning('No matching fiducials found in CSV.');
+                            }
+                          }}
+                        >
+                          🔄 Auto-Detect
+                        </button>
+                      </div>
                     </div>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
                       <label style={{ fontSize: '0.9em' }}>
@@ -2878,23 +3068,34 @@ export default function AutomatedDispensingPanel({
             Safe camera testing mode: automatically moves the camera crosshair over the center of each component at safe travel height so you can verify positioning. Dispenser valves (M3/M5), purge, and Z touch probing are completely bypassed.
           </span>
           {dryRunMode && (
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', color: '#c9d1d9', fontSize: '0.85rem', marginLeft: 26, marginTop: 4 }}>
-              <input
-                type="checkbox"
-                checked={dryRunLowerZ}
-                onChange={e => setDryRunLowerZ(e.target.checked)}
-                style={{ width: 16, height: 16, cursor: 'pointer' }}
-              />
-              Lower Z to component inspection height (Z: {dispenseHeight}mm) at each point
-            </label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginLeft: 26, marginTop: 4 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', color: '#c9d1d9', fontSize: '0.85rem' }}>
+                <input
+                  type="checkbox"
+                  checked={dryRunLowerZ}
+                  onChange={e => setDryRunLowerZ(e.target.checked)}
+                  style={{ width: 16, height: 16, cursor: 'pointer' }}
+                />
+                Lower Z to component inspection height (Z: {dispenseHeight}mm) at each point
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', color: '#c9d1d9', fontSize: '0.85rem' }}>
+                <input
+                  type="checkbox"
+                  checked={dryRunAutoCenter}
+                  onChange={e => setDryRunAutoCenter(e.target.checked)}
+                  style={{ width: 16, height: 16, cursor: 'pointer' }}
+                />
+                🎯 Optical Auto-Centering (vision servo automatically snaps to component centroid)
+              </label>
+            </div>
           )}
         </div>
 
         {/* ── Pad Alignment Preview ─────────────────────────── */}
-        {!isPnpMode && activeSequence.length > 0 && fiducials.some(f => f.design && f.machine) && (
+        {effectiveSequence.length > 0 && (
           <div style={{ marginTop: 14, padding: '12px', background: '#0d1117', border: '1px solid #30363d', borderRadius: 8 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <span style={{ fontWeight: 'bold', color: '#58a6ff', fontSize: '0.9em' }}>🔍 Pad Alignment Preview</span>
+              <span style={{ fontWeight: 'bold', color: '#58a6ff', fontSize: '0.9em' }}>🔍 Pad & Component Alignment Preview</span>
               {calibCaptures.length > 0 && (
                 <span style={{ fontSize: '0.75em', color: '#3fb950', background: '#0d2a0d', border: '1px solid #3fb950', borderRadius: 4, padding: '2px 6px' }}>
                   ✓ {calibCaptures.length} calibration point{calibCaptures.length > 1 ? 's' : ''} · correction: X{calibCorrection.x >= 0 ? '+' : ''}{calibCorrection.x.toFixed(3)} Y{calibCorrection.y >= 0 ? '+' : ''}{calibCorrection.y.toFixed(3)} mm
@@ -2902,34 +3103,45 @@ export default function AutomatedDispensingPanel({
               )}
             </div>
             <div style={{ fontSize: '0.78em', color: '#8b949e', marginBottom: 10 }}>
-              Move camera crosshair over each pad to verify alignment. Jog precisely onto a pad center, then click
+              Move camera crosshair over any component to verify alignment. Click <strong style={{ color: '#58a6ff' }}>🎯 Auto-Center</strong> or jog precisely onto the center, then click
               <strong style={{ color: '#f0a500' }}> 📌 Capture True Center</strong> to measure &amp; correct systematic offset.
             </div>
 
             {calibCaptures.length > 0 && (
               <div style={{ marginBottom: 10, padding: '6px 10px', background: '#161b22', borderRadius: 6, fontSize: '0.78em', border: '1px solid #3fb950' }}>
-                <div style={{ color: '#3fb950', fontWeight: 'bold', marginBottom: 4 }}>📐 Active Correction (applied to camera preview moves)</div>
+                <div style={{ color: '#3fb950', fontWeight: 'bold', marginBottom: 4 }}>📐 Active Correction (applied to camera preview & dispensing moves)</div>
                 <div style={{ color: '#e6edf3', fontFamily: 'monospace' }}>
                   ΔX = <span style={{ color: '#56d364' }}>{calibCorrection.x >= 0 ? '+' : ''}{calibCorrection.x.toFixed(4)} mm</span>
                   &nbsp;&nbsp;ΔY = <span style={{ color: '#56d364' }}>{calibCorrection.y >= 0 ? '+' : ''}{calibCorrection.y.toFixed(4)} mm</span>
                   &nbsp;&nbsp;<span style={{ color: '#8b949e' }}>(avg of {calibCaptures.length} captures)</span>
                 </div>
                 <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
-                  {/* Apply-to-Dispensing button disabled — fineTuneX/Y state removed */}
+                  {isPnpMode && (
+                    <button
+                      style={{ fontSize: '0.75em', padding: '3px 8px', background: '#0d2a0d', color: '#3fb950', border: '1px solid #3fb950', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}
+                      onClick={() => {
+                        setPnpOffsetX(prev => parseFloat((prev + calibCorrection.x).toFixed(3)));
+                        setPnpOffsetY(prev => parseFloat((prev + calibCorrection.y).toFixed(3)));
+                        setCalibCaptures([]);
+                        toast.success(`Applied ΔX:${calibCorrection.x.toFixed(3)}, ΔY:${calibCorrection.y.toFixed(3)} mm directly to PnP Origin Offset!`);
+                      }}
+                      title="Apply this measured correction directly to the PnP Origin Offset so all components are permanently aligned"
+                    >✓ Apply to PnP Origin Offset</button>
+                  )}
                   <button
                     style={{ fontSize: '0.75em', padding: '3px 8px', background: '#3a1111', color: '#f85149', border: '1px solid #f85149', borderRadius: 4, cursor: 'pointer' }}
                     onClick={() => setCalibCaptures([])}
                   >✕ Clear Calibration Points</button>
                 </div>
-                {/* Fine-tune sync warning disabled — fineTuneX/Y state removed */}
               </div>
             )}
 
             {(() => {
-              const pad = activeSequence[previewPadIdx];
+              const pad = effectiveSequence[previewPadIdx];
               if (!pad) return null;
-              const previewP = { ...pad };
-              const machineCoord = (applyXf && xf) ? applyTransform(xf, previewP) : null;
+              const padBoard = getPadBoard(pad);
+              const bIdx = padBoard && panelBoards ? Math.max(0, panelBoards.indexOf(padBoard)) : (currentBoardIdx || 0);
+              const machineCoord = getPadPredictedMachineCoord(pad, bIdx);
               // Apply calibration correction to show the corrected target
               const correctedCoord = machineCoord
                 ? { x: machineCoord.x + calibCorrection.x, y: machineCoord.y + calibCorrection.y }
@@ -2938,29 +3150,83 @@ export default function AutomatedDispensingPanel({
               const captureCurrentAsCenter = () => {
                 if (!machineCoord) { toast.warning('No predicted machine coordinate for this pad.'); return; }
                 if (!machinePosition || !isConnected) { toast.warning('Machine position unknown. Connect machine first.'); return; }
-                // delta = actual (current machine pos) - predicted
-                // So correction = actual - predicted
-                const deltaX = machinePosition.x - (machineCoord.x + calibCorrection.x);
-                const deltaY = machinePosition.y - (machineCoord.y + calibCorrection.y);
+                const deltaX = machinePosition.x - machineCoord.x;
+                const deltaY = machinePosition.y - machineCoord.y;
                 const newCapture = {
                   padIdx: previewPadIdx,
                   predicted: { x: machineCoord.x, y: machineCoord.y },
                   actual: { x: machinePosition.x, y: machinePosition.y },
-                  delta: { x: deltaX + calibCorrection.x, y: deltaY + calibCorrection.y },
+                  delta: { x: deltaX, y: deltaY },
                   timestamp: Date.now()
                 };
                 setCalibCaptures(prev => {
-                  // Replace any previous capture for this same pad index 
                   const filtered = prev.filter(c => c.padIdx !== previewPadIdx);
                   return [...filtered, newCapture];
                 });
-                console.log(`[CalibCapture] Pad ${previewPadIdx + 1}: predicted=(${machineCoord.x.toFixed(3)},${machineCoord.y.toFixed(3)}) actual=(${machinePosition.x.toFixed(3)},${machinePosition.y.toFixed(3)}) correction=(${newCapture.delta.x.toFixed(3)},${newCapture.delta.y.toFixed(3)})`);
+                toast.success(`Captured center for ${pad.id || `Pad #${previewPadIdx + 1}`}: ΔX=${deltaX >= 0 ? '+' : ''}${deltaX.toFixed(3)}, ΔY=${deltaY >= 0 ? '+' : ''}${deltaY.toFixed(3)} mm`);
+              };
+
+              const handleAutoCenter = async () => {
+                if (!isConnected) { toast.warning('Machine not connected'); return; }
+                toast.info('Scanning component pads via camera...');
+                try {
+                  const res = await fetch('http://localhost:8000/api/find_component_center', { method: 'POST' });
+                  if (res.ok) {
+                    const data = await res.json();
+                    if (data.found && data.offset_dx !== undefined && data.offset_dy !== undefined) {
+                      const dist = Math.hypot(data.offset_dx, data.offset_dy);
+                      if (dist > 0.02 && dist < 4.0) {
+                        const cmds = jogRel({ dx: data.offset_dx, dy: data.offset_dy, feed: 150 });
+                        for (const line of cmds) {
+                          await sendGcodeWait(line, 4000);
+                        }
+                        await sendGcodeWait('G4 P0.05', 4000);
+                        if (window.serial?.write) await window.serial.write('?');
+                        await new Promise(r => setTimeout(r, 250));
+
+                        // Automatically update calibration record for this component
+                        if (machineCoord) {
+                          const curMach = machinePositionRef.current || machinePosition || { x: 0, y: 0 };
+                          const finalMachX = curMach.x + data.offset_dx;
+                          const finalMachY = curMach.y + data.offset_dy;
+                          const deltaX = finalMachX - machineCoord.x;
+                          const deltaY = finalMachY - machineCoord.y;
+                          const newCapture = {
+                            padIdx: previewPadIdx,
+                            padId: pad.id || `Pad_${previewPadIdx + 1}`,
+                            design: { x: pad.x, y: pad.y },
+                            predicted: { x: machineCoord.x, y: machineCoord.y },
+                            actual: { x: finalMachX, y: finalMachY },
+                            delta: { x: deltaX, y: deltaY },
+                            timestamp: Date.now()
+                          };
+                          setCalibCaptures(prev => {
+                            const filtered = prev.filter(c => c.padIdx !== previewPadIdx);
+                            return [...filtered, newCapture];
+                          });
+                          toast.success(`Auto-centered (${data.comp_type || 'component'}) & saved calibration: ΔX=${deltaX >= 0 ? '+' : ''}${deltaX.toFixed(3)}, ΔY=${deltaY >= 0 ? '+' : ''}${deltaY.toFixed(3)} mm`);
+                        } else {
+                          toast.success(`Auto-centered! Jogged ΔX:${data.offset_dx >= 0 ? '+' : ''}${data.offset_dx.toFixed(3)}, ΔY:${data.offset_dy >= 0 ? '+' : ''}${data.offset_dy.toFixed(3)} mm`);
+                        }
+                        return;
+                      } else if (dist <= 0.02) {
+                        toast.success('Crosshair is already dead-center on component centroid!');
+                        return;
+                      }
+                    }
+                  }
+                  toast.warning('Vision could not find distinct pad edges. Jog manually to center.');
+                } catch (err) {
+                  toast.error(`Auto-centering failed: ${err.message}`);
+                }
               };
 
               return (
                 <>
                   <div style={{ background: '#161b22', borderRadius: 6, padding: '8px 12px', marginBottom: 10, fontFamily: 'monospace', fontSize: '0.82em' }}>
-                    <div style={{ color: '#8b949e', marginBottom: 4 }}>Pad {previewPadIdx + 1} / {activeSequence.length}</div>
+                    <div style={{ color: '#8b949e', marginBottom: 4 }}>
+                      {pad.id ? `Component: ${pad.id} (${pad.pkg || 'centroid'})` : `Pad ${previewPadIdx + 1}`} · {previewPadIdx + 1} / {effectiveSequence.length}
+                    </div>
                     <div>Design: X<span style={{ color: '#79c0ff' }}>{pad.x.toFixed(3)}</span> Y<span style={{ color: '#79c0ff' }}>{pad.y.toFixed(3)}</span> mm</div>
                     {machineCoord ? (
                       <div style={{ marginTop: 4 }}>
@@ -2986,12 +3252,12 @@ export default function AutomatedDispensingPanel({
                       className="btn"
                       style={{ flex: 2, background: machineCoord ? '#1f6feb' : '#444', minWidth: 80 }}
                       disabled={!machineCoord || !isConnected}
-                      onClick={() => correctedCoord && moveCameraToMachineCoord(machineCoord.x, machineCoord.y)}
+                      onClick={() => machineCoord && moveCameraToMachineCoord(machineCoord.x, machineCoord.y)}
                     >📷 Move Camera Here</button>
 
                     <button
                       className="btn secondary" style={{ flex: 1, minWidth: 60 }}
-                      disabled={previewPadIdx >= activeSequence.length - 1}
+                      disabled={previewPadIdx >= effectiveSequence.length - 1}
                       onClick={() => setPreviewPadIdx(i => i + 1)}
                     >Next ▶</button>
                   </div>
@@ -2999,12 +3265,19 @@ export default function AutomatedDispensingPanel({
                   {/* Live Calibration Capture */}
                   <div style={{ borderTop: '1px solid #21262d', paddingTop: 8, marginTop: 4 }}>
                     <div style={{ fontSize: '0.75em', color: '#8b949e', marginBottom: 6 }}>
-                      <strong style={{ color: '#f0a500' }}>📌 Calibration:</strong> Click "Move Camera Here", then jog the machine until the crosshair is <em>exactly</em> on the pad center, then capture.
+                      <strong style={{ color: '#f0a500' }}>📌 Calibration:</strong> Click "Move Camera Here", then click <strong style={{ color: '#58a6ff' }}>🎯 Auto-Center</strong> or jog the machine until the crosshair is <em>exactly</em> on center, then capture.
                     </div>
-                    <div style={{ display: 'flex', gap: 8 }}>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <button
+                        className="btn secondary"
+                        style={{ flex: 1, minWidth: 110, border: '1px solid #388bfd', color: '#58a6ff', fontWeight: 'bold' }}
+                        disabled={!isConnected}
+                        onClick={handleAutoCenter}
+                        title="Uses computer vision to detect component pads and jog the camera to the exact component center"
+                      >🎯 Auto-Center</button>
                       <button
                         className="btn"
-                        style={{ flex: 1, background: isConnected && machineCoord ? '#4a3000' : '#333', border: '1px solid #f0a500', color: '#f0a500', fontWeight: 'bold' }}
+                        style={{ flex: 1.5, minWidth: 140, background: isConnected && machineCoord ? '#4a3000' : '#333', border: '1px solid #f0a500', color: '#f0a500', fontWeight: 'bold' }}
                         disabled={!isConnected || !machineCoord}
                         onClick={captureCurrentAsCenter}
                         title="Record current machine position as true center of this pad. Computes systematic offset correction."
@@ -3012,7 +3285,7 @@ export default function AutomatedDispensingPanel({
                     </div>
                     {calibCaptures.find(c => c.padIdx === previewPadIdx) && (
                       <div style={{ marginTop: 6, fontSize: '0.75em', color: '#3fb950', fontFamily: 'monospace' }}>
-                        ✓ This pad captured: correction applied (ΔX={calibCaptures.find(c => c.padIdx === previewPadIdx).delta.x.toFixed(3)}, ΔY={calibCaptures.find(c => c.padIdx === previewPadIdx).delta.y.toFixed(3)} mm)
+                        ✓ This component captured: correction applied (ΔX={calibCaptures.find(c => c.padIdx === previewPadIdx).delta.x.toFixed(3)}, ΔY={calibCaptures.find(c => c.padIdx === previewPadIdx).delta.y.toFixed(3)} mm)
                       </div>
                     )}
                   </div>
@@ -3329,7 +3602,7 @@ export default function AutomatedDispensingPanel({
                   </div>
                 )
               )}
-              {enableDotVerification && dotCheckResults.length > 0 && (() => {
+              {enableDotVerification && !dryRunMode && dotCheckResults.length > 0 && (() => {
                 const last = dotCheckResults[dotCheckResults.length - 1];
                 // De-duplicate by padIndex — a retried pad that passed should not count as failed
                 const latestByPad = new Map();

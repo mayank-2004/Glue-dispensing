@@ -71,30 +71,50 @@ export function parsePnpCsv(text, filename = '') {
 export function detectDnpComponents(comps) {
   const dnpKeywords = ['dnp', 'do not place', 'no fit', 'not fit', 'nf', 'nc', 'nm', 'x'];
   return new Set(comps.filter(c => {
-    if (/^fid/i.test(c.id)) return true;
+    if (/^(fid|f\d+|fd\d+)/i.test(c.id || '') || /fiducial/i.test(c.pkg || '') || /fiducial/i.test(c.val || '') || /fid/i.test(c.desc || '')) return true;
     const pkg = (c.pkg || '').toLowerCase().trim();
     return pkg === '' || dnpKeywords.some(kw => pkg === kw || pkg.startsWith(kw + ' '));
   }).map(c => c.id));
 }
 
 export function autoComputePnpOffset(csvComponents, appFiducials, toleranceMm = 5) {
-  const csvFids = csvComponents.filter(c => /^fid/i.test(c.id));
-  const appDesign = appFiducials.filter(f => f.design).map(f => f.design);
+  const isFid = c => /^(fid|f\d+|fd\d+)/i.test(c.id || '') || /fiducial/i.test(c.pkg || '') || /fiducial/i.test(c.val || '') || /fid/i.test(c.desc || '');
+  const csvFids = csvComponents.filter(isFid);
+  const appDesign = (appFiducials || [])
+    .map(f => f.design ? f.design : (typeof f.x === 'number' && typeof f.y === 'number' ? { x: f.x, y: f.y } : null))
+    .filter(Boolean);
   if (!csvFids.length || !appDesign.length) return null;
+
   let bestScore = 0, bestOffset = null;
-  for (const cf of csvFids) for (const af of appDesign) {
-    const candDx = af.x - cf.x, candDy = af.y - cf.y;
-    let sumDx = 0, sumDy = 0, matches = 0;
-    for (const cf2 of csvFids) {
-      const sx = cf2.x + candDx, sy = cf2.y + candDy;
-      let minDist = Infinity, bestAf = null;
-      for (const af2 of appDesign) {
-        const d = Math.hypot(af2.x - sx, af2.y - sy);
-        if (d < minDist) { minDist = d; bestAf = af2; }
+
+  for (const flipY of [false, true]) {
+    for (const cf of csvFids) {
+      const cfY = flipY ? -cf.y : cf.y;
+      for (const af of appDesign) {
+        const candDx = af.x - cf.x;
+        const candDy = af.y - cfY;
+        let sumDx = 0, sumDy = 0, matches = 0;
+        for (const cf2 of csvFids) {
+          const cf2Y = flipY ? -cf2.y : cf2.y;
+          const sx = cf2.x + candDx;
+          const sy = cf2Y + candDy;
+          let minDist = Infinity, bestAf = null;
+          for (const af2 of appDesign) {
+            const d = Math.hypot(af2.x - sx, af2.y - sy);
+            if (d < minDist) { minDist = d; bestAf = af2; }
+          }
+          if (minDist < toleranceMm) {
+            sumDx += bestAf.x - cf2.x;
+            sumDy += bestAf.y - cf2Y;
+            matches++;
+          }
+        }
+        if (matches > bestScore) {
+          bestScore = matches;
+          bestOffset = { x: sumDx / matches, y: sumDy / matches, flipY, matches };
+        }
       }
-      if (minDist < toleranceMm) { sumDx += bestAf.x - cf2.x; sumDy += bestAf.y - cf2.y; matches++; }
     }
-    if (matches > bestScore) { bestScore = matches; bestOffset = { x: sumDx / matches, y: sumDy / matches }; }
   }
   return bestOffset;
 }
@@ -138,101 +158,83 @@ export function detectPanelFromFiducials(fiducials) {
 
   if (valid.length < 4) return null;
 
-  // 1. Group fiducials by similar X coordinate (tolerance 1.5mm) to detect rows & stepY
-  const xGroups = [];
-  for (const fid of valid) {
-    const { x, y } = fid.pos;
-    const group = xGroups.find(g => Math.abs(g.cx - x) < 1.5);
-    if (group) {
-      group.ys.push(y);
-      group.cx = (group.cx * (group.ys.length - 1) + x) / group.ys.length;
-    } else {
-      xGroups.push({ cx: x, ys: [y] });
+  // 1. Column step detection (fiducials with similar Y, distinct X)
+  const colDxs = [];
+  for (let i = 0; i < valid.length; i++) {
+    for (let j = i + 1; j < valid.length; j++) {
+      const dy = Math.abs(valid[j].pos.y - valid[i].pos.y);
+      const dx = Math.abs(valid[j].pos.x - valid[i].pos.x);
+      if (dy < 2.5 && dx > 8) {
+        colDxs.push(dx);
+      }
     }
   }
 
-  let rows = Math.max(...xGroups.map(g => g.ys.length));
-  let stepY = 0;
-  if (rows >= 2) {
-    const ySteps = [];
-    for (const group of xGroups) {
-      if (group.ys.length >= 2) {
-        const sorted = [...group.ys].sort((a, b) => a - b);
-        for (let i = 1; i < sorted.length; i++) {
-          const dy = sorted[i] - sorted[i - 1];
-          if (dy > 4) ySteps.push(dy);
-        }
+  // 2. Row step detection (fiducials with similar X, distinct Y)
+  const rowDys = [];
+  for (let i = 0; i < valid.length; i++) {
+    for (let j = i + 1; j < valid.length; j++) {
+      const dx = Math.abs(valid[j].pos.x - valid[i].pos.x);
+      const dy = Math.abs(valid[j].pos.y - valid[i].pos.y);
+      if (dx < 2.5 && dy > 8) {
+        rowDys.push(dy);
       }
-    }
-    if (ySteps.length > 0) {
-      ySteps.sort((a, b) => a - b);
-      const medianStep = ySteps[Math.floor(ySteps.length / 2)];
-      const closeSteps = ySteps.filter(s => Math.abs(s - medianStep) < 3);
-      if (closeSteps.length > 0) {
-        stepY = parseFloat((closeSteps.reduce((a, b) => a + b, 0) / closeSteps.length).toFixed(3));
-      }
-    }
-  } else {
-    rows = 1;
-  }
-
-  // 2. Group fiducials by similar Y coordinate (tolerance 1.5mm) to detect cols & stepX
-  const yGroups = [];
-  for (const fid of valid) {
-    const { x, y } = fid.pos;
-    const group = yGroups.find(g => Math.abs(g.cy - y) < 1.5);
-    if (group) {
-      group.xs.push(x);
-      group.cy = (group.cy * (group.xs.length - 1) + y) / group.xs.length;
-    } else {
-      yGroups.push({ cy: y, xs: [x] });
     }
   }
 
-  let cols = Math.max(...yGroups.map(g => g.xs.length));
-  let stepX = 0;
-  if (cols >= 2) {
-    const xSteps = [];
-    for (const group of yGroups) {
-      if (group.xs.length >= 2) {
-        const sorted = [...group.xs].sort((a, b) => a - b);
-        for (let i = 1; i < sorted.length; i++) {
-          const dx = sorted[i] - sorted[i - 1];
-          if (dx > 4) xSteps.push(dx);
-        }
+  const getFundStep = (steps) => {
+    if (!steps.length) return 0;
+    const clusters = [];
+    for (const s of steps) {
+      let cl = clusters.find(c => Math.abs(c.mean - s) < 2.5);
+      if (cl) {
+        cl.items.push(s);
+        cl.mean = cl.items.reduce((a, b) => a + b, 0) / cl.items.length;
+      } else {
+        clusters.push({ mean: s, items: [s] });
       }
     }
-    if (xSteps.length > 0) {
-      xSteps.sort((a, b) => a - b);
-      const medianStep = xSteps[Math.floor(xSteps.length / 2)];
-      const closeSteps = xSteps.filter(s => Math.abs(s - medianStep) < 3);
-      if (closeSteps.length > 0) {
-        stepX = parseFloat((closeSteps.reduce((a, b) => a + b, 0) / closeSteps.length).toFixed(3));
+    clusters.sort((a, b) => a.mean - b.mean);
+    const validCluster = clusters.find(c => c.items.length >= 2) || clusters[0];
+    return validCluster ? parseFloat(validCluster.mean.toFixed(3)) : 0;
+  };
+
+  const stepX = getFundStep(colDxs);
+  const stepY = getFundStep(rowDys);
+
+  // Group fiducials by modulo phase to determine exact grid rows and columns
+  const minX = Math.min(...valid.map(f => f.pos.x));
+  const minY = Math.min(...valid.map(f => f.pos.y));
+
+  let cols = 1;
+  let rows = 1;
+
+  if (stepX > 5 && stepY > 5) {
+    const phases = [];
+    for (const f of valid) {
+      const px = ((f.pos.x - minX) % stepX + stepX) % stepX;
+      const py = ((f.pos.y - minY) % stepY + stepY) % stepY;
+      let p = phases.find(ph => Math.hypot(ph.px - px, ph.py - py) < 3.0);
+      if (!p) {
+        p = { px, py, fids: [] };
+        phases.push(p);
       }
+      p.fids.push(f.pos);
     }
-  } else {
-    // If fiducials on each board are diagonal and don't share exact horizontal Y,
-    // compute stepX from the distance between xGroup centers
-    if (xGroups.length >= 2) {
-      const sortedCxs = xGroups.map(g => g.cx).sort((a, b) => a - b);
-      const diffs = [];
-      for (let i = 0; i < sortedCxs.length; i++) {
-        for (let j = i + 1; j < sortedCxs.length; j++) {
-          const d = sortedCxs[j] - sortedCxs[i];
-          if (d > 10) diffs.push(d);
-        }
-      }
-      if (diffs.length > 0) {
-        diffs.sort((a, b) => a - b);
-        const medianDiff = diffs[Math.floor(diffs.length / 2)];
-        const closeDiffs = diffs.filter(d => Math.abs(d - medianDiff) < 3);
-        if (closeDiffs.length >= 2) {
-          cols = 2;
-          stepX = parseFloat((closeDiffs.reduce((a, b) => a + b, 0) / closeDiffs.length).toFixed(3));
-        }
-      }
+
+    if (phases.length > 0) {
+      // Find phase with the most fiducials for robust row/col counting
+      phases.sort((a, b) => b.fids.length - a.fids.length);
+      const bestPhase = phases[0];
+      const xs = bestPhase.fids.map(f => f.x);
+      const ys = bestPhase.fids.map(f => f.y);
+      cols = Math.max(1, Math.round((Math.max(...xs) - Math.min(...xs)) / stepX) + 1);
+      rows = Math.max(1, Math.round((Math.max(...ys) - Math.min(...ys)) / stepY) + 1);
     }
-    if (cols < 2) cols = 1;
+  } else if (stepX > 5) {
+    cols = Math.max(1, Math.round((Math.max(...valid.map(f => f.pos.x)) - minX) / stepX) + 1);
+  } else if (stepY > 5) {
+    rows = Math.max(1, Math.round((Math.max(...valid.map(f => f.pos.y)) - minY) / stepY) + 1);
   }
 
   if (rows <= 1 && cols <= 1) return null;

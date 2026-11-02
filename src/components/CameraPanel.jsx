@@ -1208,6 +1208,15 @@ export default function CameraPanel({
       if (fIdx >= 0) bFids[fIdx] = newFid;
       else bFids.push(newFid);
       nextBoards[bIdx] = { ...nextBoards[bIdx], fiducials: bFids };
+
+      const solvedB = bFids.filter(f => f.design && f.machine);
+      if (solvedB.length >= 2) {
+        try {
+          nextBoards[bIdx].xf = fitSimilarity(solvedB.map(f => f.design), solvedB.map(f => f.machine));
+        } catch (e) {
+          console.warn(`[CameraPanel] Failed to fit board.xf for board ${bIdx}:`, e);
+        }
+      }
       changedBoards = true;
       savedFidId = targetFid.uniqueKey || targetFid.id;
     } else if (hasMultiBoards && nextBoards[activeBIdx]) {
@@ -1249,6 +1258,15 @@ export default function CameraPanel({
       if (targetFidIdx >= 0) newFiducials[targetFidIdx] = newFid;
       else newFiducials.push(newFid);
       nextBoards[activeBIdx] = { ...nextBoards[activeBIdx], fiducials: newFiducials };
+
+      const solvedAct = newFiducials.filter(f => f.design && f.machine);
+      if (solvedAct.length >= 2) {
+        try {
+          nextBoards[activeBIdx].xf = fitSimilarity(solvedAct.map(f => f.design), solvedAct.map(f => f.machine));
+        } catch (e) {
+          console.warn(`[CameraPanel] Failed to fit board.xf for active board:`, e);
+        }
+      }
       changedBoards = true;
       savedFidId = newFid.id;
     } else {

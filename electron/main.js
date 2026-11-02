@@ -335,7 +335,9 @@ ipcMain.handle('serial:writeLine', async (e, line) => {
   if (!serial.port) throw new Error('Not connected');
   const sanitized = String(line).trim();
   return new Promise((resolve, reject) => {
-    const payload = sanitized + '\r\n';
+    // GRBL real-time single byte characters (?, !, ~, \x18) MUST NOT be followed by \r\n
+    const isRealTime = sanitized === '?' || sanitized === '!' || sanitized === '~' || sanitized === '\x18';
+    const payload = isRealTime ? sanitized : sanitized + '\r\n';
     serial.port.write(payload, (err) => {
       if (err) reject(err); else resolve(true);
     });

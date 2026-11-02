@@ -30,6 +30,8 @@ export default function FiducialPanel({
   panelXf = null,
   onSolvePanelXf,
 }) {
+  const [viewSelection, setViewSelection] = React.useState('all');
+  const isViewAll = panelBoards.length > 1 && viewSelection === 'all';
   const ready2 = fiducials.filter(f => f.design && f.machine).length >= 2;
   const ready3 = fiducials.filter(f => f.design && f.machine).length >= 3;
 
@@ -117,12 +119,23 @@ export default function FiducialPanel({
       <div className="flex-row" style={{ gap: 8, alignItems: "center", marginBottom: 16, paddingBottom: 16, borderBottom: '1px solid #ccc' }}>
         <strong>Mapping:</strong>
         <select
-          value={activeBoardIndex}
-          onChange={(e) => setActiveBoardIndex(parseInt(e.target.value))}
-          style={{ padding: '6px 12px', minWidth: 120, fontSize: '1.1em' }}
+          value={isViewAll ? 'all' : activeBoardIndex}
+          onChange={(e) => {
+            const val = e.target.value;
+            if (val === 'all') {
+              setViewSelection('all');
+            } else {
+              setViewSelection(val);
+              setActiveBoardIndex(parseInt(val, 10));
+            }
+          }}
+          style={{ padding: '6px 12px', minWidth: 150, fontSize: '1.05em' }}
         >
+          {panelBoards.length > 1 && (
+            <option value="all">★ All Panel Boards ({panelBoards.length} boards)</option>
+          )}
           {panelBoards.map((b, idx) => (
-            <option key={b.id} value={idx}>{b.name}</option>
+            <option key={b.id || idx} value={idx}>{b.name || `Board ${idx + 1}`}</option>
           ))}
         </select>
         <button
@@ -130,7 +143,8 @@ export default function FiducialPanel({
           onClick={() => {
             setPanelBoards(prev => {
               const newBoards = [...prev];
-              const activeBoard = { ...newBoards[activeBoardIndex] };
+              const targetIdx = isViewAll ? 0 : activeBoardIndex;
+              const activeBoard = { ...newBoards[targetIdx] };
               const fCount = activeBoard.fiducials.length;
               const newFid = {
                 id: `F${fCount + 1}`,
@@ -139,7 +153,7 @@ export default function FiducialPanel({
                 color: `#${Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0')}`
               };
               activeBoard.fiducials = [...activeBoard.fiducials, newFid];
-              newBoards[activeBoardIndex] = activeBoard;
+              newBoards[targetIdx] = activeBoard;
               return newBoards;
             });
           }}
@@ -154,12 +168,30 @@ export default function FiducialPanel({
         </button>
         <select value={activeId ?? ""} onChange={(e) => setActiveId(e.target.value || null)} style={{ minWidth: 150, flex: 1 }}>
           <option value="">(select to arm)</option>
-          {fiducials.map(f => <option key={f.id} value={f.id}>{f.id}</option>)}
           {panelRailFiducials.length > 0 && (
-            <>
-              <option disabled>── Rail ──</option>
-              {panelRailFiducials.map(f => <option key={f.id} value={f.id}>{f.id} (Rail)</option>)}
-            </>
+            <optgroup label="── Rail Fiducials ──">
+              {panelRailFiducials.map(f => (
+                <option key={f.id} value={f.id}>
+                  {f.id} (Rail) {f.machine ? '✓' : ''}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          {panelBoards.length > 1 ? (
+            panelBoards.map((b, bIdx) => (
+              <optgroup key={b.id || bIdx} label={b.name || `Board ${bIdx + 1}`}>
+                {(b.fiducials || []).map(f => {
+                  const key = `${b.name || `Board_${bIdx + 1}`}_${f.id}`;
+                  return (
+                    <option key={key} value={key}>
+                      {b.name || `Board ${bIdx + 1}`} - {f.id} {f.machine ? '✓' : ''}
+                    </option>
+                  );
+                })}
+              </optgroup>
+            ))
+          ) : (
+            fiducials.map(f => <option key={f.id} value={f.id}>{f.id} {f.machine ? '✓' : ''}</option>)
           )}
         </select>
       </div>
@@ -188,73 +220,178 @@ export default function FiducialPanel({
         </label>
       </div>
 
-      <table className="kv small">
-        <thead>
-          <tr>
-            <th>Fiducial</th>
-            <th>Design (mm)</th>
-            <th>Machine (mm)</th>
-            <th>Comparison (Δ / Offset)</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {fiducials.map(f => {
-            const hasBoth = f.design && f.machine && typeof f.machine.x === 'number' && typeof f.machine.y === 'number';
-            const dx = hasBoth ? (f.machine.x - f.design.x) : null;
-            const dy = hasBoth ? (f.machine.y - f.design.y) : null;
-            const dist = hasBoth ? Math.hypot(dx, dy) : null;
+      {isViewAll ? (
+        // ── ALL BOARDS OVERVIEW TABLE ──────────────────────────────────────────
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {panelBoards.map((b, bIdx) => {
+            const bFids = b.fiducials || [];
+            const solvedCount = bFids.filter(f => f.design && f.machine).length;
+            const isSolved = Boolean(b.xf);
             return (
-              <tr key={f.id}>
-                <td>
-                  <span style={{ display: "inline-block", width: 10, height: 10, background: f.color, borderRadius: 4, marginRight: 6 }} />
-                  <strong>{f.id}</strong>{activeId === f.id ? " (armed)" : ""}
-                  {f.confidence && <span style={{ fontSize: '0.8em', color: '#666' }}> ({Math.round(f.confidence * 100)}%)</span>}
-                </td>
-                <td style={{ fontSize: '0.85em' }}>
-                  {f.design ? `X ${f.design.x.toFixed(3)}, Y ${f.design.y.toFixed(3)}` : <em>— click/drag on PCB —</em>}
-                </td>
-                <td>
-                  <div className="flex-row" style={{ gap: 6, alignItems: 'center' }}>
-                    <input className="in sm" placeholder="Mx"
-                      value={f.machine?.x ?? ""} onChange={(e) => onInputMachine(f.id, { x: parseFloat(e.target.value), y: f.machine?.y })} />
-                    <input className="in sm" placeholder="My"
-                      value={f.machine?.y ?? ""} onChange={(e) => onInputMachine(f.id, { x: f.machine?.x, y: parseFloat(e.target.value) })} />
-                    {f.machine && onClearMachine && (
-                      <button 
-                        className="btn icon-btn" 
-                        style={{ padding: '0px 6px', fontSize: '16px', background: 'transparent', border: 'none', color: '#ff4d4f', cursor: 'pointer', lineHeight: 1 }}
-                        title="Clear Machine Coordinates" 
-                        onClick={() => onClearMachine(f.id)}
-                      >
-                        ×
-                      </button>
-                    )}
+              <div key={b.id || bIdx} style={{ background: '#161b22', border: '1px solid #30363d', borderRadius: 6, padding: '10px 12px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, borderBottom: '1px solid #21262d', paddingBottom: 6 }}>
+                  <div>
+                    <strong style={{ color: '#58a6ff', fontSize: '1.05em' }}>{b.name || `Board ${bIdx + 1}`}</strong>
+                    <span style={{ color: '#8b949e', fontSize: '0.82em', marginLeft: 8 }}>
+                      (Offset: X {b.offsetX || 0} mm, Y {b.offsetY || 0} mm)
+                    </span>
                   </div>
-                </td>
-                <td style={{ fontSize: '0.85em' }}>
-                  {hasBoth ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                      <span style={{ fontFamily: 'monospace', color: Math.abs(dx) > 5 ? '#ff9800' : '#4caf50' }}>
-                        ΔX: {dx >= 0 ? `+${dx.toFixed(3)}` : dx.toFixed(3)} mm
-                      </span>
-                      <span style={{ fontFamily: 'monospace', color: Math.abs(dy) > 5 ? '#ff9800' : '#4caf50' }}>
-                        ΔY: {dy >= 0 ? `+${dy.toFixed(3)}` : dy.toFixed(3)} mm
-                      </span>
-                      <span style={{ fontSize: '0.8em', color: '#888', fontWeight: 600 }}>
-                        Offset: {dist.toFixed(3)} mm
-                      </span>
-                    </div>
-                  ) : (
-                    <span style={{ color: '#aaa', fontStyle: 'italic' }}>Pending capture</span>
-                  )}
-                </td>
-                <td><button className="btn secondary" onClick={() => onClearOne(f.id)}>Clear</button></td>  
-              </tr>
+                  <span style={{
+                    fontSize: '0.78em',
+                    padding: '2px 8px',
+                    borderRadius: 12,
+                    background: isSolved ? 'rgba(46, 160, 67, 0.2)' : 'rgba(218, 119, 0, 0.2)',
+                    color: isSolved ? '#3fb950' : '#d29922',
+                    border: `1px solid ${isSolved ? '#2ea043' : '#d29922'}`,
+                    fontWeight: 600
+                  }}>
+                    {isSolved ? `✓ Solved (${b.xf?.type || 'similarity'})` : `⏳ Pending (${solvedCount}/${bFids.length} captured)`}
+                  </span>
+                </div>
+
+                <table className="kv small" style={{ margin: 0 }}>
+                  <thead>
+                    <tr>
+                      <th>Fiducial</th>
+                      <th>Design (mm)</th>
+                      <th>Machine (mm)</th>
+                      <th>Comparison (Δ / Offset)</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bFids.map(f => {
+                      const hasBoth = f.design && f.machine && typeof f.machine.x === 'number' && typeof f.machine.y === 'number';
+                      const dx = hasBoth ? (f.machine.x - f.design.x) : null;
+                      const dy = hasBoth ? (f.machine.y - f.design.y) : null;
+                      const dist = hasBoth ? Math.hypot(dx, dy) : null;
+                      const armKey = `${b.name || `Board_${bIdx + 1}`}_${f.id}`;
+                      const isArmed = activeId === armKey || activeId === f.id;
+                      return (
+                        <tr key={f.id}>
+                          <td>
+                            <span style={{ display: "inline-block", width: 10, height: 10, background: f.color, borderRadius: 4, marginRight: 6 }} />
+                            <strong>{f.id}</strong>{isArmed ? " (armed)" : ""}
+                            {f.confidence && <span style={{ fontSize: '0.8em', color: '#8b949e' }}> ({Math.round(f.confidence * 100)}%)</span>}
+                          </td>
+                          <td style={{ fontSize: '0.85em' }}>
+                            {f.design ? `X ${f.design.x.toFixed(3)}, Y ${f.design.y.toFixed(3)}` : <em>— not set —</em>}
+                          </td>
+                          <td>
+                            <div className="flex-row" style={{ gap: 6, alignItems: 'center' }}>
+                              <input className="in sm" placeholder="Mx"
+                                value={f.machine?.x ?? ""} onChange={(e) => onInputMachine(f.id, { x: parseFloat(e.target.value), y: f.machine?.y }, bIdx)} />
+                              <input className="in sm" placeholder="My"
+                                value={f.machine?.y ?? ""} onChange={(e) => onInputMachine(f.id, { x: f.machine?.x, y: parseFloat(e.target.value) }, bIdx)} />
+                              {f.machine && onClearMachine && (
+                                <button 
+                                  className="btn icon-btn" 
+                                  style={{ padding: '0px 6px', fontSize: '16px', background: 'transparent', border: 'none', color: '#ff4d4f', cursor: 'pointer', lineHeight: 1 }}
+                                  title="Clear Machine Coordinates" 
+                                  onClick={() => onClearMachine(f.id, bIdx)}
+                                >
+                                  ×
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                          <td style={{ fontSize: '0.85em' }}>
+                            {hasBoth ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                <span style={{ fontFamily: 'monospace', color: Math.abs(dx) > 5 ? '#ff9800' : '#4caf50' }}>
+                                  ΔX: {dx >= 0 ? `+${dx.toFixed(3)}` : dx.toFixed(3)} mm
+                                </span>
+                                <span style={{ fontFamily: 'monospace', color: Math.abs(dy) > 5 ? '#ff9800' : '#4caf50' }}>
+                                  ΔY: {dy >= 0 ? `+${dy.toFixed(3)}` : dy.toFixed(3)} mm
+                                </span>
+                                <span style={{ fontSize: '0.8em', color: '#8b949e', fontWeight: 600 }}>
+                                  Offset: {dist.toFixed(3)} mm
+                                </span>
+                              </div>
+                            ) : (
+                              <span style={{ color: '#8b949e', fontStyle: 'italic' }}>Pending capture</span>
+                            )}
+                          </td>
+                          <td><button className="btn secondary sm" onClick={() => onClearOne(f.id, bIdx)}>Clear</button></td>  
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             );
           })}
-        </tbody>
-      </table>
+        </div>
+      ) : (
+        // ── SINGLE BOARD TABLE ──────────────────────────────────────────────────
+        <table className="kv small">
+          <thead>
+            <tr>
+              <th>Fiducial</th>
+              <th>Design (mm)</th>
+              <th>Machine (mm)</th>
+              <th>Comparison (Δ / Offset)</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {fiducials.map(f => {
+              const hasBoth = f.design && f.machine && typeof f.machine.x === 'number' && typeof f.machine.y === 'number';
+              const dx = hasBoth ? (f.machine.x - f.design.x) : null;
+              const dy = hasBoth ? (f.machine.y - f.design.y) : null;
+              const dist = hasBoth ? Math.hypot(dx, dy) : null;
+              return (
+                <tr key={f.id}>
+                  <td>
+                    <span style={{ display: "inline-block", width: 10, height: 10, background: f.color, borderRadius: 4, marginRight: 6 }} />
+                    <strong>{f.id}</strong>{activeId === f.id ? " (armed)" : ""}
+                    {f.confidence && <span style={{ fontSize: '0.8em', color: '#666' }}> ({Math.round(f.confidence * 100)}%)</span>}
+                  </td>
+                  <td style={{ fontSize: '0.85em' }}>
+                    {f.design ? `X ${f.design.x.toFixed(3)}, Y ${f.design.y.toFixed(3)}` : <em>— click/drag on PCB —</em>}
+                  </td>
+                  <td>
+                    <div className="flex-row" style={{ gap: 6, alignItems: 'center' }}>
+                      <input className="in sm" placeholder="Mx"
+                        value={f.machine?.x ?? ""} onChange={(e) => onInputMachine(f.id, { x: parseFloat(e.target.value), y: f.machine?.y }, activeBoardIndex)} />
+                      <input className="in sm" placeholder="My"
+                        value={f.machine?.y ?? ""} onChange={(e) => onInputMachine(f.id, { x: f.machine?.x, y: parseFloat(e.target.value) }, activeBoardIndex)} />
+                      {f.machine && onClearMachine && (
+                        <button 
+                          className="btn icon-btn" 
+                          style={{ padding: '0px 6px', fontSize: '16px', background: 'transparent', border: 'none', color: '#ff4d4f', cursor: 'pointer', lineHeight: 1 }}
+                          title="Clear Machine Coordinates" 
+                          onClick={() => onClearMachine(f.id, activeBoardIndex)}
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                  <td style={{ fontSize: '0.85em' }}>
+                    {hasBoth ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                        <span style={{ fontFamily: 'monospace', color: Math.abs(dx) > 5 ? '#ff9800' : '#4caf50' }}>
+                          ΔX: {dx >= 0 ? `+${dx.toFixed(3)}` : dx.toFixed(3)} mm
+                        </span>
+                        <span style={{ fontFamily: 'monospace', color: Math.abs(dy) > 5 ? '#ff9800' : '#4caf50' }}>
+                          ΔY: {dy >= 0 ? `+${dy.toFixed(3)}` : dy.toFixed(3)} mm
+                        </span>
+                        <span style={{ fontSize: '0.8em', color: '#888', fontWeight: 600 }}>
+                          Offset: {dist.toFixed(3)} mm
+                        </span>
+                      </div>
+                    ) : (
+                      <span style={{ color: '#aaa', fontStyle: 'italic' }}>Pending capture</span>
+                    )}
+                  </td>
+                  <td><button className="btn secondary" onClick={() => onClearOne(f.id, activeBoardIndex)}>Clear</button></td>  
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
 
       <div className="flex-row" style={{ gap: 8 }}>
         <button className="btn" disabled={!ready2} onClick={onSolve2}>Solve (2-pt similarity)</button>
