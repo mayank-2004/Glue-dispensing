@@ -8,11 +8,17 @@ Architecture: FastAPI server that exclusively owns the USB camera.
 - Exposes REST API for React to trigger detection and read results
 """
 
+import os
+import sys
+
+# Suppress low-level OpenCV C++ debug logs
+os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
+os.environ["OPENCV_VIDEOIO_DEBUG"] = "0"
+
 import cv2
 import numpy as np
 import threading
 import time
-import os
 import json
 import itertools
 from fastapi import FastAPI
@@ -23,11 +29,11 @@ from pydantic import BaseModel
 # ──────────────────────────────────────────────
 # Configuration
 # ──────────────────────────────────────────────
-CAMERA_INDEX = 1          # Machine USB webcam index — auto-scan will also try 0 and 2 if this fails
+CAMERA_INDEX = 1 if os.name == 'nt' else 0  # 1 on Windows (laptop camera=0, USB=1), 0 on Linux/Raspberry Pi
 FRAME_WIDTH  = 1280
 FRAME_HEIGHT = 720
-MJPEG_QUALITY = 85        # JPEG quality 0-100 (higher = better quality, more bandwidth)
-DETECTION_INTERVAL = 0.5  # Seconds between vision analysis frames (not stream frames)
+MJPEG_QUALITY = 68 if os.name != 'nt' else 85  # Optimized JPEG quality for Pi 4 CPU
+DETECTION_INTERVAL = 0.25 if os.name != 'nt' else 0.4  # Fast detection response on Pi
 
 # Hough Circle parameters — tune these for your fiducial size
 HOUGH_DP          = 1.2
@@ -108,23 +114,46 @@ def camera_loop():
     global latest_frame, camera_cap
     _backend = cv2.CAP_DSHOW if os.name == 'nt' else cv2.CAP_V4L2
 
-    # Auto-scan camera indices: try the configured index first, then scan 0→2
-    # This handles cases where Windows re-assigns the USB camera to a different index
-    indices_to_try = [CAMERA_INDEX] + [i for i in range(3) if i != CAMERA_INDEX]
+    # Helper to configure camera properties BEFORE reading frames
+    def setup_cap(c):
+        try:
+            c.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            c.set(cv2.CAP_PROP_FRAME_WIDTH,  FRAME_WIDTH)
+            c.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+            c.set(cv2.CAP_PROP_FPS, 30)
+            # On Linux V4L2, keep standard buffer size (4) to prevent driver queue underflow stalls!
+            # BUFFERSIZE=1 should only be used on Windows DSHOW.
+            if os.name == 'nt':
+                c.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            else:
+                c.set(cv2.CAP_PROP_BUFFERSIZE, 4)
+        except Exception as e:
+            print(f"[Vision] Warning: Failed to set camera properties: {e}", flush=True)
+
+    # On Linux/Pi, prioritize index 0, then even indices 2, 4 (capture nodes), then others
+    if os.name == 'nt':
+        indices_to_try = [CAMERA_INDEX] + [i for i in range(4) if i != CAMERA_INDEX]
+    else:
+        indices_to_try = [0, 2, 4, 1, 3]
+
     cap = None
     opened_index = None
 
     for idx in indices_to_try:
         try:
-            print(f"[Vision] Trying camera index {idx}...")
+            print(f"[Vision] Trying camera index {idx}...", flush=True)
             candidate = cv2.VideoCapture(idx, _backend)
+            if candidate is None or not candidate.isOpened():
+                candidate = cv2.VideoCapture(idx)
+
             if candidate is not None and candidate.isOpened():
-                # Read a test frame to confirm the camera actually works
-                ret, _ = candidate.read()
-                if ret:
+                # Configure format and dimensions BEFORE reading frames to prevent V4L2 pipeline stall
+                setup_cap(candidate)
+                ret, test_frame = candidate.read()
+                if ret and test_frame is not None:
                     cap = candidate
                     opened_index = idx
-                    print(f"[Vision] Camera found at index {idx}")
+                    print(f"[Vision] Camera successfully found and opened at index {idx}", flush=True)
                     break
                 else:
                     candidate.release()
@@ -132,42 +161,72 @@ def camera_loop():
                 if candidate is not None:
                     candidate.release()
         except Exception as e:
-            print(f"[Vision] Exception trying index {idx}: {e}")
+            print(f"[Vision] Exception trying index {idx}: {e}", flush=True)
 
     if cap is None or not cap.isOpened():
-        print(f"[Vision] ERROR: No camera found on indices {indices_to_try}. Check USB connection.")
+        print(f"[Vision] ERROR: No camera found on indices {indices_to_try}. Check USB connection and group permissions (sudo usermod -a -G video $USER).", flush=True)
         with state_lock:
             shared_state["camera_ok"] = False
             shared_state["tried_indices"] = indices_to_try
         return
 
-    try:
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH,  FRAME_WIDTH)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
-        cap.set(cv2.CAP_PROP_FPS, 30)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimize latency
-    except Exception as e:
-        print(f"[Vision] Warning: Failed to set camera properties: {e}")
+    actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    actual_fps = int(cap.get(cv2.CAP_PROP_FPS))
 
     camera_cap = cap  # Expose to API endpoints for live property changes
     with state_lock:
         shared_state["camera_ok"] = True
-    print(f"[Vision] Camera opened on index {opened_index} ({FRAME_WIDTH}x{FRAME_HEIGHT})")
+        shared_state["actual_width"] = actual_w
+        shared_state["actual_height"] = actual_h
+    print(f"[Vision] Camera opened on index {opened_index}: requested {FRAME_WIDTH}x{FRAME_HEIGHT}, ACTUAL: {actual_w}x{actual_h} @ {actual_fps}fps", flush=True)
 
-
+    consec_fails = 0
     while camera_thread_running:
         ret, frame = cap.read()
-        if ret:
+        if ret and frame is not None:
+            consec_fails = 0
             with frame_lock:
                 latest_frame = frame
             with state_lock:
                 shared_state["frame_count"] += 1
         else:
+            consec_fails += 1
+            if consec_fails % 30 == 0:
+                print(f"[Vision] Warning: Frame read returned False ({consec_fails} drops)", flush=True)
+            if consec_fails > 60:
+                # 2 seconds of consecutive drops: camera stalled, attempt driver reconnect
+                print(f"[Vision] Camera feed stalled on index {opened_index}. Attempting reconnection...", flush=True)
+                cap.release()
+                time.sleep(0.3)
+                rec = cv2.VideoCapture(opened_index, _backend)
+                if not rec.isOpened():
+                    rec = cv2.VideoCapture(opened_index)
+                if rec.isOpened():
+                    setup_cap(rec)
+                    ret_test, _ = rec.read()
+                    if ret_test:
+                        cap = rec
+                        camera_cap = cap
+                        consec_fails = 0
+                        print(f"[Vision] Camera restart succeeded!", flush=True)
+                time.sleep(0.5)
             time.sleep(0.01)
 
     camera_cap = None
     cap.release()
     print("[Vision] Camera released.")
+
+
+def get_effective_px_per_mm(w: int) -> float:
+    """
+    PX_PER_MM is calibrated at reference width 1280.
+    If the camera negotiated 640 width on Linux, scale proportionally so physical mm is identical!
+    """
+    base_val = PX_PER_MM if PX_PER_MM > 40 else 98.5
+    if w <= 0 or w == 1280:
+        return base_val
+    return base_val * (float(w) / 1280.0)
 
 
 def get_frame() -> np.ndarray | None:
@@ -198,12 +257,20 @@ def vision_loop():
             time.sleep(DETECTION_INTERVAL)
             continue
 
+        with state_lock:
+            is_detecting = shared_state["detecting"]
+
+        if not is_detecting:
+            time.sleep(0.2)
+            continue
+
         h, w = frame.shape[:2]
         cx, cy = w // 2, h // 2  # Crosshair centre in pixels
 
-        # ── Sharpness (Laplacian Variance) ──────────────────────────
+        # ── Sharpness (Optimized Laplacian on downscaled frame) ────
         gray        = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        sharpness   = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        small_gray  = cv2.resize(gray, (320, 180), interpolation=cv2.INTER_NEAREST)
+        sharpness   = float(cv2.Laplacian(small_gray, cv2.CV_16S).var())
 
         # ── Fiducial Detection ───────────────────────────────────────
         detected_circles = []
@@ -211,12 +278,14 @@ def vision_loop():
         offset_dx = 0.0
         offset_dy = 0.0
 
-        with state_lock:
-            is_detecting = shared_state["detecting"]
-
         if is_detecting:
-            # Blur to reduce noise before circle detection
-            blurred = cv2.GaussianBlur(gray, (9, 9), 2)
+            # Optimize for Pi 4: Crop central 600x600 region where fiducials are positioned
+            roi_w = min(600, w)
+            roi_h = min(600, h)
+            rx1 = (w - roi_w) // 2
+            ry1 = (h - roi_h) // 2
+            gray_crop = gray[ry1:ry1+roi_h, rx1:rx1+roi_w]
+            blurred = cv2.GaussianBlur(gray_crop, (7, 7), 1.5)
             raw = cv2.HoughCircles(
                 blurred,
                 cv2.HOUGH_GRADIENT,
@@ -231,7 +300,9 @@ def vision_loop():
             if raw is not None:
                 circles_np = np.round(raw[0, :]).astype(int)
                 # Convert pixel coordinates to machine-space mm offsets from crosshair
-                for (px, py, pr) in circles_np:
+                for (cpx, cpy, pr) in circles_np:
+                    px = int(cpx + rx1)
+                    py = int(cpy + ry1)
                     # --- Filter 1: Solid Fill Check (Rejects Through-Holes) ---
                     box_size = int(pr * 2.5)
                     x1 = max(0, px - box_size)
@@ -349,10 +420,11 @@ def vision_loop():
                     if circularity < 0.65:
                         continue  # Reject trace pads (they have a tail, ruining circularity)
                             
+                    eff_px_mm = get_effective_px_per_mm(w)
                     dx_px = px - cx
                     dy_px = cy - py  # Invert Y: camera Y down → machine Y up
-                    dx_mm = round(dx_px / PX_PER_MM, 4)
-                    dy_mm = round(dy_px / PX_PER_MM, 4)
+                    dx_mm = round(dx_px / eff_px_mm, 4)
+                    dy_mm = round(dy_px / eff_px_mm, 4)
                     detected_circles.append({
                         "pixel_x": int(px), "pixel_y": int(py), "radius": int(pr),
                         "offset_dx": dx_mm, "offset_dy": dy_mm
@@ -386,8 +458,9 @@ def vision_loop():
                             # Recalculate offsets based on smoothed pixel
                             dx_px = best_circle["pixel_x"] - cx
                             dy_px = cy - best_circle["pixel_y"]
-                            best_circle["offset_dx"] = round(dx_px / PX_PER_MM, 4)
-                            best_circle["offset_dy"] = round(dy_px / PX_PER_MM, 4)
+                            eff_px_mm = get_effective_px_per_mm(w)
+                            best_circle["offset_dx"] = round(dx_px / eff_px_mm, 4)
+                            best_circle["offset_dy"] = round(dy_px / eff_px_mm, 4)
                         else:
                             # Machine moved to a totally new fiducial, update immediately
                             best_circle = current_best
@@ -519,7 +592,7 @@ def generate_mjpeg():
     Crash-proof: any single bad frame is skipped rather than killing the whole stream.
     """
     encode_params = [cv2.IMWRITE_JPEG_QUALITY, MJPEG_QUALITY]
-    FRAME_DELAY = 1.0 / 30  # Cap at 30fps to prevent CPU spikes
+    FRAME_DELAY = 1.0 / 22 if os.name != 'nt' else 1.0 / 30  # 22fps on Pi 4 keeps CPU cool & video fluid
     placeholder_frame = make_placeholder_frame()
 
     while True:
@@ -531,10 +604,12 @@ def generate_mjpeg():
                 # yield a clean placeholder frame to maintain the aspect ratio.
                 ret, jpeg = cv2.imencode(".jpg", placeholder_frame, encode_params)
                 if ret and jpeg is not None:
+                    data = jpeg.tobytes()
                     yield (
                         b"--frame\r\n"
-                        b"Content-Type: image/jpeg\r\n\r\n" +
-                        jpeg.tobytes() +
+                        b"Content-Type: image/jpeg\r\n"
+                        b"Content-Length: " + str(len(data)).encode('ascii') + b"\r\n\r\n" +
+                        data +
                         b"\r\n"
                     )
                 time.sleep(0.066) # slower refresh for placeholder to save CPU
@@ -546,10 +621,12 @@ def generate_mjpeg():
                 time.sleep(0.033)
                 continue
 
+            data = jpeg.tobytes()
             yield (
                 b"--frame\r\n"
-                b"Content-Type: image/jpeg\r\n\r\n" +
-                jpeg.tobytes() +
+                b"Content-Type: image/jpeg\r\n"
+                b"Content-Length: " + str(len(data)).encode('ascii') + b"\r\n\r\n" +
+                data +
                 b"\r\n"
             )
         except Exception as e:
@@ -608,6 +685,11 @@ class PadQuery(BaseModel):
 
 # ── Routes ────────────────────────────────────────────────────────
 
+@app.get("/")
+def root_status():
+    """Root health check to prevent 404 logs from network probes."""
+    return {"status": "ok", "service": "pcb-vision"}
+
 @app.get("/video_feed")
 def video_feed():
     """MJPEG stream endpoint — point <img src="http://localhost:8000/video_feed" /> at this."""
@@ -621,7 +703,11 @@ def video_feed():
 def api_status():
     """Health check — React polls this to know the server is alive."""
     with state_lock:
-        return JSONResponse({"ok": shared_state["camera_ok"], "frames": shared_state["frame_count"]})
+        return JSONResponse({
+            "ok": True,
+            "camera_ok": shared_state["camera_ok"],
+            "frames": shared_state["frame_count"]
+        })
 
 
 @app.post("/api/start_detect")
@@ -704,15 +790,17 @@ def api_snap_offset():
     _, thresh = cv2.threshold(blurred_roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
     # Brightness centroid — subpixel-accurate centre of the copper region
+    eff_px_mm = get_effective_px_per_mm(w)
     M = cv2.moments(thresh)
     if M["m00"] == 0:
-        return JSONResponse({"found": False, "error": "empty_moments"})
-
-    centroid_x = x1 + M["m10"] / M["m00"]   # back to full-frame coordinates
-    centroid_y = y1 + M["m01"] / M["m00"]
-
-    dx_mm = round((centroid_x - cx_frame) / PX_PER_MM, 4)
-    dy_mm = round((cy_frame - centroid_y) / PX_PER_MM, 4)  # invert Y: screen-down → machine-up
+        # Graceful fallback: Use Hough circle center instead of failing
+        dx_mm = bc.get("offset_dx", round((px - cx_frame) / eff_px_mm, 4))
+        dy_mm = bc.get("offset_dy", round((cy_frame - py) / eff_px_mm, 4))
+    else:
+        centroid_x = x1 + M["m10"] / M["m00"]   # back to full-frame coordinates
+        centroid_y = y1 + M["m01"] / M["m00"]
+        dx_mm = round((centroid_x - cx_frame) / eff_px_mm, 4)
+        dy_mm = round((cy_frame - centroid_y) / eff_px_mm, 4)  # invert Y: screen-down → machine-up
 
     return JSONResponse({
         "found": True,
@@ -917,10 +1005,11 @@ def api_find_component_center():
         comp_cx, comp_cy = target["cx"], target["cy"]
         comp_type = "single"
 
+    eff_px_mm = get_effective_px_per_mm(w)
     dx_px = comp_cx - cx
     dy_px = cy - comp_cy  # Camera image Y is inverted relative to machine coordinates (down -> up)
-    offset_dx = round(float(dx_px / PX_PER_MM), 4)
-    offset_dy = round(float(dy_px / PX_PER_MM), 4)
+    offset_dx = round(float(dx_px / eff_px_mm), 4)
+    offset_dy = round(float(dy_px / eff_px_mm), 4)
 
     return JSONResponse({
         "found": True,

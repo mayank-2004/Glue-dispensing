@@ -118,7 +118,11 @@ export default function SerialPanel({
     const unsub = window.serial.onData((line) => {
       lastDataRef.current = Date.now();
       const ts = new Date().toISOString();
-      setConsoleLines((prev) => [...prev, `[RECE] ${ts} ${line}`].slice(-500));
+      // Filter out high-frequency real-time status packets (<...>) from console state
+      // to prevent re-rendering SerialPanel 5 times every second on Pi 4
+      if (!line.startsWith('<')) {
+        setConsoleLines((prev) => [...prev, `[RECE] ${ts} ${line}`].slice(-200));
+      }
 
       // ── GRBL real-time status: <Idle|MPos:x,y,z|FS:f,s|Pn:Z> ───────────
       const grbl = parseGrblStatus(line);

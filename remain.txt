@@ -1015,3 +1015,24 @@ Forced the system_control_get_state() to return 0 and disabling system_init(), t
 
 capacitor - to connect at GND
 resistor - to connect at 5V
+
+
+
+
+
+
+
+
+
+
+
+
+everytime app code changes so during zip transfer to do below - 
+# 1. Overwrite with the optimized source files (node_modules is preserved)
+unzip -o ~/Glue-dispensing-pi.zip -d ~/Glue-dispensing
+
+
+# 2. Start the app
+cd ~/Glue-dispensing
+export DISPLAY=:0
+npm run dev

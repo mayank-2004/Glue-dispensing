@@ -6,6 +6,7 @@ export function useSerialMachine() {
   const [machinePos, setMachinePos] = useState({ x: 0, y: 0, z: 0 });
   const [isEmergencyStopped, setIsEmergencyStopped] = useState(false);
   const statusIntervalRef = useRef(null);
+  const lastProbeRef = useRef(false);
 
   // Throttled position update: buffer raw parsed position in a ref,
   // and flush it to React state at most once per animation frame (~60fps cap).
@@ -76,16 +77,26 @@ export function useSerialMachine() {
   useEffect(() => {
     if (window.serial?.onData) {
       window.serial.onData((line) => {
-        // ── GRBL real-time status: <Idle|MPos:x,y,z|...> ──────────────────
-        const grbl = parseGrblStatus(line);
-        if (grbl) {
-          scheduleMachinePosUpdate({ x: grbl.x, y: grbl.y, z: grbl.z });
-          // Fire probe DOM events from GRBL Pn:Z pin flag
-          if (grbl.probeTriggered) {
-            window.dispatchEvent(new CustomEvent('endstop-z-probe-triggered'));
-          } else if (line.startsWith('<')) {
-            window.dispatchEvent(new CustomEvent('endstop-z-probe-open'));
+        if (!line) return;
+
+        // ── Fast path: GRBL real-time status: <Idle|MPos:x,y,z|...> ───────
+        if (line.charCodeAt(0) === 60) { // '<'
+          const grbl = parseGrblStatus(line);
+          if (grbl) {
+            scheduleMachinePosUpdate({ x: grbl.x, y: grbl.y, z: grbl.z });
+            if (lastProbeRef.current !== grbl.probeTriggered) {
+              lastProbeRef.current = grbl.probeTriggered;
+              window.dispatchEvent(new CustomEvent(
+                grbl.probeTriggered ? 'endstop-z-probe-triggered' : 'endstop-z-probe-open'
+              ));
+            }
           }
+          return; // Status reports never contain secondary telemetry
+        }
+
+        // ── Fast path: standard GRBL ACK ──────────────────────────────────
+        if (line === 'ok' || line.startsWith('ok')) {
+          return;
         }
 
         // Parse Tip Status (e.g. "TIP_STATUS:PRESENT SLOT:0")

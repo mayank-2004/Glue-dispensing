@@ -12,7 +12,7 @@ export class LayerDataExtractor {
         type: layer.type,
         side: layer.side,
         enabled: layer.enabled,
-        rawText: layer.text
+
       };
       
       // Extract specific data based on layer type

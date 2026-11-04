@@ -431,11 +431,17 @@ export default function App() {
   const handleMachinePositionUpdate = useCallback((newPos) => {
     // Always keep the ref up to date for immediate reads (SVG overlay, jog panel etc.)
     machinePosRef.current = newPos;
-    // Only push into livePreview state when something else needs to react to it
-    setLivePreview(prev => ({
-      ...prev,
-      machinePosition: newPos
-    }));
+    // Only push into livePreview state when position actually changes (avoids re-rendering the root app every 200ms when idle)
+    setLivePreview(prev => {
+      const cur = prev.machinePosition;
+      if (cur && Math.abs(cur.x - newPos.x) < 0.001 && Math.abs(cur.y - newPos.y) < 0.001 && Math.abs(cur.z - newPos.z) < 0.001) {
+        return prev;
+      }
+      return {
+        ...prev,
+        machinePosition: newPos
+      };
+    });
   }, []);
 
   const handleFiducialsUpdate = useCallback((newFids) => {
@@ -679,53 +685,66 @@ export default function App() {
   const onDrop = async (e) => { e.preventDefault(); await handleFiles(e.dataTransfer.files); };
 
   async function handleFiles(fileList) {
-    const result = await parseFiles(fileList);
-    const { detectedFiducials, detectedRailFiducials, detectedPanelGrid, origins } = result;
+    if (!fileList || fileList.length === 0) return;
+    toast.info("Parsing Gerber files...");
+    await new Promise(r => setTimeout(r, 20));
 
-    setFiducialDetectionResult(detectedFiducials);
+    try {
+      const result = await parseFiles(fileList);
+      if (!result) return;
+      const { detectedFiducials, detectedRailFiducials, detectedPanelGrid, origins, pads: resPads } = result;
 
-    const autoRailFids = detectedRailFiducials.map((fid, idx) => ({
-      id: fid.id || `R${idx + 1}`,
-      design: { x: parseFloat(fid.x.toFixed(4)), y: parseFloat(fid.y.toFixed(4)) },
-      machine: null, color: RAIL_COLORS[idx % RAIL_COLORS.length], isRail: true,
-    }));
-    setPanelRailFiducials(autoRailFids);
-    setFidActiveId(autoRailFids[0]?.id ?? null); // default arm to R1 on every Gerber load
-    setPanelXf(null);
+      setFiducialDetectionResult(detectedFiducials);
 
-    const autoPanel = detectedPanelGrid || (detectedFiducials?.length >= 4 ? detectPanelFromFiducials(detectedFiducials) : null);
-    const effectivePanelGrid = autoPanel ? {
-      dimX: autoPanel.dimX || autoPanel.cols || 1,
-      dimY: autoPanel.dimY || autoPanel.rows || 1,
-      stepX: autoPanel.stepX != null ? autoPanel.stepX : 0,
-      stepY: autoPanel.stepY != null ? autoPanel.stepY : 0,
-      fromSr: !!detectedPanelGrid,
-    } : null;
+      const autoRailFids = (detectedRailFiducials || []).map((fid, idx) => ({
+        id: fid.id || `R${idx + 1}`,
+        design: { x: parseFloat(fid.x.toFixed(4)), y: parseFloat(fid.y.toFixed(4)) },
+        machine: null, color: RAIL_COLORS[idx % RAIL_COLORS.length], isRail: true,
+      }));
+      setPanelRailFiducials(autoRailFids);
+      setFidActiveId(autoRailFids[0]?.id ?? null); // default arm to R1 on every Gerber load
+      setPanelXf(null);
 
-    const isFlatPanel = !detectedPanelGrid && (effectivePanelGrid && (effectivePanelGrid.dimX > 1 || effectivePanelGrid.dimY > 1));
-    const boards = buildPanelBoards(detectedFiducials, effectivePanelGrid, isFlatPanel);
-    setPanelBoards(boards);
-    _setActiveBoardIndex(0);
-    setPanelInfo(effectivePanelGrid);
-    setApplyXf(true);
-    if (!autoRailFids.length && boards[0]?.fiducials?.[0]?.id) {
-      setFidActiveId(`${boards[0].name}_${boards[0].fiducials[0].id}`);
+      const autoPanel = detectedPanelGrid || (detectedFiducials?.length >= 4 ? detectPanelFromFiducials(detectedFiducials) : null);
+      const effectivePanelGrid = autoPanel ? {
+        dimX: autoPanel.dimX || autoPanel.cols || 1,
+        dimY: autoPanel.dimY || autoPanel.rows || 1,
+        stepX: autoPanel.stepX != null ? autoPanel.stepX : 0,
+        stepY: autoPanel.stepY != null ? autoPanel.stepY : 0,
+        fromSr: !!detectedPanelGrid,
+      } : null;
+
+      const isFlatPanel = !detectedPanelGrid && (effectivePanelGrid && (effectivePanelGrid.dimX > 1 || effectivePanelGrid.dimY > 1));
+      const boards = buildPanelBoards(detectedFiducials, effectivePanelGrid, isFlatPanel);
+      setPanelBoards(boards);
+      _setActiveBoardIndex(0);
+      setPanelInfo(effectivePanelGrid);
+      setApplyXf(true);
+      if (!autoRailFids.length && boards[0]?.fiducials?.[0]?.id) {
+        setFidActiveId(`${boards[0].name}_${boards[0].fiducials[0].id}`);
+      }
+
+      if (origins && origins.length > 0) {
+        const origin = { ...origins[0], id: 'O1' };
+        setOriginCandidates(origins);
+        setSelectedOrigin(origin);
+        setPcbOriginOffset({ x: origin.x, y: origin.y });
+      } else {
+        setOriginCandidates([]);
+      }
+
+      setSelectedMm(null);
+      setXf(null);
+      if (!detectedPanelGrid) setApplyXf(false);
+      setFidPickMode(false);
+      queueMicrotask(() => { updateOverlay(); });
+
+      const fidCount = (detectedFiducials?.length || 0) + (autoRailFids.length || 0);
+      toast.success(`Gerber loaded: ${resPads?.length || 0} pads, ${fidCount} fiducials`);
+    } catch (err) {
+      console.error("Failed to parse Gerber files:", err);
+      toast.error(`Gerber parse error: ${err.message || err}`);
     }
-
-    if (origins.length > 0) {
-      const origin = { ...origins[0], id: 'O1' };
-      setOriginCandidates(origins);
-      setSelectedOrigin(origin);
-      setPcbOriginOffset({ x: origin.x, y: origin.y });
-    } else {
-      setOriginCandidates([]);
-    }
-
-    setSelectedMm(null);
-    setXf(null);
-    if (!detectedPanelGrid) setApplyXf(false);
-    setFidPickMode(false);
-    queueMicrotask(() => { updateOverlay(); });
   }
 
   const NS = "http://www.w3.org/2000/svg";

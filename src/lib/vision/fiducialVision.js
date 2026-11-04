@@ -72,12 +72,12 @@ export class FiducialVisionDetector {
 
       const circles = new window.cv.Mat();
 
-      const MIN_DIAMETER_MM = 0.3;
-      const MAX_DIAMETER_MM = 3.0;
+      const MIN_DIAMETER_MM = 0.5;
+      const MAX_DIAMETER_MM = 1.8;
 
-      const minRadiusPx = Math.floor((MIN_DIAMETER_MM / 2) * pxPerMm * 0.8);
-      const maxRadiusPx = Math.ceil((MAX_DIAMETER_MM / 2) * pxPerMm * 1.5);
-      const minDist = Math.max(maxRadiusPx * 1.5, 10);
+      const minRadiusPx = Math.floor((MIN_DIAMETER_MM / 2) * pxPerMm * 0.85);
+      const maxRadiusPx = Math.ceil((MAX_DIAMETER_MM / 2) * pxPerMm * 1.15);
+      const minDist = Math.max(maxRadiusPx * 1.5, 20);
 
       window.cv.HoughCircles(
         blurred,
@@ -86,8 +86,8 @@ export class FiducialVisionDetector {
         1,
         minDist,
         100, // Canny high threshold
-        18,  // Accumulator threshold (lowered; zone filters handle false positives)
-        Math.max(3, minRadiusPx),
+        24,  // Calibrated accumulator threshold (rejects ring light glare and bed texture)
+        Math.max(15, minRadiusPx),
         Math.min(minRadiusPx * 10, maxRadiusPx)
       );
 
@@ -207,8 +207,12 @@ export class FiducialVisionDetector {
 
         let rejectReason = null;
 
+        // Rule 0: Specular glare / ring light reflection rejection
+        if (coreMean > 248) {
+          rejectReason = 'Specular Glare (Camera Ring Light Reflection)';
+        }
         // Rule 1: overall core must be bright enough to be metallic copper
-        if (coreMean < 95 || innerCoreMean < 90) {
+        else if (coreMean < 95 || innerCoreMean < 90) {
           rejectReason = 'Dark Center (Not Copper)';
         }
         // Rule 2: ring/donut pattern — the primary through-hole signature.
@@ -220,8 +224,9 @@ export class FiducialVisionDetector {
         // Rule 3: Core must be significantly brighter than soldermask clearance ring (boundary)
         // For through-holes with copper pads: core is dark hole, boundary is bright pad (core < boundary).
         // For bed surface: core ≈ boundary (flat contrast, no pad/clearance distinction).
-        else if (coreMean <= boundaryMean + 18) {
-          rejectReason = 'Inverted or Flat Contrast (Through-Hole or Bed Surface)';
+        // For diffuse ring light halo: gradual falloff without clearance step.
+        else if (coreMean <= boundaryMean + 22) {
+          rejectReason = 'Inverted or Flat Contrast (Through-Hole, Ring Light or Bed Surface)';
         }
         // Rule 4: outer zone must not have an overpowering bright halo
         else if (outerMean > coreMean + 15) {

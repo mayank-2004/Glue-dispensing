@@ -70,58 +70,69 @@ function parseAllFlashes(gerberText) {
     }
   }
 
-  const opsText = gerberText.replace(/%[^%]*%/g, '');
-  const tokens = opsText.split('*').map(s => s.trim()).filter(Boolean);
+  const xDivisor = Math.pow(10, xDec);
+  const yDivisor = Math.pow(10, yDec);
 
-  const parseCoord = (val, iDigits, dDigits) => {
-    if (!val) return 0;
-    if (val.includes('.')) return parseFloat(val);
-    let sign = 1;
-    if (val.startsWith('+')) val = val.slice(1);
-    if (val.startsWith('-')) { sign = -1; val = val.slice(1); }
-    const total = iDigits + dDigits;
-    const s = zeroSupp === 'L' ? val.padStart(total, '0') : val.padEnd(total, '0');
-    return sign * parseFloat(`${s.slice(0, iDigits)}.${s.slice(iDigits)}`);
-  };
-
-  const parseXY = (t, lastX, lastY) => {
-    const m = {};
-    t.replace(/([XY])([+\-]?\d+(?:\.\d+)?)/gi, (_, k, v) => { m[k.toUpperCase()] = v; });
-    return {
-      x: m.X !== undefined ? parseCoord(m.X, xInt, xDec) : lastX,
-      y: m.Y !== undefined ? parseCoord(m.Y, yInt, yDec) : lastY
-    };
+  const extractCoord = (t, char, divisor) => {
+    let idx = t.indexOf(char);
+    if (idx === -1) {
+      char = char.toLowerCase();
+      idx = t.indexOf(char);
+    }
+    if (idx === -1) return null;
+    let end = idx + 1;
+    const len = t.length;
+    if (end < len && (t.charCodeAt(end) === 43 || t.charCodeAt(end) === 45)) end++;
+    while (end < len) {
+      const c = t.charCodeAt(end);
+      if ((c >= 48 && c <= 57) || c === 46) end++;
+      else break;
+    }
+    const str = t.substring(idx + 1, end);
+    if (str.includes('.')) return parseFloat(str);
+    const n = parseInt(str, 10);
+    return isNaN(n) ? null : n / divisor;
   };
 
   let curX = 0, curY = 0, currentD = null, currentAperture = null;
   const flashes = [];
+  const textLen = gerberText.length;
+  let cursor = 0;
 
-  for (const raw of tokens) {
-    const t = raw.replace(/\s+/g, '');
-    if (!t || /^G0?4/i.test(t)) continue;
-
-    // Standalone D-code
-    const dSel = t.match(/^D(\d+)$/i);
-    if (dSel) {
-      const code = parseInt(dSel[1]);
-      if (code >= 10) currentAperture = apertures.get(code) ?? null;
-      else currentD = code;
+  while (cursor < textLen) {
+    if (gerberText.charCodeAt(cursor) === 37 /* '%' */) {
+      const nextP = gerberText.indexOf('%', cursor + 1);
+      cursor = nextP === -1 ? textLen : nextP + 1;
       continue;
     }
 
-    // Combined token: may have D-code at end
-    const md = t.match(/D0?([123])$/i);
-    if (md) currentD = +md[1];
+    const starIdx = gerberText.indexOf('*', cursor);
+    if (starIdx === -1) break;
 
-    const mdAp = t.match(/D(\d{2,})$/i);
-    if (mdAp && parseInt(mdAp[1]) >= 10) {
-      currentAperture = apertures.get(parseInt(mdAp[1])) ?? null;
+    const raw = gerberText.substring(cursor, starIdx).trim();
+    cursor = starIdx + 1;
+    if (!raw || (raw.charCodeAt(0) === 71 && (raw.startsWith('G04') || raw.startsWith('G4')))) continue;
+
+    // Fast check for standalone D-code
+    if (raw.charCodeAt(0) === 68 || raw.charCodeAt(0) === 100) {
+      const code = parseInt(raw.slice(1), 10);
+      if (code >= 10) currentAperture = apertures.get(code) ?? null;
+      else if (!isNaN(code)) currentD = code;
+      continue;
     }
 
-    if (/[XY]/i.test(t)) {
-      const pos = parseXY(t, curX, curY);
-      curX = pos.x; curY = pos.y;
+    // Check for D-code within token
+    const di = raw.search(/D0?(\d+)/i);
+    if (di !== -1) {
+      const dCode = parseInt(raw.slice(di + 1), 10);
+      if (dCode >= 10) currentAperture = apertures.get(dCode) ?? null;
+      else if (dCode >= 1 && dCode <= 3) currentD = dCode;
     }
+
+    const newX = extractCoord(raw, 'X', xDivisor);
+    if (newX !== null) curX = newX;
+    const newY = extractCoord(raw, 'Y', yDivisor);
+    if (newY !== null) curY = newY;
 
     if (currentD === 3 && currentAperture) {
       const xMm = units === 'in' ? curX * IN2MM : curX;
@@ -174,15 +185,41 @@ export function detectFiducials(gerberText, layerType = 'copper') {
       console.log(`  pad: x=${c.x.toFixed(3)} y=${c.y.toFixed(3)} dia=${c.diameter.toFixed(3)}`)
     );
 
-    // Isolation filter: true fiducials have 2.5mm clearance from any other flash
-    const computeNearestDist = (c) =>
-      allFlashes
-        .filter(f => !(Math.abs(f.x - c.x) < 0.01 && Math.abs(f.y - c.y) < 0.01))
-        .reduce((minD, f) => Math.min(minD, Math.hypot(f.x - c.x, f.y - c.y)), Infinity);
+    // Fast spatial grid isolation filter for all flashes
+    const CELL_SIZE = 5.0;
+    const flashGrid = new Map();
+    for (const f of allFlashes) {
+      const k = `${Math.floor(f.x / CELL_SIZE)},${Math.floor(f.y / CELL_SIZE)}`;
+      let cell = flashGrid.get(k);
+      if (!cell) { cell = []; flashGrid.set(k, cell); }
+      cell.push(f);
+    }
 
-    const isolated25 = candidates.filter(c => computeNearestDist(c) >= 2.5);
-    const isolated15 = candidates.filter(c => computeNearestDist(c) >= 1.5);
-    const isolated10 = candidates.filter(c => computeNearestDist(c) >= 1.0);
+    const checkIsolation = (c, dist) => {
+      const distSq = dist * dist;
+      const span = Math.ceil(dist / CELL_SIZE);
+      const gx = Math.floor(c.x / CELL_SIZE);
+      const gy = Math.floor(c.y / CELL_SIZE);
+      for (let dx = -span; dx <= span; dx++) {
+        for (let dy = -span; dy <= span; dy++) {
+          const cell = flashGrid.get(`${gx + dx},${gy + dy}`);
+          if (!cell) continue;
+          for (const f of cell) {
+            if (Math.abs(f.x - c.x) < 0.01 && Math.abs(f.y - c.y) < 0.01) continue;
+            const xdiff = Math.abs(f.x - c.x);
+            if (xdiff >= dist) continue;
+            const ydiff = Math.abs(f.y - c.y);
+            if (ydiff >= dist) continue;
+            if (xdiff * xdiff + ydiff * ydiff < distSq) return false;
+          }
+        }
+      }
+      return true;
+    };
+
+    const isolated25 = candidates.filter(c => checkIsolation(c, 2.5));
+    const isolated15 = isolated25.length >= 2 ? isolated25 : candidates.filter(c => checkIsolation(c, 1.5));
+    const isolated10 = isolated15.length >= 2 ? isolated15 : candidates.filter(c => checkIsolation(c, 1.0));
 
     console.log(`[Fid] ${layerType}: isolated >= 2.5mm: ${isolated25.length}, >= 1.5mm: ${isolated15.length}, >= 1.0mm: ${isolated10.length}`);
 
@@ -289,33 +326,88 @@ export function analyzeFiducialsWithRails(layers, side = 'top') {
 
     // console.log(`[FidAnalyze] Copper SMD circles: ${copperFlashes.length}, Mask circles: ${maskFlashes.length}`);
 
-    // For each copper pad, find corresponding mask opening
-    const MATCH_DIST = 0.5; // mm position tolerance
-    const fidCandidates = [];
+    // Spatial Grid Index for mask flashes (5mm bins)
+    const CELL_SIZE = 5.0;
+    const maskGrid = new Map();
+    for (const m of maskFlashes) {
+      const k = `${Math.floor(m.x / CELL_SIZE)},${Math.floor(m.y / CELL_SIZE)}`;
+      let cell = maskGrid.get(k);
+      if (!cell) { cell = []; maskGrid.set(k, cell); }
+      cell.push(m);
+    }
+
+    // Spatial Grid Index for copper flashes
+    const cuGrid = new Map();
     for (const cu of copperFlashes) {
-      const matchingMask = maskFlashes.find(m =>
-        Math.hypot(m.x - cu.x, m.y - cu.y) < MATCH_DIST &&
-        m.diameter >= cu.diameter * 1.5 && // mask opening must be significantly larger (stricter: 1.5×)
-        m.diameter <= cu.diameter * 6.0    // but not unreasonably larger
-      );
+      const k = `${Math.floor(cu.x / CELL_SIZE)},${Math.floor(cu.y / CELL_SIZE)}`;
+      let cell = cuGrid.get(k);
+      if (!cell) { cell = []; cuGrid.set(k, cell); }
+      cell.push(cu);
+    }
+
+    // For each copper pad, find corresponding mask opening via spatial query
+    const MATCH_DIST = 0.5;
+    const MATCH_DIST_SQ = MATCH_DIST * MATCH_DIST;
+    const fidCandidates = [];
+
+    for (const cu of copperFlashes) {
+      const gx = Math.floor(cu.x / CELL_SIZE);
+      const gy = Math.floor(cu.y / CELL_SIZE);
+      let matchingMask = null;
+      const minRatio = cu.diameter * 1.5;
+      const maxRatio = cu.diameter * 6.0;
+
+      cellLoop: for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          const cell = maskGrid.get(`${gx + dx},${gy + dy}`);
+          if (!cell) continue;
+          for (const m of cell) {
+            const xdiff = Math.abs(m.x - cu.x);
+            if (xdiff > MATCH_DIST) continue;
+            const ydiff = Math.abs(m.y - cu.y);
+            if (ydiff > MATCH_DIST) continue;
+            if (xdiff * xdiff + ydiff * ydiff < MATCH_DIST_SQ &&
+                m.diameter >= minRatio && m.diameter <= maxRatio) {
+              matchingMask = m;
+              break cellLoop;
+            }
+          }
+        }
+      }
+
       if (matchingMask) {
         fidCandidates.push({
           ...cu,
           maskDiameter: matchingMask.diameter,
           ratio: matchingMask.diameter / cu.diameter
         });
-        // console.log(`  cross-match: cu=(${cu.x.toFixed(2)},${cu.y.toFixed(2)}) dia=${cu.diameter.toFixed(2)}, mask dia=${matchingMask.diameter.toFixed(2)}, ratio=${(matchingMask.diameter/cu.diameter).toFixed(1)}`);
       }
     }
 
-    // Test points can also have an oversized mask opening. Fiducials normally
-    // use one repeated copper aperture and are isolated from nearby copper.
-    // Apply those constraints before accepting cross-correlated matches.
-    const copperNearestDist = (candidate) => copperFlashes
-      .filter(f => !(Math.abs(f.x - candidate.x) < 0.01 && Math.abs(f.y - candidate.y) < 0.01))
-      .reduce((minD, f) => Math.min(minD, Math.hypot(f.x - candidate.x, f.y - candidate.y)), Infinity);
+    // Fast spatial isolation filter (must have >= 2.0mm clearance from other copper flashes)
+    const ISOLATION_DIST = 2.0;
+    const ISOLATION_DIST_SQ = ISOLATION_DIST * ISOLATION_DIST;
 
-    const isolatedCandidates = fidCandidates.filter(c => copperNearestDist(c) >= 2.0);
+    const isolatedCandidates = fidCandidates.filter(c => {
+      const gx = Math.floor(c.x / CELL_SIZE);
+      const gy = Math.floor(c.y / CELL_SIZE);
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          const cell = cuGrid.get(`${gx + dx},${gy + dy}`);
+          if (!cell) continue;
+          for (const f of cell) {
+            if (Math.abs(f.x - c.x) < 0.01 && Math.abs(f.y - c.y) < 0.01) continue;
+            const xdiff = Math.abs(f.x - c.x);
+            if (xdiff >= ISOLATION_DIST) continue;
+            const ydiff = Math.abs(f.y - c.y);
+            if (ydiff >= ISOLATION_DIST) continue;
+            if (xdiff * xdiff + ydiff * ydiff < ISOLATION_DIST_SQ) return false;
+          }
+        }
+      }
+      return true;
+    });
+
     const diameterGroups = new Map();
     for (const candidate of isolatedCandidates) {
       const key = Math.round(candidate.diameter * 20) / 20;

@@ -58,10 +58,10 @@ export function moveAbs({ x, y, z, r, feed }, axisMap = defaultAxisMap) {
 
 export function jogRel({ dx, dy, dz, dr, feed }, axisMap = defaultAxisMap) {
   const parts = [];
-  if (dx) parts.push(`${axisMap.X}${fmt(dx)}`);
-  if (dy) parts.push(`${axisMap.Y}${fmt(dy)}`);
-  if (dz) parts.push(`${axisMap.Z}${fmt(dz)}`);
-  if (dr) parts.push(`${axisMap.R}${fmt(dr)}`);
+  if (dx != null && Math.abs(dx) >= 0.001) parts.push(`${axisMap.X}${Number(dx).toFixed(3)}`);
+  if (dy != null && Math.abs(dy) >= 0.001) parts.push(`${axisMap.Y}${Number(dy).toFixed(3)}`);
+  if (dz != null && Math.abs(dz) >= 0.001) parts.push(`${axisMap.Z}${Number(dz).toFixed(3)}`);
+  if (dr != null && Math.abs(dr) >= 0.001) parts.push(`${axisMap.R}${Number(dr).toFixed(3)}`);
   if (!parts.length) return [];
   const f = feed != null ? ` F${Math.max(1, Math.round(feed))}` : "";
   // IMPORTANT: G91, G1, and G90 are returned as SEPARATE array elements.

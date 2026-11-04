@@ -6,6 +6,14 @@ const { spawn } = require('child_process');
 const isDev = !app.isPackaged;
 const { SerialPort, ReadlineParser } = require('serialport');
 
+// Performance & memory tuning for Raspberry Pi 4 ARM64
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('enable-gpu-rasterization');
+  app.commandLine.appendSwitch('enable-zero-copy');
+  app.commandLine.appendSwitch('disable-gpu-memory-buffer-video-frames');
+  app.commandLine.appendSwitch('js-flags', '--max-old-space-size=1024');
+}
+
 let win;
 let serial = { port: null, parser: null };
 let intentionalClose = false;   // flag to distinguish programmatic close from cable pull
@@ -120,6 +128,7 @@ function startVisionServer() {
 
   visionProcess.stderr.on('data', (data) => {
     const text = data.toString().trim();
+    if (text.includes('Corrupt JPEG data') || text.includes('Premature end of JPEG')) return;
     console.log('[Vision stderr]', text);
     if (text.includes('Application startup complete') || text.includes('Uvicorn running')) markVisionReady();
   });
@@ -270,10 +279,37 @@ ipcMain.handle('serial:list', async () => {
   }
 });
 
+function optimizeLinuxSerial(portPath) {
+  if (process.platform !== 'linux' || !portPath) return;
+  try {
+    const devName = path.basename(portPath);
+    const latencyPaths = [
+      `/sys/bus/usb-serial/devices/${devName}/latency_timer`,
+      `/sys/class/tty/${devName}/device/latency_timer`
+    ];
+    for (const p of latencyPaths) {
+      if (fs.existsSync(p)) {
+        try {
+          fs.writeFileSync(p, '1', 'utf8');
+          console.log(`[Serial] Low-latency (1ms) applied to ${devName} via ${p}`);
+        } catch (e) {
+          // May require sudo or udev permissions
+        }
+        break;
+      }
+    }
+    try {
+      const cp = spawn('setserial', [portPath, 'low_latency']);
+      cp.on('error', () => {});
+    } catch {}
+  } catch {}
+}
+
 ipcMain.handle('serial:open', async (e, { path: portPath, baudRate = 115200 }) => {
   if (!portPath || typeof portPath !== 'string') {
     throw new Error('No serial "path" provided. Pick a port before connecting.');
   }
+  optimizeLinuxSerial(portPath);
   stopPortWatcher(); // stop watching — we're actively connecting now
   lastConnectedPath = portPath;
   lastConnectedBaud = baudRate;

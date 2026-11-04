@@ -13,7 +13,7 @@ export class NozzleMaintenanceManager {
     });
     this.reminderCallback = null;
     this.toolOffset = this.loadFromStorage('toolOffset', { dx: 0, dy: 0 });
-    this.pixelsPerMm = this.loadFromStorage('pixelsPerMm', 20);
+    this.pixelsPerMm = this.loadFromStorage('pixelsPerMm', 98.5);
     this.purgeStation = this.loadFromStorage('purgeStation', { x: 0, y: 0, z: 5, configured: false });
   }
 
@@ -36,7 +36,7 @@ export class NozzleMaintenanceManager {
   }
 
   getPixelsPerMm() {
-    return this.pixelsPerMm;
+    return (this.pixelsPerMm && this.pixelsPerMm > 40) ? this.pixelsPerMm : 98.5;
   }
 
   setPixelsPerMm(val) {

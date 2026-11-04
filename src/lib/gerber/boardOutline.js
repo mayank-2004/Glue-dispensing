@@ -19,56 +19,70 @@ export function extractBoardOutline(gerberText) {
     if (fs) { zeroSupp = fs[1].toUpperCase(); xInt=+fs[3]; xDec=+fs[4]; yInt=+fs[5]; yDec=+fs[6]; }
   }
 
-  const opsText = gerberText.replace(/%[^%]*%/g, '');
-  const tokens = opsText.split('*').map(s => s.trim()).filter(Boolean);
+  const xDivisor = Math.pow(10, xDec);
+  const yDivisor = Math.pow(10, yDec);
 
-  const parseCoord = (val, i, d, z = zeroSupp) => {
-    if (val.includes('.')) return parseFloat(val);
-    let sign = 1;
-    if (val.startsWith('+')) val = val.slice(1);
-    if (val.startsWith('-')) { sign = -1; val = val.slice(1); }
-    const total = i + d;
-    let s = z === 'L' ? val.padStart(total, '0') : val.padEnd(total, '0');
-    return sign * parseFloat(`${s.slice(0,i)}.${s.slice(i)}`);
-  };
-
-  const parseXY = (t, last) => {
-    const m = {};
-    t.replace(/([XY])([+\-]?\d+(?:\.\d+)?)?/gi, (_, k, v) => { m[k.toUpperCase()] = v || ''; return ''; });
-    let x = last.x, y = last.y;
-    if (m.X !== undefined) x = parseCoord(m.X, xInt, xDec);
-    if (m.Y !== undefined) y = parseCoord(m.Y, yInt, yDec);
-    return { x, y };
+  const extractCoord = (t, char, divisor) => {
+    let idx = t.indexOf(char);
+    if (idx === -1) {
+      char = char.toLowerCase();
+      idx = t.indexOf(char);
+    }
+    if (idx === -1) return null;
+    let end = idx + 1;
+    const len = t.length;
+    if (end < len && (t.charCodeAt(end) === 43 || t.charCodeAt(end) === 45)) end++;
+    while (end < len) {
+      const c = t.charCodeAt(end);
+      if ((c >= 48 && c <= 57) || c === 46) end++;
+      else break;
+    }
+    const str = t.substring(idx + 1, end);
+    if (str.includes('.')) return parseFloat(str);
+    const n = parseInt(str, 10);
+    return isNaN(n) ? null : n / divisor;
   };
 
   let curX = 0, curY = 0, currentD = null;
   const points = [];
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  const textLen = gerberText.length;
+  let cursor = 0;
 
-  for (const raw of tokens) {
-    const t = raw.replace(/\s+/g, '');
-    if (!t || /^G0?4/i.test(t)) continue;
+  while (cursor < textLen) {
+    if (gerberText.charCodeAt(cursor) === 37 /* '%' */) {
+      const nextP = gerberText.indexOf('%', cursor + 1);
+      cursor = nextP === -1 ? textLen : nextP + 1;
+      continue;
+    }
 
-    const md = t.match(/D0?(\d+)$/i);
-    if (md) currentD = +md[1];
+    const starIdx = gerberText.indexOf('*', cursor);
+    if (starIdx === -1) break;
 
-    if (/[XY]/i.test(t)) {
-      const { x, y } = parseXY(t, { x: curX, y: curY });
-      if (currentD === 1 || currentD === 2) { // Move or draw
-        points.push({ x, y });
-      }
-      curX = x; curY = y;
+    const raw = gerberText.substring(cursor, starIdx).trim();
+    cursor = starIdx + 1;
+    if (!raw || (raw.charCodeAt(0) === 71 && (raw.startsWith('G04') || raw.startsWith('G4')))) continue;
+
+    const di = raw.search(/D0?(\d+)/i);
+    if (di !== -1) {
+      currentD = parseInt(raw.slice(di + 1), 10);
+    }
+
+    const newX = extractCoord(raw, 'X', xDivisor);
+    if (newX !== null) curX = newX;
+    const newY = extractCoord(raw, 'Y', yDivisor);
+    if (newY !== null) curY = newY;
+
+    if (currentD === 1 || currentD === 2) {
+      points.push({ x: curX, y: curY });
+      if (curX < minX) minX = curX;
+      if (curX > maxX) maxX = curX;
+      if (curY < minY) minY = curY;
+      if (curY > maxY) maxY = curY;
     }
   }
 
-  if (points.length === 0) return null;
-
-  // Calculate board dimensions
-  const xs = points.map(p => p.x);
-  const ys = points.map(p => p.y);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
+  if (points.length === 0 || !isFinite(minX)) return null;
 
   const outline = {
     minX: units === 'in' ? minX * IN2MM : minX,

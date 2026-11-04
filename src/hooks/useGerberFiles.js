@@ -83,21 +83,30 @@ export function useGerberFiles() {
   // Parses files and returns structured data; callers distribute to their own state setters.
   const parseFiles = async (fileList) => {
     const files = Array.from(fileList || []);
-    const zips = files.filter(f => /\.zip$/i.test(f.name));
-    let expanded = files.filter(f => !/\.zip$/i.test(f.name));
-    for (const zipFile of zips) {
-      const zip = await JSZip.loadAsync(zipFile);
-      for (const ent of Object.values(zip.files).filter(f => !f.dir)) {
-        expanded.push(new File([await ent.async("text")], ent.name, { type: "text/plain" }));
+    if (!files.length) return null;
+
+    // Yield control so any UI updates / loading toasts render immediately
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    const read = [];
+    for (const f of files) {
+      if (/\.zip$/i.test(f.name)) {
+        const zip = await JSZip.loadAsync(f);
+        const entries = Object.values(zip.files).filter(ent => !ent.dir && !ent.name.startsWith('__MACOSX/'));
+        for (const ent of entries) {
+          const text = await ent.async("text");
+          read.push({ name: ent.name, text });
+        }
+      } else {
+        read.push({ name: f.name, text: await f.text() });
       }
     }
 
     // Separate PnP/CSV files from Gerber layers
-    const csvFiles = expanded.filter(f => /\.(csv)$/i.test(f.name));
-    expanded = expanded.filter(f => !/\.(csv|txt)$/i.test(f.name));
+    const csvFiles = read.filter(f => /\.(csv)$/i.test(f.name));
+    const gerberFiles = read.filter(f => !/\.(csv|txt)$/i.test(f.name));
 
-    const read = await Promise.all(expanded.map(async f => ({ name: f.name, text: await f.text() })));
-    const ls = identifyLayers(read);
+    const ls = identifyLayers(gerberFiles);
     const extractedData = LayerDataExtractor.extractLayerData(ls);
 
     let detectedPanelGrid = null;
@@ -107,7 +116,7 @@ export function useGerberFiles() {
     let loadedCsvComponents = [];
 
     if (csvFiles.length > 0) {
-      const csvText = await csvFiles[0].text();
+      const csvText = csvFiles[0].text;
       loadedCsvComponents = parsePnpCsv(csvText);
       if (loadedCsvComponents.length > 0) {
         console.log(`PnP Parser: Extracted ${loadedCsvComponents.length} components from CSV.`);
@@ -128,20 +137,17 @@ export function useGerberFiles() {
         parsedPads = processPads(basePads.map(padCenter));
       }
     } else if (loadedCsvComponents.length > 0) {
-      // If no solder paste layer but CSV exists, default to top side components
       parsedSide = 'top';
       parsedPads = loadedCsvComponents.filter(c => c.side === parsedSide);
     }
 
-    const { localFiducials: detectedFiducials, railFiducials: detectedRailFiducials } = analyzeFiducialsWithRails(ls);
+    // Yield control before fiducials
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    const { localFiducials: detectedFiducials, railFiducials: detectedRailFiducials } = analyzeFiducialsWithRails(ls, parsedSide);
 
     const unrecognized = read.filter(r => !ls.some(l => l.filename === r.name));
     if (unrecognized.length > 0) console.warn('Unrecognized files (skipped):', unrecognized.map(r => r.name));
-    if (detectedFiducials.length > 0) {
-      // console.log(`%c✅ FIDUCIALS FOUND: ${detectedFiducials.length}`, 'color:#4ade80;font-weight:bold');
-    } else {
-      console.warn('❌ NO FIDUCIALS DETECTED');
-    }
 
     let parsedOutline = null;
     const outlineLayer = ls.find(l =>
@@ -154,7 +160,7 @@ export function useGerberFiles() {
 
     const origins = detectPcbOrigins(ls);
 
-    // Commit local state
+    // Commit local state so UI updates immediately
     setLayers(ls);
     setLayerData(extractedData);
     setCsvComponents(loadedCsvComponents);
@@ -162,6 +168,9 @@ export function useGerberFiles() {
     setPasteIdx(parsedPasteIdx);
     setBoardOutline(parsedOutline);
     setSide(parsedSide);
+
+    // Yield control before heavy SVG generation
+    await new Promise(resolve => setTimeout(resolve, 10));
     await rebuild(ls, parsedSide);
 
     return {

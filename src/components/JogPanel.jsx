@@ -38,7 +38,10 @@ export default function JogPanel({
             const cmds = jogRel({ ...da, feed });
 
             if (window.serial?.writeLine) {
-                for (const line of cmds) await window.serial.writeLine(line);
+                for (const line of cmds) {
+                    await window.serial.writeLine(line);
+                    await new Promise(r => setTimeout(r, 10));
+                }
             }
         } catch (e) {
             console.error("Jog failed:", e);

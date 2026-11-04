@@ -7,8 +7,8 @@
   "scripts": {
     "dev": "concurrently -k -n VITE,ELECTRON,PYTHON -c blue,green,yellow \"vite\" \"npm:dev:electron\" \"npm:dev:python\"",
     "dev:electron": "wait-on tcp:5173 && electron .",
-    "dev:python": "cd python-vision && python server.py",
-    "install:python": "cd python-vision && pip install -r requirements.txt",
+    "dev:python": "node scripts/run-python.mjs",
+    "install:python": "node scripts/install-python.mjs",
     "build": "vite build && node scripts/copy-vendor.mjs && electron-builder",
     "build:pi": "vite build && node scripts/copy-vendor.mjs && electron-builder --linux --arm64 --publish never",
     "postinstall": "node scripts/copy-vendor.mjs",

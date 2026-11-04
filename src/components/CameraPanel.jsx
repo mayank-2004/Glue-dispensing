@@ -156,6 +156,7 @@ export default function CameraPanel({
   }, [fiducials, onUpdateFiducials, activeBoardName, panelBoards, setPanelBoards, pixelsPerMm, setPixelsPerMm, effectiveOrigin, pads, cameraOffset, fidActiveId, setFidActiveId, panelRailFiducials, setPanelRailFiducials, onAdvanceArmedFid, xf, panelXf]);
 
   const [streamOn, setStreamOn] = useState(false);
+  const [streamKey, setStreamKey] = useState(() => Date.now());
 
   // ─── Option A: Camera exposure / gain / brightness (software, works now) ──
   // Controlled via POST /api/camera/settings on the Python vision server.
@@ -177,7 +178,7 @@ export default function CameraPanel({
 
   // ─── Python Vision Mode ────────────────────────────────────────────
   const [pythonMode, setPythonMode] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('pythonVisionMode') || 'false'); } catch { return false; }
+    try { return JSON.parse(localStorage.getItem('pythonVisionMode') || 'true'); } catch { return true; }
   });
   const [pythonServerOk, setPythonServerOk] = useState(false);
   const [pythonVisionData, setPythonVisionData] = useState(null);
@@ -194,8 +195,9 @@ export default function CameraPanel({
 
   // Sync pixelsPerMm to Python server whenever it changes
   useEffect(() => {
-    if (pythonMode && pythonServerOk && pixelsPerMm) {
-      fetch(`${PYTHON_URL}/api/set_px_per_mm/${pixelsPerMm}`, { method: 'POST' }).catch(() => { });
+    const val = (pixelsPerMm && pixelsPerMm > 40) ? pixelsPerMm : 98.5;
+    if (pythonMode && pythonServerOk) {
+      fetch(`${PYTHON_URL}/api/set_px_per_mm/${val}`, { method: 'POST' }).catch(() => { });
     }
   }, [pixelsPerMm, pythonMode, pythonServerOk]);
 
@@ -314,7 +316,7 @@ export default function CameraPanel({
       }
       setAutoDetecting(true);
       try {
-        const pxmm = pixelsPerMm || 20;
+        const pxmm = (pixelsPerMm && pixelsPerMm > 40) ? pixelsPerMm : 98.5;
         const result = await padDetector.detectPad(padCenter, { width: 1, height: 1 }, pxmm);
         setVisionResult(result);
 
@@ -446,11 +448,8 @@ export default function CameraPanel({
   async function startCam() {
     if (streamOn) return;
     if (pythonMode) {
-      // Python mode: camera is managed by Python server. Just mark as streaming.
-      if (!pythonServerOk) {
-        toast.error('Python Vision Server is not running! Run: npm run install:python then restart npm run dev');
-        return;
-      }
+      // Python mode: camera is managed by Python server. Mount the stream directly.
+      setStreamKey(Date.now());
       setStreamOn(true);
       return;
     }
@@ -818,7 +817,7 @@ export default function CameraPanel({
             console.warn("[VisionBridge] Browser video element not ready.");
             return null;
           }
-          const pxmm = pixelsPerMm || 20;
+          const pxmm = (pixelsPerMm && pixelsPerMm > 40) ? pixelsPerMm : 98.5;
           const result = await fiducialDetector.detectFiducialsInFrame(
             videoRef.current, [], { pxPerMm: pxmm }
           );
@@ -863,7 +862,7 @@ export default function CameraPanel({
     window.__DETECT_PAD_OFFSET__ = async () => {
       if (!streamOn || !videoRef.current) return { found: false };
       try {
-        const pxmm = pixelsPerMm || 20;
+        const pxmm = (pixelsPerMm && pixelsPerMm > 40) ? pixelsPerMm : 98.5;
         const result = await fiducialDetector.detectCenterFeature(videoRef.current);
         if (result && result.success && result.detected && result.pixelDelta) {
           return {
@@ -896,10 +895,10 @@ export default function CameraPanel({
   const isNavigatingRef = useRef(false); // locks visual servo and prevents concurrent transit moves
   const jogTimeoutRef = useRef(null);    // handle to cancel pending isJoggingRef timeouts
   const SERVO_FEED = 400;                // mm/min jog speed (smooth 400 mm/min to eliminate jerking)
-  const SERVO_SETTLE_MS = 1000;          // ms to wait after each jog before re-checking
+  const SERVO_SETTLE_MS = 300;          // ms to wait after each jog before re-checking
   const CONVERGE_MM = 0.05;              // crosshair within 0.05mm → declare converged & save
   const TRULY_CENTRED_MM = 0.008;        // sub-pixel threshold — safe to skip jog requirement
-  const CONVERGE_STABLE_FRAMES = 3;      // fine-phase polls needed before saving (prevents Hough false-centre saves)
+  const CONVERGE_STABLE_FRAMES = 2;      // fine-phase polls needed before saving (fast 2-frame convergence on Pi)
   const convergenceCountRef = useRef(0); // consecutive fine-phase frames within CONVERGE_MM
   const hasJoggedInCycleRef = useRef(false);
 
@@ -972,9 +971,9 @@ export default function CameraPanel({
 
     const NAV_FEED = 400; // mm/min (smooth, high-torque travel rate to eliminate motor stalls & noise spikes)
     const transitSec = (dist / NAV_FEED) * 60;
-    const transitMs = Math.max(1200, Math.round(transitSec * 1000) + 1200);
-    settleUntilRef.current = Date.now() + transitMs + 3000;
-    saveBlockRef.current = Date.now() + transitMs + 3000;
+    const transitMs = Math.max(800, Math.round(transitSec * 1000) + 400);
+    settleUntilRef.current = Date.now() + transitMs;
+    saveBlockRef.current = Date.now() + transitMs;
 
     setAutoSearchStatus(`Moving to ${targetFid.displayLabel || targetFid.id} (${dist.toFixed(1)} mm)...`);
     console.log(`[AutoNavigate] Moving to ${targetFid.displayLabel || targetFid.id} at Machine(X${camX}, Y${camY}), dist: ${dist.toFixed(1)}mm, transit: ~${transitMs}ms`);
@@ -1023,15 +1022,18 @@ export default function CameraPanel({
       // Resume Python detection if in pythonMode
       if (pythonMode) {
         fetch(`${PYTHON_URL}/api/start_detect`, { method: 'POST' }).catch(() => {});
+        if (!pythonPollRef.current) {
+          startContinuousDetection();
+        }
       }
-      // Settle camera image before waking up PyServo
-      await new Promise(r => setTimeout(r, 800));
+      // Brief 200ms settle for camera image before waking up PyServo
+      await new Promise(r => setTimeout(r, 200));
       isJoggingRef.current = false;
       isNavigatingRef.current = false;
       servoStateRef.current = { phase: 'idle', lockedAt: null };
       convergenceCountRef.current = 0;
       hasJoggedInCycleRef.current = false;
-      settleUntilRef.current = Date.now() + 800;
+      settleUntilRef.current = Date.now() + 250;
       saveBlockRef.current = 0;
       setAutoSearchStatus('');
       if (window.serial?.write) {
@@ -1445,7 +1447,8 @@ export default function CameraPanel({
         servoStateRef.current = { phase: 'idle', lockedAt: null };
         return;
       }
-      fetch(`${PYTHON_URL}/api/set_px_per_mm/${pixelsPerMm || 98.5}`, { method: 'POST' }).catch(() => { });
+      const val = (pixelsPerMm && pixelsPerMm > 40) ? pixelsPerMm : 98.5;
+      fetch(`${PYTHON_URL}/api/set_px_per_mm/${val}`, { method: 'POST' }).catch(() => { });
       fetch(`${PYTHON_URL}/api/start_detect`, { method: 'POST' }).catch(() => { });
 
       const pollId = setInterval(async () => {
@@ -1488,17 +1491,33 @@ export default function CameraPanel({
             try {
               const sr = await fetch(`${PYTHON_URL}/api/snap_offset`);
               const snap = await sr.json();
-              if (!snap.found) { servoStateRef.current = { phase: 'idle', lockedAt: null }; convergenceCountRef.current = 0; return; }
-              dx = parseFloat(snap.offset_dx.toFixed(4));
-              dy = parseFloat(snap.offset_dy.toFixed(4));
-              dist = Math.hypot(dx, dy);
-              // Sanity: sudden large offset after coarse move = false positive, restart
-              if (dist > 1.5) {
+              if (snap.found && snap.offset_dx !== undefined && snap.offset_dy !== undefined) {
+                dx = parseFloat(snap.offset_dx.toFixed(4));
+                dy = parseFloat(snap.offset_dy.toFixed(4));
+              } else if (data.best_circle) {
+                dx = parseFloat(data.offset_dx.toFixed(4));
+                dy = parseFloat(data.offset_dy.toFixed(4));
+              } else {
                 servoStateRef.current = { phase: 'idle', lockedAt: null };
                 convergenceCountRef.current = 0;
                 return;
               }
-            } catch { servoStateRef.current = { phase: 'idle', lockedAt: null }; convergenceCountRef.current = 0; return; }
+              dist = Math.hypot(dx, dy);
+              // If dist > 1.2mm, switch back to coarse positioning rather than aborting
+              if (dist > 1.2) {
+                servoStateRef.current = { phase: 'idle', lockedAt: null };
+              }
+            } catch {
+              if (data.best_circle) {
+                dx = parseFloat(data.offset_dx.toFixed(4));
+                dy = parseFloat(data.offset_dy.toFixed(4));
+                dist = Math.hypot(dx, dy);
+              } else {
+                servoStateRef.current = { phase: 'idle', lockedAt: null };
+                convergenceCountRef.current = 0;
+                return;
+              }
+            }
           } else {
             // Phase 1: coarse positioning via Hough circle
             if (!data.best_circle) return;
@@ -1538,10 +1557,10 @@ export default function CameraPanel({
           // Micro-moves (<0.3mm) run at 80 mm/min to prevent stepper clunk/jerk.
           // Small moves (<1.5mm) run at 150 mm/min.
           // Larger moves run at SERVO_FEED (400 mm/min).
-          const jogFeed = dist < 0.3 ? 80 : dist < 1.5 ? 150 : SERVO_FEED;
+          const jogFeed = dist < 0.3 ? 120 : dist < 1.5 ? 200 : SERVO_FEED;
 
           const moveTimeMs = (dist / (jogFeed / 60)) * 1000;
-          const settleMs = Math.max(2000, Math.ceil(moveTimeMs + 1500));
+          const settleMs = Math.max(250, Math.ceil(moveTimeMs + 180));
           settleUntilRef.current = Date.now() + settleMs;
           isJoggingRef.current = true;
           if (jogTimeoutRef.current) clearTimeout(jogTimeoutRef.current);
@@ -1550,15 +1569,25 @@ export default function CameraPanel({
           console.log(`[PyServo] ${servoPhase === 'idle' ? 'Coarse' : 'Fine  '} jog ΔX:${dx.toFixed(3)} ΔY:${dy.toFixed(3)} mm (feed ${jogFeed} mm/min, settle ${settleMs}ms)`);
           try {
             const cmds = jogRel({ dx, dy, feed: jogFeed });
-            if (window.serial?.writeLine) for (const line of cmds) await window.serial.writeLine(line);
-            hasJoggedInCycleRef.current = true; // servo has now physically moved this cycle
-          } catch (err) { console.error('[PyServo] Jog failed:', err); }
+            if (window.serial?.writeLine) {
+              for (const line of cmds) {
+                await window.serial.writeLine(line);
+                await new Promise(r => setTimeout(r, 10));
+              }
+              hasJoggedInCycleRef.current = true; // servo has now physically moved this cycle
+            }
+          } catch (err) {
+            console.error('[PyServo] Jog failed:', err);
+            isJoggingRef.current = false;
+          }
 
-          // After the coarse jog, switch to fine mode for sub-pixel correction
-          if (servoPhase === 'idle') servoStateRef.current = { ...servoStateRef.current, phase: 'fine' };
+          // Only switch to fine mode if close enough (< 0.8 mm)
+          if (servoPhase === 'idle' && dist <= 0.8) {
+            servoStateRef.current = { ...servoStateRef.current, phase: 'fine' };
+          }
 
         } catch (err) { console.warn('[PyServo] Poll error:', err); }
-      }, 600);
+      }, 350);
 
       pythonPollRef.current = pollId;
       setDetectionInterval(pollId);
@@ -1586,7 +1615,7 @@ export default function CameraPanel({
     // Reset jog flag for this new detection session
     hasJoggedRef.current = false;
 
-    const pxmm = pixelsPerMm || 20;
+    const pxmm = (pixelsPerMm && pixelsPerMm > 40) ? pixelsPerMm : 98.5;
     const intervalId = fiducialDetector.startContinuousDetection(
       videoRef.current,
       async (result) => {
@@ -1686,7 +1715,7 @@ export default function CameraPanel({
 
                 const dist = Math.hypot(dx, dy);
                 const moveTimeMs = (dist / (450 / 60)) * 1000;
-                const settleMs = Math.max(2500, Math.ceil(moveTimeMs + 2000));
+                const settleMs = Math.max(200, Math.ceil(moveTimeMs + 150));
                 settleUntilRef.current = Date.now() + settleMs;
                 isJoggingRef.current = true;
                 setTimeout(() => { isJoggingRef.current = false; }, settleMs);
@@ -1790,14 +1819,17 @@ export default function CameraPanel({
       const dist = Math.hypot(dx, dy);
       const snapFeed = dist < 0.3 ? 80 : dist < 1.5 ? 150 : 400;
       const moveTimeMs = (dist / (snapFeed / 60)) * 1000;
-      const settleMs = Math.max(2000, Math.ceil(moveTimeMs + 1500));
+      const settleMs = Math.max(350, Math.ceil(moveTimeMs + 200));
       settleUntilRef.current = Date.now() + settleMs;
       isJoggingRef.current = true;
       setTimeout(() => { isJoggingRef.current = false; }, settleMs);
 
       const cmds = jogRel({ dx, dy, feed: snapFeed });
       if (window.serial?.writeLine) {
-        for (const line of cmds) await window.serial.writeLine(line);
+        for (const line of cmds) {
+          await window.serial.writeLine(line);
+          await new Promise(r => setTimeout(r, 10));
+        }
         console.log(`[SnapToFiducial] Jog sent — servo locked for ${settleMs}ms settlement.`);
         servoStateRef.current = { phase: 'idle', lockedAt: null }; // let servo do the final save
       } else {
@@ -1870,7 +1902,10 @@ export default function CameraPanel({
       const dist = dir * jogStep;
       const cmds = jogRel(axis === 'X' ? { dx: dist, feed: 400 } : { dy: dist, feed: 400 });
       if (window.serial && window.serial.writeLine) {
-        for (const line of cmds) await window.serial.writeLine(line);
+        for (const line of cmds) {
+          await window.serial.writeLine(line);
+          await new Promise(r => setTimeout(r, 10));
+        }
       }
     } catch (e) {
       console.error("Jog failed", e);
@@ -1885,7 +1920,10 @@ export default function CameraPanel({
     try {
       const cmds = jogRel({ dz: dir * 0.5, feed: 400 });
       if (window.serial && window.serial.writeLine) {
-        for (const line of cmds) await window.serial.writeLine(line);
+        for (const line of cmds) {
+          await window.serial.writeLine(line);
+          await new Promise(r => setTimeout(r, 10));
+        }
       }
     } catch (e) {
       console.error("Jog Z failed", e);
@@ -2176,11 +2214,11 @@ export default function CameraPanel({
               <span style={{ color: '#6c757d', fontWeight: 'bold' }}>Camera Scale (px/mm)</span>
               <input
                 type="number" step="0.1"
-                defaultValue={pixelsPerMm || 20}
-                onBlur={e => setPixelsPerMm(parseFloat(e.target.value) || 20)}
+                defaultValue={(pixelsPerMm && pixelsPerMm > 40) ? pixelsPerMm : 98.5}
+                onBlur={e => setPixelsPerMm(parseFloat(e.target.value) || 98.5)}
                 onKeyDown={e => {
                   if (e.key === 'Enter') {
-                    setPixelsPerMm(parseFloat(e.target.value) || 20);
+                    setPixelsPerMm(parseFloat(e.target.value) || 98.5);
                     e.target.blur();
                   }
                 }}
@@ -2252,15 +2290,14 @@ export default function CameraPanel({
         {pythonMode ? (
           streamOn ? (
             <img
-              src={`${PYTHON_URL}/video_feed`}
+              key={streamKey}
+              src={`${PYTHON_URL}/video_feed?t=${streamKey}`}
               alt="Python MJPEG Stream"
               style={{ width: '100%', height: 'auto', display: 'block', cursor: 'crosshair' }}
               onError={(e) => {
                 console.warn('[CameraPanel] MJPEG stream dropped, reconnecting in 2s...');
                 setTimeout(() => {
-                  if (e.target) {
-                    e.target.src = `${PYTHON_URL}/video_feed?t=${Date.now()}`;
-                  }
+                  setStreamKey(Date.now());
                 }, 2000);
               }}
               onClick={async (e) => {
@@ -2287,7 +2324,7 @@ export default function CameraPanel({
 
                 const dist = Math.hypot(dx, dy);
                 const moveTimeMs = (dist / (400 / 60)) * 1000;
-                const settleMs = Math.max(2500, Math.ceil(moveTimeMs + 2000));
+                const settleMs = Math.max(350, Math.ceil(moveTimeMs + 250));
                 settleUntilRef.current = Date.now() + settleMs;
                 isJoggingRef.current = true;
                 setTimeout(() => { isJoggingRef.current = false; }, settleMs);
@@ -2296,7 +2333,10 @@ export default function CameraPanel({
                 try {
                   const cmds = jogRel({ dx, dy, feed: 400 });
                   if (window.serial && window.serial.writeLine) {
-                    for (const line of cmds) await window.serial.writeLine(line);
+                    for (const line of cmds) {
+                      await window.serial.writeLine(line);
+                      await new Promise(r => setTimeout(r, 10));
+                    }
                     console.log(`[PythonClick] Jogged ΔX:${dx.toFixed(3)} ΔY:${dy.toFixed(3)} mm (settle ${settleMs}ms)`);
                   } else {
                     console.warn('[PythonClick] Serial not connected');
