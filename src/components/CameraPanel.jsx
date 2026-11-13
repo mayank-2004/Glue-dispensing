@@ -1021,6 +1021,19 @@ export default function CameraPanel({
     } finally {
       // Resume Python detection if in pythonMode
       if (pythonMode) {
+        // Arm target fiducial expectations (expected radius, label)
+        const expRadius = (targetFid.size && targetFid.size > 0.2) ? (targetFid.size / 2) : 0.5;
+        fetch(`${PYTHON_URL}/api/set_target`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            target_id: targetFid.displayLabel || targetFid.id,
+            expected_radius_mm: expRadius,
+            expected_dx: 0.0,
+            expected_dy: 0.0
+          })
+        }).catch(() => {});
+
         fetch(`${PYTHON_URL}/api/start_detect`, { method: 'POST' }).catch(() => {});
         if (!pythonPollRef.current) {
           startContinuousDetection();
@@ -1045,14 +1058,34 @@ export default function CameraPanel({
   };
 
   useEffect(() => {
-    if (!fidActiveId) { setAutoSearchStatus(''); return; }
-    if (!detectionInterval) return; // only move automatically when detection is running
-    if (!window.serial?.writeLine) return;
+    if (!fidActiveId) {
+      if (pythonMode) fetch(`${PYTHON_URL}/api/clear_target`, { method: 'POST' }).catch(() => {});
+      setAutoSearchStatus('');
+      return;
+    }
 
     const cProps = latestPropsRef.current;
     const allSeq = getFullFiducialSequence(cProps);
     const fid = allSeq.find(f => (f.uniqueKey || f.id) === fidActiveId);
     if (!fid || !fid.design) { setAutoSearchStatus(''); return; }
+
+    // Arm Python vision detector with active fiducial expectations
+    if (pythonMode) {
+      const expRadius = (fid.size && fid.size > 0.2) ? (fid.size / 2) : 0.5;
+      fetch(`${PYTHON_URL}/api/set_target`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          target_id: fid.displayLabel || fid.id,
+          expected_radius_mm: expRadius,
+          expected_dx: 0.0,
+          expected_dy: 0.0
+        })
+      }).catch(() => {});
+    }
+
+    if (!detectionInterval) return; // only move automatically when detection is running
+    if (!window.serial?.writeLine) return;
 
     // If fiducial is already captured, do not re-move
     if (fid.machine) return;
@@ -1060,7 +1093,7 @@ export default function CameraPanel({
     if (autoMoveEnabled && !isNavigatingRef.current) {
       autoNavigateToFiducial(fid);
     }
-  }, [fidActiveId, detectionInterval, panelXf, autoMoveEnabled]);
+  }, [fidActiveId, detectionInterval, panelXf, autoMoveEnabled, pythonMode]);
 
   // --- OVERWRITE HELPER: update a specific slot by ID without advancing the arm dropdown ---
   const overwriteFiducialById = (id, coord) => {
@@ -1521,10 +1554,33 @@ export default function CameraPanel({
           } else {
             // Phase 1: coarse positioning via Hough circle
             if (!data.best_circle) return;
+            // Reject unverified noise or low-confidence circles (vias, text, etc.)
+            if (data.locked === false && (data.confidence || 0) < 0.45) {
+              return;
+            }
             dx = parseFloat(data.offset_dx.toFixed(4));
             dy = parseFloat(data.offset_dy.toFixed(4));
             dist = Math.hypot(dx, dy);
             if (dist > 8.0) return; // no fiducial in view
+          }
+
+          // Safety Filter: Ensure candidate does not match a known Gerber component pad
+          const cProps = latestPropsRef.current;
+          if (cProps.pads && cProps.pads.length > 0) {
+            const currentMachine = machinePositionRef.current || { x: 0, y: 0 };
+            const candidateMachX = currentMachine.x + (cameraOffset?.dx || 0) + dx;
+            const candidateMachY = currentMachine.y + (cameraOffset?.dy || 0) + dy;
+
+            const isPadMatch = cProps.pads.some(p => {
+              const pWorld = (cProps.applyXf && cProps.xf)
+                ? applyTransform(cProps.xf, p)
+                : (cProps.effectiveOrigin ? { x: p.x + cProps.effectiveOrigin.x, y: p.y + cProps.effectiveOrigin.y } : p);
+              return Math.hypot(pWorld.x - candidateMachX, pWorld.y - candidateMachY) < 0.35;
+            });
+            if (isPadMatch) {
+              console.warn('[PyServo] Ignored candidate — coincides with a known component pad location!');
+              return;
+            }
           }
 
           // Allow convergence when within tolerance (CONVERGE_MM = 0.05 mm)

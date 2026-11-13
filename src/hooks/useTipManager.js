@@ -183,42 +183,42 @@ export function useTipManager() {
     try {
       // Safe Z lift
       markStep("safe_z", "running");
-      await send("G90"); await send("G0 Z5 F3000"); await pause(800); check();
+      await send("G90");await send("G1 Z5 F500"); await pause(800); check();
       markStep("safe_z", "done");
 
       if (dropSlot) {
         // Move to drop slot
         markStep("move_drop", "running");
-        await send(`G0 X${dropSlot.position.x.toFixed(3)} Y${dropSlot.position.y.toFixed(3)} F6000`);
+        await send(`G1 X${dropSlot.position.x.toFixed(3)} Y${dropSlot.position.y.toFixed(3)} F400`);
         await pause(1200); check(); markStep("move_drop", "done");
         // Lower
         markStep("lower_drop", "running");
-        await send(`G0 Z${(dropSlot.position.z ?? 0).toFixed(3)} F1000`);
+        await send(`G1 Z${(dropSlot.position.z ?? 0).toFixed(3)} F400`);
         await pause(800); check(); markStep("lower_drop", "done");
         // Release
         markStep("release", "running");
         await send("G4 P500"); await pause(600); check(); markStep("release", "done");
         // Lift
         markStep("lift_drop", "running");
-        await send("G0 Z5 F3000"); await pause(600); check(); markStep("lift_drop", "done");
+        await send("G1 Z5 F500"); await pause(600); check(); markStep("lift_drop", "done");
       } else {
         ["move_drop", "lower_drop", "release", "lift_drop"].forEach(k => markStep(k, "skipped"));
       }
 
       // Move to pickup slot
       markStep("move_pickup", "running");
-      await send(`G0 X${pickupSlot.position.x.toFixed(3)} Y${pickupSlot.position.y.toFixed(3)} F6000`);
+      await send(`G1 X${pickupSlot.position.x.toFixed(3)} Y${pickupSlot.position.y.toFixed(3)} F400`);
       await pause(1200); check(); markStep("move_pickup", "done");
       // Lower
       markStep("lower_pickup", "running");
-      await send(`G0 Z${(pickupSlot.position.z ?? 0).toFixed(3)} F1000`);
+      await send(`G1 Z${(pickupSlot.position.z ?? 0).toFixed(3)} F400`);
       await pause(800); check(); markStep("lower_pickup", "done");
       // Seat
       markStep("seat", "running");
       await send("G4 P500"); await pause(600); check(); markStep("seat", "done");
       // Lift with new tip
       markStep("lift_pickup", "running");
-      await send("G0 Z5 F3000"); await pause(600); check(); markStep("lift_pickup", "done");
+      await send("G1 Z5 F500"); await pause(600); check(); markStep("lift_pickup", "done");
 
       // Apply offset — G10 L2 P1 (Marlin/Grbl work coordinate offset)
       markStep("apply_offset", "running");

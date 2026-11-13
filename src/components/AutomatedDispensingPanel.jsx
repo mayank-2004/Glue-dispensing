@@ -1818,7 +1818,7 @@ export default function AutomatedDispensingPanel({
       if (hasValidStation) {
         const liftZ = Math.max((station.z || 0) + 5, safeTravelHeight);
         await sendGcodeWait(`G1 Z${liftZ.toFixed(3)} F400`);
-        await sendGcodeWait(`G1 X${station.x.toFixed(3)} Y${station.y.toFixed(3)} F800`);
+        await sendGcodeWait(`G1 X${station.x.toFixed(3)} Y${station.y.toFixed(3)} F400`);
         await sendGcodeWait(`G1 Z${(station.z || 0).toFixed(3)} F400`);
       } else {
         toast.warning('Purge station not configured — skipping purge.');

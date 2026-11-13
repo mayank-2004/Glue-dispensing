@@ -239,7 +239,8 @@ export default function App() {
     );
     if (!confirmed) return;
 
-    await window.serial.writeLine(`G0 X${targetX.toFixed(3)} Y${targetY.toFixed(3)} F6000`);
+    await window.serial.writeLine(`G90`);
+    await window.serial.writeLine(`G1 X${targetX.toFixed(3)} Y${targetY.toFixed(3)} F400`);
   }, [xf, applyXf, selectedOrigin, pcbOriginOffset]);
 
   // Always-fresh ref so the homing callback (fired from SerialPanel timeout) gets current origin state
@@ -278,7 +279,7 @@ export default function App() {
     if (window.serial?.writeLine) {
       console.log(`[AutoMove] Homing done — moving to PCB origin X${targetX} Y${targetY}`);
       await window.serial.writeLine(`G90`);
-      await window.serial.writeLine(`G0 X${targetX} Y${targetY} F3000`);
+      await window.serial.writeLine(`G1 X${targetX} Y${targetY} F400`);
     }
   }, []);
 
@@ -534,7 +535,7 @@ export default function App() {
   const FID_COLORS = ["#2ea8ff", "#8e2bff", "#b7c400", "#ff6b35", "#9c27b0", "#25d9be"];
   const RAIL_COLORS = ["#ff9800", "#ff5722", "#ffc107", "#ff6d00"];
 
-  const buildPanelBoards = (detectedFiducials, effectivePanelGrid, isFlatPanel) => {
+  const buildPanelBoards = (detectedFiducials, effectivePanelGrid, isFlatPanel, currentPads = pads, outline = boardOutline) => {
     if (effectivePanelGrid && (effectivePanelGrid.dimX > 1 || effectivePanelGrid.dimY > 1)) {
       const { dimX, dimY, stepX, stepY } = effectivePanelGrid;
       const boards = [];
@@ -574,8 +575,8 @@ export default function App() {
                   confidence: fid.confidence,
                 }))
               : [
-                  { id: "F1", design: null, machine: null, color: "#2ea8ff" },
-                  { id: "F2", design: null, machine: null, color: "#8e2bff" },
+                  { id: "F1", design: { x: parseFloat((ox + 5).toFixed(4)), y: parseFloat((oy + 5).toFixed(4)) }, machine: null, color: "#2ea8ff" },
+                  { id: "F2", design: { x: parseFloat((ox + 45).toFixed(4)), y: parseFloat((oy + 45).toFixed(4)) }, machine: null, color: "#8e2bff" },
                 ];
 
             boards.push({
@@ -608,8 +609,8 @@ export default function App() {
                   confidence: fid.confidence,
                 }))
               : [
-                  { id: "F1", design: null, machine: null, color: "#2ea8ff" },
-                  { id: "F2", design: null, machine: null, color: "#8e2bff" },
+                  { id: "F1", design: { x: parseFloat((ox + 5).toFixed(4)), y: parseFloat((oy + 5).toFixed(4)) }, machine: null, color: "#2ea8ff" },
+                  { id: "F2", design: { x: parseFloat((ox + 45).toFixed(4)), y: parseFloat((oy + 45).toFixed(4)) }, machine: null, color: "#8e2bff" },
                 ];
             const defaultXf = { type: 'translation', a: 1, b: 0, c: 0, d: 1, tx: ox, ty: oy };
             boards.push({
@@ -630,7 +631,7 @@ export default function App() {
     }
 
     // Single board
-    const singleFids = detectedFiducials && detectedFiducials.length > 0
+    let singleFids = detectedFiducials && detectedFiducials.length > 0
       ? detectedFiducials.map((fid, idx) => ({
           id: fid.id || `F${idx + 1}`,
           design: { x: parseFloat(fid.x.toFixed(4)), y: parseFloat(fid.y.toFixed(4)) },
@@ -638,10 +639,49 @@ export default function App() {
           color: FID_COLORS[idx % FID_COLORS.length],
           confidence: fid.confidence,
         }))
-      : [
-          { id: "F1", design: null, machine: null, color: "#2ea8ff" },
-          { id: "F2", design: null, machine: null, color: "#8e2bff" },
+      : [];
+
+    if (singleFids.length === 1 && currentPads && currentPads.length > 0) {
+      const f1 = singleFids[0].design;
+      const sorted = [...currentPads].sort((a, b) => Math.hypot(b.x - f1.x, b.y - f1.y) - Math.hypot(a.x - f1.x, a.y - f1.y));
+      const f2Pad = sorted[0];
+      if (f2Pad) {
+        singleFids.push({
+          id: 'F2',
+          design: { x: parseFloat(f2Pad.x.toFixed(4)), y: parseFloat(f2Pad.y.toFixed(4)) },
+          machine: null,
+          color: FID_COLORS[1],
+          confidence: 0.8
+        });
+      }
+    } else if (singleFids.length === 0) {
+      if (currentPads && currentPads.length >= 2) {
+        const xs = currentPads.map(p => p.x), ys = currentPads.map(p => p.y);
+        const minX = Math.min(...xs), maxX = Math.max(...xs);
+        const minY = Math.min(...ys), maxY = Math.max(...ys);
+        const bl = [...currentPads].sort((a, b) => Math.hypot(a.x - minX, a.y - minY) - Math.hypot(b.x - minX, b.y - minY))[0];
+        const tr = [...currentPads].filter(p => p !== bl).sort((a, b) => Math.hypot(a.x - maxX, a.y - maxY) - Math.hypot(b.x - maxX, b.y - maxY))[0];
+        singleFids = [
+          { id: "F1", design: { x: parseFloat(bl.x.toFixed(4)), y: parseFloat(bl.y.toFixed(4)) }, machine: null, color: "#2ea8ff", confidence: 0.85 },
+          { id: "F2", design: { x: parseFloat(tr.x.toFixed(4)), y: parseFloat(tr.y.toFixed(4)) }, machine: null, color: "#8e2bff", confidence: 0.85 }
         ];
+      } else if (outline && outline.minX !== undefined && outline.maxX !== undefined) {
+        const ox1 = parseFloat((outline.minX + 3).toFixed(4));
+        const oy1 = parseFloat((outline.minY + 3).toFixed(4));
+        const ox2 = parseFloat((outline.maxX - 3).toFixed(4));
+        const oy2 = parseFloat((outline.maxY - 3).toFixed(4));
+        singleFids = [
+          { id: "F1", design: { x: ox1, y: oy1 }, machine: null, color: "#2ea8ff", confidence: 0.8 },
+          { id: "F2", design: { x: ox2, y: oy2 }, machine: null, color: "#8e2bff", confidence: 0.8 },
+        ];
+      } else {
+        singleFids = [
+          { id: "F1", design: { x: 5, y: 5 }, machine: null, color: "#2ea8ff", confidence: 0.5 },
+          { id: "F2", design: { x: 45, y: 45 }, machine: null, color: "#8e2bff", confidence: 0.5 },
+        ];
+      }
+    }
+
     return [{ id: 1, name: 'Board 1', fiducials: singleFids, xf: null }];
   };
 
@@ -651,7 +691,7 @@ export default function App() {
     if (!currentLayers || currentLayers.length === 0) return;
 
     const { localFiducials: detected, railFiducials: detectedRail } =
-      analyzeFiducialsWithRails(currentLayers, s);
+      analyzeFiducialsWithRails(currentLayers, s, pads);
 
     setFiducialDetectionResult(detected.length > 0 ? detected : []);
 
@@ -662,14 +702,14 @@ export default function App() {
     }));
 
     const isFlat = !panelInfo?.fromSr;
-    const newBoards = buildPanelBoards(detected, panelInfo, isFlat);
+    const newBoards = buildPanelBoards(detected, panelInfo, isFlat, pads, boardOutline);
     setPanelBoards(newBoards);
 
     setPanelRailFiducials(newRailFids);
     setFidActiveId(newRailFids[0]?.id ?? (newBoards[0]?.fiducials?.[0]?.id ? `${newBoards[0].name}_${newBoards[0].fiducials[0].id}` : 'F1'));
     setXf(null);
     setPanelXf(null);
-  }, [analyzeFiducialsWithRails, panelInfo]);
+  }, [analyzeFiducialsWithRails, panelInfo, pads, boardOutline]);
 
   const changeSide = (s, skip = false) => {
     changeSideFn(s, layers, skip);
@@ -692,7 +732,7 @@ export default function App() {
     try {
       const result = await parseFiles(fileList);
       if (!result) return;
-      const { detectedFiducials, detectedRailFiducials, detectedPanelGrid, origins, pads: resPads } = result;
+      const { detectedFiducials, detectedRailFiducials, detectedPanelGrid, origins, pads: resPads, boardOutline: resOutline } = result;
 
       setFiducialDetectionResult(detectedFiducials);
 
@@ -715,7 +755,7 @@ export default function App() {
       } : null;
 
       const isFlatPanel = !detectedPanelGrid && (effectivePanelGrid && (effectivePanelGrid.dimX > 1 || effectivePanelGrid.dimY > 1));
-      const boards = buildPanelBoards(detectedFiducials, effectivePanelGrid, isFlatPanel);
+      const boards = buildPanelBoards(detectedFiducials, effectivePanelGrid, isFlatPanel, resPads, resOutline);
       setPanelBoards(boards);
       _setActiveBoardIndex(0);
       setPanelInfo(effectivePanelGrid);
@@ -1753,7 +1793,8 @@ export default function App() {
         );
 
         if (move) {
-          window.serial.writeLine(`G0 X${targetMachine.x.toFixed(3)} Y${targetMachine.y.toFixed(3)} F3000`);
+          window.serial.writeLine(`G90`);
+          window.serial.writeLine(`G1 X${targetMachine.x.toFixed(3)} Y${targetMachine.y.toFixed(3)} F400`);
 
           window.dispatchEvent(new CustomEvent('camera-auto-align-pad', {
             detail: { targetMachine, padCenter }

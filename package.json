@@ -5,6 +5,8 @@
   "description": "Offline PCB Gerber viewer + SVG export + direct G-code + camera + serial",
   "main": "electron/main.js",
   "scripts": {
+    "start": "npx electron . --prod",
+    "prod": "npx electron . --prod",
     "dev": "concurrently -k -n VITE,ELECTRON,PYTHON -c blue,green,yellow \"vite\" \"npm:dev:electron\" \"npm:dev:python\"",
     "dev:electron": "wait-on tcp:5173 && electron .",
     "dev:python": "node scripts/run-python.mjs",

@@ -139,12 +139,22 @@ export function useGerberFiles() {
     } else if (loadedCsvComponents.length > 0) {
       parsedSide = 'top';
       parsedPads = loadedCsvComponents.filter(c => c.side === parsedSide);
+    } else {
+      // Fallback: If no solderpaste layer, extract pads from copper layer
+      let cuIdx = ls.findIndex(x => x.type === "copper" && x.side === "top");
+      if (cuIdx < 0) cuIdx = ls.findIndex(x => x.type === "copper");
+      if (cuIdx >= 0) {
+        const { pads: basePads, panel: panelGrid } = extractPadsWithPanel(ls[cuIdx].text);
+        detectedPanelGrid = panelGrid;
+        parsedSide = ls[cuIdx].side === 'bottom' ? 'bottom' : 'top';
+        parsedPads = processPads(basePads.map(padCenter));
+      }
     }
 
     // Yield control before fiducials
     await new Promise(resolve => setTimeout(resolve, 0));
 
-    const { localFiducials: detectedFiducials, railFiducials: detectedRailFiducials } = analyzeFiducialsWithRails(ls, parsedSide);
+    const { localFiducials: detectedFiducials, railFiducials: detectedRailFiducials } = analyzeFiducialsWithRails(ls, parsedSide, parsedPads);
 
     const unrecognized = read.filter(r => !ls.some(l => l.filename === r.name));
     if (unrecognized.length > 0) console.warn('Unrecognized files (skipped):', unrecognized.map(r => r.name));

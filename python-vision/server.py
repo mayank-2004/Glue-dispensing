@@ -50,6 +50,9 @@ PX_PER_MM         = 98.5  # Calibrated pixels-per-mm
 state_lock = threading.Lock()
 shared_state = {
     "detecting":     False,    # Is active detection enabled?
+    "target_info":   None,     # Optional dict: expected geometry & label for armed fiducial
+    "locked":        False,    # True when confirmed fiducial is tracked
+    "confidence":    0.0,      # Current detection confidence score (0.0 to 1.0)
     "circles":       [],       # List of detected circles [{x, y, r, offset_dx, offset_dy}]
     "best_circle":   None,     # The single best/nearest-to-crosshair circle
     "offset_dx":     0.0,      # mm offset to move camera crosshair onto best circle
@@ -259,6 +262,7 @@ def vision_loop():
 
         with state_lock:
             is_detecting = shared_state["detecting"]
+            target_info  = shared_state.get("target_info")
 
         if not is_detecting:
             time.sleep(0.2)
@@ -277,6 +281,8 @@ def vision_loop():
         best_circle = None
         offset_dx = 0.0
         offset_dy = 0.0
+        locked_state = False
+        conf_state = 0.0
 
         if is_detecting:
             # Optimize for Pi 4: Crop central 600x600 region where fiducials are positioned
@@ -286,6 +292,18 @@ def vision_loop():
             ry1 = (h - roi_h) // 2
             gray_crop = gray[ry1:ry1+roi_h, rx1:rx1+roi_w]
             blurred = cv2.GaussianBlur(gray_crop, (7, 7), 1.5)
+
+            # Target fiducial expectations (if armed from UI)
+            exp_radius_mm = float(target_info.get("expected_radius_mm", 0.5)) if target_info else 0.5
+            exp_dx = float(target_info.get("expected_dx", 0.0)) if target_info else 0.0
+            exp_dy = float(target_info.get("expected_dy", 0.0)) if target_info else 0.0
+            target_label = str(target_info.get("target_id", "FID")) if target_info else "TARGET"
+
+            # Tighten search radius bounds to reject micro-vias (<0.32mm) and oversized pads (>0.85mm)
+            eff_px_mm = get_effective_px_per_mm(w)
+            hough_min_r = max(26, int(exp_radius_mm * 0.60 * eff_px_mm))
+            hough_max_r = min(85, int(exp_radius_mm * 1.50 * eff_px_mm))
+
             raw = cv2.HoughCircles(
                 blurred,
                 cv2.HOUGH_GRADIENT,
@@ -293,8 +311,8 @@ def vision_loop():
                 minDist=HOUGH_MIN_DIST,
                 param1=HOUGH_PARAM1,
                 param2=HOUGH_PARAM2,
-                minRadius=HOUGH_MIN_RADIUS,
-                maxRadius=HOUGH_MAX_RADIUS
+                minRadius=hough_min_r,
+                maxRadius=hough_max_r
             )
 
             if raw is not None:
@@ -367,10 +385,18 @@ def vision_loop():
                         continue
 
                     # CHECK 4: Strict Physical Size Constraint
-                    # Most fiducials are ~1.0mm diameter (0.5mm radius).
-                    # Reject microscopic curves (like silkscreen letters) and massive pads.
-                    radius_mm = pr / PX_PER_MM
-                    if radius_mm < 0.20 or radius_mm > 0.8:
+                    # Standard PCB fiducials are ~1.0mm diameter (0.5mm radius).
+                    # Reject microscopic vias/through-holes and oversized pads.
+                    radius_mm = pr / eff_px_mm
+                    min_allow_r = max(0.32, exp_radius_mm * 0.65)
+                    max_allow_r = min(0.85, exp_radius_mm * 1.45)
+                    if radius_mm < min_allow_r or radius_mm > max_allow_r:
+                        continue
+
+                    # CHECK 5: Isolation Contrast Check
+                    # True fiducials must be isolated in a solder-mask clearance ring
+                    isolation_contrast = core_mean - boundary_mean
+                    if isolation_contrast < 18:
                         continue
 
                     # --- Filter 2: Solid Fill Check (Rejects False Geometries) ---
@@ -420,64 +446,77 @@ def vision_loop():
                     if circularity < 0.65:
                         continue  # Reject trace pads (they have a tail, ruining circularity)
                             
-                    eff_px_mm = get_effective_px_per_mm(w)
                     dx_px = px - cx
                     dy_px = cy - py  # Invert Y: camera Y down → machine Y up
                     dx_mm = round(dx_px / eff_px_mm, 4)
                     dy_mm = round(dy_px / eff_px_mm, 4)
+
+                    # --- COMPOSITE FIDUCIAL CONFIDENCE SCORING ---
+                    # 1. Size match score
+                    size_err = abs(radius_mm - exp_radius_mm) / exp_radius_mm
+                    size_score = max(0.0, 1.0 - (size_err * 2.2))
+                    # 2. Circularity score
+                    circ_score = max(0.0, min(1.0, (circularity - 0.60) / 0.40))
+                    # 3. Isolation contrast score
+                    contrast_score = max(0.0, min(1.0, isolation_contrast / 75.0))
+                    # 4. Proximity to expected design position
+                    dist_from_exp = np.hypot(dx_mm - exp_dx, dy_mm - exp_dy)
+                    prox_score = max(0.0, 1.0 - (dist_from_exp / 4.0))
+
+                    conf = round(float((size_score * 0.35) + (circ_score * 0.25) + (contrast_score * 0.20) + (prox_score * 0.20)), 3)
+
                     detected_circles.append({
                         "pixel_x": int(px), "pixel_y": int(py), "radius": int(pr),
-                        "offset_dx": dx_mm, "offset_dy": dy_mm
+                        "offset_dx": dx_mm, "offset_dy": dy_mm,
+                        "confidence": conf,
+                        "radius_mm": round(radius_mm, 3)
                     })
 
                 if detected_circles:
-                    # Best circle = closest to the crosshair centre
-                    current_best = min(
-                        detected_circles,
-                        key=lambda c: abs(c["offset_dx"]) + abs(c["offset_dy"])
-                    )
+                    # Best circle = candidate with highest fiducial confidence score
+                    current_best = max(detected_circles, key=lambda c: c["confidence"])
+                    is_locked = current_best["confidence"] >= 0.48
 
-                    # --- ANTI-JITTER EMA FILTER ---
-                    # If the machine is stopped, HoughCircles might jitter by 1-5 pixels randomly.
-                    # Instead of freezing the coordinates (which causes the green circle to detach 
-                    # from the physical fiducial during machine motion), we use an Exponential 
-                    # Moving Average (EMA) to smooth out the jitter while keeping the overlay 
-                    # tightly glued to the moving fiducial.
+                    # --- ANTI-JITTER EMA FILTER & TARGET LOCK ---
                     if sticky_best_circle is not None:
-                        dist = ((current_best["pixel_x"] - sticky_best_circle["pixel_x"])**2 + 
-                                (current_best["pixel_y"] - sticky_best_circle["pixel_y"])**2)**0.5
-                        
-                        if dist < 20.0:
-                            # Smooth tracking: 50% new frame, 50% history
-                            alpha = 0.5
+                        dist = np.hypot(current_best["pixel_x"] - sticky_best_circle["pixel_x"],
+                                        current_best["pixel_y"] - sticky_best_circle["pixel_y"])
+                        if dist < 28.0:
+                            alpha = 0.55
                             best_circle = {
                                 "pixel_x": int(alpha * current_best["pixel_x"] + (1 - alpha) * sticky_best_circle["pixel_x"]),
                                 "pixel_y": int(alpha * current_best["pixel_y"] + (1 - alpha) * sticky_best_circle["pixel_y"]),
-                                "radius": int(alpha * current_best["radius"] + (1 - alpha) * sticky_best_circle["radius"])
+                                "radius": int(alpha * current_best["radius"] + (1 - alpha) * sticky_best_circle["radius"]),
+                                "confidence": current_best["confidence"],
+                                "locked": is_locked,
+                                "target_label": target_label
                             }
-                            # Recalculate offsets based on smoothed pixel
                             dx_px = best_circle["pixel_x"] - cx
                             dy_px = cy - best_circle["pixel_y"]
-                            eff_px_mm = get_effective_px_per_mm(w)
                             best_circle["offset_dx"] = round(dx_px / eff_px_mm, 4)
                             best_circle["offset_dy"] = round(dy_px / eff_px_mm, 4)
                         else:
-                            # Machine moved to a totally new fiducial, update immediately
-                            best_circle = current_best
+                            best_circle = {**current_best, "locked": is_locked, "target_label": target_label}
                     else:
-                        best_circle = current_best
+                        best_circle = {**current_best, "locked": is_locked, "target_label": target_label}
 
                     sticky_best_circle = best_circle
                     offset_dx = best_circle["offset_dx"]
                     offset_dy = best_circle["offset_dy"]
+                    locked_state = is_locked
+                    conf_state = best_circle["confidence"]
                 else:
                     sticky_best_circle = None
+                    locked_state = False
+                    conf_state = 0.0
 
         with state_lock:
             shared_state["circles"]     = detected_circles
             shared_state["best_circle"] = best_circle
             shared_state["offset_dx"]   = offset_dx
             shared_state["offset_dy"]   = offset_dy
+            shared_state["locked"]      = locked_state
+            shared_state["confidence"]  = conf_state
             shared_state["sharpness"]   = round(sharpness, 2)
 
         time.sleep(DETECTION_INTERVAL)
@@ -511,28 +550,49 @@ def annotate_frame(frame: np.ndarray) -> np.ndarray:
         offset_dy   = shared_state["offset_dy"]
         sharpness   = shared_state["sharpness"]
         detecting   = shared_state["detecting"]
+        target_info = shared_state.get("target_info")
+        locked      = shared_state.get("locked", False)
+        confidence  = shared_state.get("confidence", 0.0)
+
+    target_label = target_info.get("target_id", "FID") if target_info else "TARGET"
 
     # ── Detected Circles ──────────────────────────────────────────
-    # Draw all alternative raw circles in orange
+    # Draw all alternative raw circles in faint orange
     for c in circles:
         px, py, pr = c["pixel_x"], c["pixel_y"], c["radius"]
         is_best = (best_circle is not None and
-                   px == best_circle["pixel_x"] and py == best_circle["pixel_y"])
-        # We handle best_circle separately below so EMA smoothed coords are drawn
+                   abs(px - best_circle["pixel_x"]) < 5 and abs(py - best_circle["pixel_y"]) < 5)
         if not is_best:
-            cv2.circle(out, (px, py), pr, (0, 150, 255), 1)
-            cv2.circle(out, (px, py), 3, (0, 150, 255), -1)
+            cv2.circle(out, (px, py), pr, (0, 140, 240), 1)
 
-    # Draw the primary tracking circle in green
+    # Draw the primary tracking circle with lock brackets
     if best_circle is not None:
         bx, by, br = best_circle["pixel_x"], best_circle["pixel_y"], best_circle["radius"]
-        cv2.circle(out, (bx, by), br, (0, 255, 0), 2)
-        cv2.circle(out, (bx, by), 3, (0, 255, 0), -1)
+        circle_color = (0, 255, 0) if locked else (0, 220, 255)
+        circle_thick = 2 if locked else 1
+
+        cv2.circle(out, (bx, by), br, circle_color, circle_thick)
+        cv2.circle(out, (bx, by), 3, circle_color, -1)
+
+        # Draw lock brackets if locked
+        if locked:
+            b_len = 10
+            pad = 6
+            cv2.line(out, (bx - br - pad, by - br - pad), (bx - br - pad + b_len, by - br - pad), (0, 255, 0), 2)
+            cv2.line(out, (bx - br - pad, by - br - pad), (bx - br - pad, by - br - pad + b_len), (0, 255, 0), 2)
+            cv2.line(out, (bx + br + pad, by - br - pad), (bx + br + pad - b_len, by - br - pad), (0, 255, 0), 2)
+            cv2.line(out, (bx + br + pad, by - br - pad), (bx + br + pad, by - br - pad + b_len), (0, 255, 0), 2)
+            cv2.line(out, (bx - br - pad, by + br + pad), (bx - br - pad + b_len, by + br + pad), (0, 255, 0), 2)
+            cv2.line(out, (bx - br - pad, by + br + pad), (bx - br - pad, by + br + pad - b_len), (0, 255, 0), 2)
+            cv2.line(out, (bx + br + pad, by + br + pad), (bx + br + pad - b_len, by + br + pad), (0, 255, 0), 2)
+            cv2.line(out, (bx + br + pad, by + br + pad), (bx + br + pad, by + br + pad - b_len), (0, 255, 0), 2)
 
     # ── Offset HUD ───────────────────────────────────────────────
     if detecting and best_circle:
+        lock_txt = f"LOCKED: {target_label} ({int(confidence*100)}%)" if locked else f"SCANNING: {target_label}"
+        hud_color = (0, 255, 0) if locked else (0, 220, 255)
         hud_txt = [
-            f"TARGET",
+            lock_txt,
             f"dx: {offset_dx:+.3f} mm",
             f"dy: {offset_dy:+.3f} mm",
         ]
@@ -732,6 +792,30 @@ def api_stop_detect():
     return {"detecting": False}
 
 
+@app.post("/api/set_target")
+async def api_set_target(data: dict = None):
+    """
+    Sets target fiducial design expectations to reject surrounding pads/vias/silkscreen.
+    Body format: { "target_id": "F1", "expected_radius_mm": 0.5, "expected_dx": 0.0, "expected_dy": 0.0 }
+    """
+    data = data or {}
+    with state_lock:
+        shared_state["target_info"] = data
+        shared_state["locked"] = False
+    target_id = data.get("target_id", "FID")
+    print(f"[Vision] Target fiducial armed: {target_id} (exp_r: {data.get('expected_radius_mm', 0.5)}mm)")
+    return JSONResponse({"status": "ok", "target": data})
+
+
+@app.post("/api/clear_target")
+def api_clear_target():
+    """Clears target fiducial expectations back to free search."""
+    with state_lock:
+        shared_state["target_info"] = None
+        shared_state["locked"] = False
+    return JSONResponse({"status": "ok"})
+
+
 @app.get("/api/vision_data")
 def api_vision_data():
     """
@@ -741,6 +825,9 @@ def api_vision_data():
     with state_lock:
         return JSONResponse({
             "detecting":   shared_state["detecting"],
+            "target_info": shared_state.get("target_info"),
+            "locked":      shared_state.get("locked", False),
+            "confidence":  shared_state.get("confidence", 0.0),
             "offset_dx":   shared_state["offset_dx"],   # mm to move X to centre fiducial
             "offset_dy":   shared_state["offset_dy"],   # mm to move Y to centre fiducial
             "sharpness":   shared_state["sharpness"],

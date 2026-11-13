@@ -3,7 +3,8 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const { spawn } = require('child_process');
-const isDev = !app.isPackaged;
+const isProd = app.isPackaged || process.env.NODE_ENV === 'production' || process.argv.includes('--prod');
+const isDev = !isProd;
 const { SerialPort, ReadlineParser } = require('serialport');
 
 // Performance & memory tuning for Raspberry Pi 4 ARM64
@@ -361,7 +362,10 @@ ipcMain.handle('serial:close', async () => {
 ipcMain.handle('serial:write', async (e, data) => {
   if (!serial.port) throw new Error('Not connected');
   return new Promise((resolve, reject) => {
-    serial.port.write(data, (err) => {
+    // Ensure single-byte real-time commands (like \x85 jog-cancel, \x18 soft-reset)
+    // are transmitted as single raw bytes, NOT two-byte UTF-8 sequences (e.g. 0xC2 0x85).
+    const payload = typeof data === 'string' ? Buffer.from(data, 'latin1') : data;
+    serial.port.write(payload, (err) => {
       if (err) reject(err); else resolve(true);
     });
   });
@@ -371,9 +375,9 @@ ipcMain.handle('serial:writeLine', async (e, line) => {
   if (!serial.port) throw new Error('Not connected');
   const sanitized = String(line).trim();
   return new Promise((resolve, reject) => {
-    // GRBL real-time single byte characters (?, !, ~, \x18) MUST NOT be followed by \r\n
-    const isRealTime = sanitized === '?' || sanitized === '!' || sanitized === '~' || sanitized === '\x18';
-    const payload = isRealTime ? sanitized : sanitized + '\r\n';
+    // GRBL real-time single byte characters (?, !, ~, \x18, \x85) MUST NOT be followed by \r\n
+    const isRealTime = sanitized === '?' || sanitized === '!' || sanitized === '~' || sanitized === '\x18' || sanitized === '\x85';
+    const payload = isRealTime ? Buffer.from(sanitized, 'latin1') : sanitized + '\r\n';
     serial.port.write(payload, (err) => {
       if (err) reject(err); else resolve(true);
     });

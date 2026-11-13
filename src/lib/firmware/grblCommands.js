@@ -19,6 +19,8 @@ export const fw = {
   pause:          '!',
   /** Cycle start / resume after feed hold */
   resume:         '~',
+  /** Jog cancel (0x85) — cancels active jog motion with smooth deceleration directly to Idle */
+  jogCancel:      '\x85',
 
   // ── Real-time status query ───────────────────────────────────────────────
   /** Request status report: <Idle|MPos:x,y,z|FS:f,s|...> */
