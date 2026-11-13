@@ -30,7 +30,7 @@ export default function JogPanel({
 
         try {
             let da = {};
-            const feed = axis === "Z" ? zFeedRate : xyFeedRate;
+            const feed = axis === "Z" ? zFeedRate : (axis === "Y" ? Math.min(300, xyFeedRate) : xyFeedRate);
             if (axis === "X") da = { dx: dir * stepSize };
             else if (axis === "Y") da = { dy: dir * stepSize };
             else if (axis === "Z") da = { dz: dir * stepSize };

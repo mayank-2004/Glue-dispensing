@@ -240,7 +240,7 @@ export default function App() {
     if (!confirmed) return;
 
     await window.serial.writeLine(`G90`);
-    await window.serial.writeLine(`G1 X${targetX.toFixed(3)} Y${targetY.toFixed(3)} F400`);
+    await window.serial.writeLine(`G1 X${targetX.toFixed(3)} Y${targetY.toFixed(3)} F500`);
   }, [xf, applyXf, selectedOrigin, pcbOriginOffset]);
 
   // Always-fresh ref so the homing callback (fired from SerialPanel timeout) gets current origin state
@@ -279,7 +279,7 @@ export default function App() {
     if (window.serial?.writeLine) {
       console.log(`[AutoMove] Homing done — moving to PCB origin X${targetX} Y${targetY}`);
       await window.serial.writeLine(`G90`);
-      await window.serial.writeLine(`G1 X${targetX} Y${targetY} F400`);
+      await window.serial.writeLine(`G1 X${targetX} Y${targetY} F500`);
     }
   }, []);
 
@@ -490,9 +490,9 @@ export default function App() {
 
   const [speedSettings, setSpeedSettings] = useState(() => {
     try {
-      return JSON.parse(localStorage.getItem("speedSettings") || '{"autoAdjust": true, "globalMultiplier": 1.0}');
+      return JSON.parse(localStorage.getItem("speedSettings") || '{"autoAdjust": true, "globalMultiplier": 1.0, "travelSpeed": 500}');
     } catch (error) {
-      return { autoAdjust: true, globalMultiplier: 1.0 };
+      return { autoAdjust: true, globalMultiplier: 1.0, travelSpeed: 500 };
     }
   });
 
@@ -2282,7 +2282,7 @@ export default function App() {
                       targetX = pad.x;
                       targetY = pad.y;
                     }
-                    const speed = speedSettings?.travelSpeed || 6000;
+                    const speed = speedSettings?.travelSpeed || 500;
                     await window.serial.writeLine(`G1 X${targetX.toFixed(3)} Y${targetY.toFixed(3)} F${speed}`);
                   }
                 }}
@@ -2336,7 +2336,7 @@ export default function App() {
                         else { toast.error(`Fiducial ${referencePoint.id} has no machine coordinate.`); return; }
                       }
                       if (t && confirm(`Move to X${t.x.toFixed(3)} Y${t.y.toFixed(3)}?`)) {
-                        await window.serial?.writeLine(`G1 X${t.x.toFixed(3)} Y${t.y.toFixed(3)} F${speedSettings?.travelSpeed || 6000}`);
+                        await window.serial?.writeLine(`G1 X${t.x.toFixed(3)} Y${t.y.toFixed(3)} F${speedSettings?.travelSpeed || 500}`);
                       }
                     }}>Move To</button>
                   <button className="btn sm" disabled={!isSerialConnected}

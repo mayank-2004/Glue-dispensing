@@ -3,8 +3,8 @@ import { applyTransform } from '../utils/transform2d.js';
 export class DispensingSequencer {
   constructor() {
     this.safeHeight = 5; // mm above PCB
-    this.travelSpeed = 3000; // mm/min
-    this.dispensingSpeed = 600; // mm/min
+    this.travelSpeed = 500; // mm/min (normal smooth travel speed, no jerking)
+    this.dispensingSpeed = 400; // mm/min
   }
 
   calculateOptimalSequence(referencePoint, pads, config = {}) {

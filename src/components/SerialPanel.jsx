@@ -483,11 +483,11 @@ export default function SerialPanel({
         setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} Y already at switch — recovering and pulling off...`].slice(-500));
         await stopAndRecover('Y');
       } else {
-        setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} Moving Y toward limit switch at 250 mm/min (hard limits active)...`].slice(-500));
+        setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} Moving Y toward limit switch at 180 mm/min (hard limits active)...`].slice(-500));
         activeHomingAxisRef.current = 'Y';
         homingHitDetectedRef.current = false;
         latestGrblStatusRef.current.yTriggered = false;
-        await window.serial.writeLine('$J=G91 Y-2000 F250');
+        await window.serial.writeLine('$J=G91 Y-2000 F180');
         await new Promise(r => setTimeout(r, 80));
 
         const startY = Date.now();
@@ -516,8 +516,8 @@ export default function SerialPanel({
       setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} Pulling off Y 10mm...`].slice(-500));
       await window.serial.writeLine(fw.relMode); // G91
       await new Promise(r => setTimeout(r, 100));
-      await window.serial.writeLine('G1 Y10 F250');
-      await waitForMotionComplete(10, 250, 6000);
+      await window.serial.writeLine('G1 Y10 F200');
+      await waitForMotionComplete(10, 200, 6000);
       await window.serial.writeLine(fw.absMode); // G90
       await new Promise(r => setTimeout(r, 100));
       setConsoleLines(prev => [...prev, `[SYS] ${new Date().toISOString()} Y Axis Homed & Pulled Off 10mm.`].slice(-500));
@@ -541,7 +541,22 @@ export default function SerialPanel({
       // 3. Sync app-side coordinate system immediately with current MPos
       setOriginToCurrent();
 
-      // 4. Return to Absolute Mode and query status
+      // 4. Configure firmware acceleration and max speeds for buttery-smooth motion:
+      // $120=80, $121=50: Smooth acceleration ramping ($121=50 for quiet, resonance-free Y motion)
+      // $110=500, $111=300: Safe max travel rates (Y capped at 300 mm/min to eliminate all Y noise)
+      // $11=0.015: Smooth cornering junction deviation
+      await window.serial.writeLine('$120=80');
+      await new Promise(r => setTimeout(r, 60));
+      await window.serial.writeLine('$121=50');
+      await new Promise(r => setTimeout(r, 60));
+      await window.serial.writeLine('$110=500');
+      await new Promise(r => setTimeout(r, 60));
+      await window.serial.writeLine('$111=300');
+      await new Promise(r => setTimeout(r, 60));
+      await window.serial.writeLine('$11=0.015');
+      await new Promise(r => setTimeout(r, 60));
+
+      // 5. Return to Absolute Mode and query status
       await window.serial.writeLine(fw.absMode); // G90
       await new Promise(r => setTimeout(r, 150));
       if (window.serial?.write) await window.serial.write('?');
@@ -586,6 +601,20 @@ export default function SerialPanel({
 
       // Wait 3.5 seconds for Arduino Mega to boot
       await new Promise(r => setTimeout(r, 3500));
+
+      // Preset smooth motion tuning in GRBL firmware EEPROM
+      try {
+        await window.serial.writeLine('$120=80');
+        await new Promise(r => setTimeout(r, 60));
+        await window.serial.writeLine('$121=50');
+        await new Promise(r => setTimeout(r, 60));
+        await window.serial.writeLine('$110=500');
+        await new Promise(r => setTimeout(r, 60));
+        await window.serial.writeLine('$111=300');
+        await new Promise(r => setTimeout(r, 60));
+        await window.serial.writeLine('$11=0.015');
+        await new Promise(r => setTimeout(r, 60));
+      } catch {}
 
       startWatchdog(25);
 

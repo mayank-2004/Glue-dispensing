@@ -64,12 +64,11 @@ export function jogRel({ dx, dy, dz, dr, feed }, axisMap = defaultAxisMap) {
   if (dr != null && Math.abs(dr) >= 0.001) parts.push(`${axisMap.R}${Number(dr).toFixed(3)}`);
   if (!parts.length) return [];
   const f = feed != null ? ` F${Math.max(1, Math.round(feed))}` : "";
-  // IMPORTANT: G91, G1, and G90 are returned as SEPARATE array elements.
-  // Each element is sent as its own writeLine() call so the firmware serial
-  // parser receives them on separate lines — prevents command merging that
-  // causes sudden uncontrolled motion (jerk), and automatically restores
-  // absolute positioning mode (G90) so subsequent commands are not corrupted.
-  return ['G91', `G1 ${parts.join(" ")}${f}`, 'G90'];
+  // GRBL v1.1+ native real-time jog: $J=G91 G21 X... Y... F...
+  // Atomic, strictly relative, leaves G90 modal parser state untouched, and
+  // completely prevents GRBL from misinterpreting small relative jog values
+  // (e.g. 0.059, 0.005) as absolute coordinates of the home position!
+  return [`$J=G91 G21 ${parts.join(" ")}${f}`];
 }
 
 export function dwell(ms = 50) {

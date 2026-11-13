@@ -451,6 +451,7 @@ export default function CameraPanel({
       // Python mode: camera is managed by Python server. Mount the stream directly.
       setStreamKey(Date.now());
       setStreamOn(true);
+      fetch(`${PYTHON_URL}/api/start_detect`, { method: 'POST' }).catch(() => {});
       return;
     }
     // Browser mode: use getUserMedia
@@ -946,10 +947,22 @@ export default function CameraPanel({
     const curPos = machinePositionRef.current || { x: 0, y: 0 };
     const dist = Math.hypot(camX - curPos.x, camY - curPos.y);
 
+    // SAFETY GUARD: NEVER move towards (0, 0) / home position when navigating to fiducials!
+    // If target camX and camY are near (0, 0) (< 0.1mm) while machine is placed out in the work area (> 10mm),
+    // abort immediately to prevent accidental travel to home!
+    if (Math.hypot(camX, camY) < 0.1 && Math.hypot(curPos.x, curPos.y) > 10.0) {
+      console.warn(`[AutoNavigate] Blocked dangerous move to home position (X:${camX}, Y:${camY}) for fiducial ${targetFid.displayLabel || targetFid.id}`);
+      toast.warning(`Blocked auto-move to (0, 0) / home position for ${targetFid.displayLabel || targetFid.id}.`);
+      return;
+    }
+
     if (dist < 0.8) {
       console.log(`[AutoNavigate] Already within 0.8mm of ${targetFid.displayLabel || targetFid.id}`);
       if (cProps.setFidActiveId && cProps.fidActiveId !== (targetFid.uniqueKey || targetFid.id)) {
         cProps.setFidActiveId(targetFid.uniqueKey || targetFid.id);
+      }
+      if (pythonMode) {
+        startContinuousDetection(true);
       }
       return;
     }
@@ -978,9 +991,20 @@ export default function CameraPanel({
     setAutoSearchStatus(`Moving to ${targetFid.displayLabel || targetFid.id} (${dist.toFixed(1)} mm)...`);
     console.log(`[AutoNavigate] Moving to ${targetFid.displayLabel || targetFid.id} at Machine(X${camX}, Y${camY}), dist: ${dist.toFixed(1)}mm, transit: ~${transitMs}ms`);
 
-    // Temporarily halt Python vision processing during transit to free CPU and prevent false circle locks
+    // Ensure target fiducial expectations are armed and vision detection is active
     if (pythonMode) {
-      fetch(`${PYTHON_URL}/api/stop_detect`, { method: 'POST' }).catch(() => {});
+      const expRadius = (targetFid.size && targetFid.size > 0.2) ? (targetFid.size / 2) : 0.5;
+      fetch(`${PYTHON_URL}/api/set_target`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          target_id: targetFid.displayLabel || targetFid.id,
+          expected_radius_mm: expRadius,
+          expected_dx: 0.0,
+          expected_dy: 0.0
+        })
+      }).catch(() => {});
+      fetch(`${PYTHON_URL}/api/start_detect`, { method: 'POST' }).catch(() => {});
     }
 
     try {
@@ -1035,9 +1059,7 @@ export default function CameraPanel({
         }).catch(() => {});
 
         fetch(`${PYTHON_URL}/api/start_detect`, { method: 'POST' }).catch(() => {});
-        if (!pythonPollRef.current) {
-          startContinuousDetection();
-        }
+        startContinuousDetection(true);
       }
       // Brief 200ms settle for camera image before waking up PyServo
       await new Promise(r => setTimeout(r, 200));
@@ -1084,16 +1106,8 @@ export default function CameraPanel({
       }).catch(() => {});
     }
 
-    if (!detectionInterval) return; // only move automatically when detection is running
-    if (!window.serial?.writeLine) return;
-
-    // If fiducial is already captured, do not re-move
-    if (fid.machine) return;
-
-    if (autoMoveEnabled && !isNavigatingRef.current) {
-      autoNavigateToFiducial(fid);
-    }
-  }, [fidActiveId, detectionInterval, panelXf, autoMoveEnabled, pythonMode]);
+    // Machine does NOT auto-navigate on arming/detecting. Operator controls movements explicitly.
+  }, [fidActiveId, panelXf, pythonMode]);
 
   // --- OVERWRITE HELPER: update a specific slot by ID without advancing the arm dropdown ---
   const overwriteFiducialById = (id, coord) => {
@@ -1194,9 +1208,15 @@ export default function CameraPanel({
       if (nextFid) {
         console.log(`[AutoSequence] Rail fiducial ${targetFid.displayLabel || targetFid.id} saved. Next target: ${nextFid.displayLabel || nextFid.id}`);
         if (autoMoveEnabled) {
-          setTimeout(() => {
-            autoNavigateToFiducial(nextFid, updatedSeq.filter(f => f.machine));
-          }, 300);
+          const solvedList = updatedSeq.filter(f => f.machine);
+          const predicted = predictFidMachinePos(nextFid, solvedList, cProps.panelXf, cProps.xf);
+          if (predicted && Math.hypot(predicted.x, predicted.y) > 0.1) {
+            setTimeout(() => {
+              autoNavigateToFiducial(nextFid, solvedList);
+            }, 300);
+          } else {
+            console.log(`[AutoSequence] Target ${nextFid.displayLabel || nextFid.id} near home (0,0) — remaining at current position.`);
+          }
         }
       } else {
         toast.success("🎉 All panel rail and board fiducials captured!");
@@ -1358,9 +1378,15 @@ export default function CameraPanel({
       if (nextFid) {
         console.log(`[AutoSequence] Board fiducial ${savedFidId} saved. Next target: ${nextFid.displayLabel || nextFid.id}`);
         if (autoMoveEnabled) {
-          setTimeout(() => {
-            autoNavigateToFiducial(nextFid, updatedSeq.filter(f => f.machine));
-          }, 300);
+          const solvedList = updatedSeq.filter(f => f.machine);
+          const predicted = predictFidMachinePos(nextFid, solvedList, cProps.panelXf, cProps.xf);
+          if (predicted && Math.hypot(predicted.x, predicted.y) > 0.1) {
+            setTimeout(() => {
+              autoNavigateToFiducial(nextFid, solvedList);
+            }, 300);
+          } else {
+            console.log(`[AutoSequence] Target ${nextFid.displayLabel || nextFid.id} near home (0,0) — remaining at current position.`);
+          }
         }
       } else {
         toast.success("🎉 All panel rail and board fiducials captured!");
@@ -1380,12 +1406,38 @@ export default function CameraPanel({
     const nextFid = allSeq.find(f => !f.machine) || allSeq[0];
 
     // Ensure continuous detection is active so camera centers and converges automatically
-    if (!detectionInterval) {
-      startContinuousDetection();
-    }
+    startContinuousDetection(true);
 
     toast.info(`Starting auto-alignment sequence at ${nextFid.id}...`);
     await autoNavigateToFiducial(nextFid);
+  };
+
+  const handleStartAutoDetectClick = async () => {
+    if (!streamOn) {
+      toast.warning('Start the camera first!');
+      return;
+    }
+
+    if (detectionInterval) {
+      // Toggle OFF: stop detection loop and reset servo
+      startContinuousDetection();
+      setAutoSearchStatus('');
+      return;
+    }
+
+    // Determine target fiducial (armed fiducial or first uncaptured)
+    const cProps = latestPropsRef.current;
+    const allSeq = getFullFiducialSequence(cProps);
+    const targetFid = allSeq.find(f => (f.uniqueKey || f.id) === fidActiveId) || allSeq.find(f => !f.machine) || allSeq[0];
+
+    // Start continuous detection
+    startContinuousDetection(true);
+
+    // If target fiducial has design coordinates and is not yet captured, automatically navigate machine to it!
+    if (targetFid && targetFid.design) {
+      console.log(`[StartAutoDetect] Moving to fiducial ${targetFid.displayLabel || targetFid.id}...`);
+      await autoNavigateToFiducial(targetFid);
+    }
   };
 
   const handleManualCapturePosition = async () => {
@@ -1469,16 +1521,20 @@ export default function CameraPanel({
   const hasJoggedRef = useRef(false);
 
   // Start continuous fiducial detection — branches on pythonMode
-  const startContinuousDetection = () => {
+  const startContinuousDetection = (forceStart = false) => {
     if (pythonMode) {
       // ── Python Mode ─────────────────────────────────────────────────
       if (!streamOn) { toast.warning('Start the camera first!'); return; }
-      if (detectionInterval) {
+      if (detectionInterval && !forceStart) {
         clearInterval(pythonPollRef.current); pythonPollRef.current = null;
         fetch(`${PYTHON_URL}/api/stop_detect`, { method: 'POST' }).catch(() => { });
         setDetectionInterval(null);
         servoStateRef.current = { phase: 'idle', lockedAt: null };
         return;
+      }
+      if (pythonPollRef.current) {
+        clearInterval(pythonPollRef.current);
+        pythonPollRef.current = null;
       }
       const val = (pixelsPerMm && pixelsPerMm > 40) ? pixelsPerMm : 98.5;
       fetch(`${PYTHON_URL}/api/set_px_per_mm/${val}`, { method: 'POST' }).catch(() => { });
@@ -1554,8 +1610,8 @@ export default function CameraPanel({
           } else {
             // Phase 1: coarse positioning via Hough circle
             if (!data.best_circle) return;
-            // Reject unverified noise or low-confidence circles (vias, text, etc.)
-            if (data.locked === false && (data.confidence || 0) < 0.45) {
+            // Reject unverified noise, ring light reflections or low-confidence circles
+            if (data.locked === false || (data.confidence || 0) < 0.50) {
               return;
             }
             dx = parseFloat(data.offset_dx.toFixed(4));
@@ -2049,7 +2105,7 @@ export default function CameraPanel({
               </button>
               <button
                 className={`btn ${detectionInterval ? 'primary' : ''}`}
-                onClick={startContinuousDetection}
+                onClick={handleStartAutoDetectClick}
                 disabled={!streamOn}
                 style={{ fontSize: '0.85em', padding: '4px 10px' }}
               >

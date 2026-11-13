@@ -33,7 +33,7 @@ CAMERA_INDEX = 1 if os.name == 'nt' else 0  # 1 on Windows (laptop camera=0, USB
 FRAME_WIDTH  = 1280
 FRAME_HEIGHT = 720
 MJPEG_QUALITY = 68 if os.name != 'nt' else 85  # Optimized JPEG quality for Pi 4 CPU
-DETECTION_INTERVAL = 0.25 if os.name != 'nt' else 0.4  # Fast detection response on Pi
+DETECTION_INTERVAL = 0.06  # Real-time 60ms detection response for responsive motion tracking
 
 # Hough Circle parameters — tune these for your fiducial size
 HOUGH_DP          = 1.2
@@ -49,7 +49,7 @@ PX_PER_MM         = 98.5  # Calibrated pixels-per-mm
 # ──────────────────────────────────────────────
 state_lock = threading.Lock()
 shared_state = {
-    "detecting":     False,    # Is active detection enabled?
+    "detecting":     True,     # Always active by default so camera tracks fiducials immediately
     "target_info":   None,     # Optional dict: expected geometry & label for armed fiducial
     "locked":        False,    # True when confirmed fiducial is tracked
     "confidence":    0.0,      # Current detection confidence score (0.0 to 1.0)
@@ -253,6 +253,7 @@ def vision_loop():
     avoid consuming too much CPU during dispensing.
     """
     sticky_best_circle = None
+    lock_decay_frames = 0
 
     while camera_thread_running:
         frame = get_frame()
@@ -299,10 +300,10 @@ def vision_loop():
             exp_dy = float(target_info.get("expected_dy", 0.0)) if target_info else 0.0
             target_label = str(target_info.get("target_id", "FID")) if target_info else "TARGET"
 
-            # Tighten search radius bounds to reject micro-vias (<0.32mm) and oversized pads (>0.85mm)
+            # Dynamic search radius bounds tightly centered around expected fiducial
             eff_px_mm = get_effective_px_per_mm(w)
-            hough_min_r = max(26, int(exp_radius_mm * 0.60 * eff_px_mm))
-            hough_max_r = min(85, int(exp_radius_mm * 1.50 * eff_px_mm))
+            hough_min_r = max(8, int(exp_radius_mm * 0.45 * eff_px_mm))
+            hough_max_r = min(110, int(exp_radius_mm * 1.50 * eff_px_mm))
 
             raw = cv2.HoughCircles(
                 blurred,
@@ -364,49 +365,62 @@ def vision_loop():
                     # CHECK 0: Ring/Donut Pattern — primary through-hole discriminator.
                     # Through-hole: inner_core (drill hole) is much darker than overall core (annular rim).
                     # Fiducial pad: inner_core ≈ core_mean (solid copper, uniform brightness centre-to-edge).
-                    if inner_core_mean < core_mean - 20 and inner_core_mean < 115:
+                    if inner_core_mean < core_mean - 35 and inner_core_mean < 80:
                         continue  # Ring pattern: through-hole (dark drill centre, bright annular rim)
 
-                    # CHECK 1: The "Flatness" Rule (Rejects Vias)
-                    # A via hole has depth. It casts a dark shadow (Boundary), and is surrounded
-                    # by a bright copper pad (Outer). If Outer is brighter than Boundary, it's a Via!
-                    # A real fiducial is flat, so brightness only decreases as you move outwards.
-                    if outer_mean > boundary_mean + 15:
+                    # CHECK 1: The "Flatness" Rule (Rejects deep vias)
+                    # Relaxed to +40 so real PCBs with light green/white mask or illumination glare are not rejected
+                    if outer_mean > boundary_mean + 40:
                         continue
 
                     # CHECK 2: Solder Mask Rule
-                    # A true fiducial MUST be isolated on dark solder mask.
-                    if outer_mean > 160:
+                    # Relaxed to 220 to prevent rejecting boards under strong illumination
+                    if outer_mean > 220:
                         continue
 
-                    # CHECK 3: Core Brightness — lowered to 70 to allow for dimmer/smaller fiducials
-                    # that may appear darker due to camera auto-exposure favouring bright through-holes.
-                    if core_mean < 70:
+                    # CHECK 3: Core Brightness — lowered to 40 to allow for dimmer/smaller fiducials
+                    if core_mean < 40:
                         continue
 
-                    # CHECK 4: Strict Physical Size Constraint
-                    # Standard PCB fiducials are ~1.0mm diameter (0.5mm radius).
-                    # Reject microscopic vias/through-holes and oversized pads.
+                    # CHECK 4: Physical Size Constraint
+                    # Standard PCB fiducials are ~0.2mm to 1.2mm radius.
                     radius_mm = pr / eff_px_mm
-                    min_allow_r = max(0.32, exp_radius_mm * 0.65)
-                    max_allow_r = min(0.85, exp_radius_mm * 1.45)
+                    min_allow_r = max(0.20, exp_radius_mm * 0.45)
+                    max_allow_r = min(1.20, exp_radius_mm * 1.50)
                     if radius_mm < min_allow_r or radius_mm > max_allow_r:
                         continue
 
-                    # CHECK 5: Isolation Contrast Check
-                    # True fiducials must be isolated in a solder-mask clearance ring
+                    # CHECK 5: Isolation Contrast Check — fiducial pad must contrast with boundary
                     isolation_contrast = core_mean - boundary_mean
-                    if isolation_contrast < 18:
+                    if isolation_contrast < 10:
                         continue
+
+                    # CHECK 6: Solder Mask Glare & Ring Light Reflection Rejection
+                    # Rule A: Specular wash out — diffuse ring light reflections have extreme core glare AND bright boundary
+                    if core_mean > 195 and boundary_mean > 140:
+                        continue  # Saturated specular reflection / halo
+
+                    # Rule B: Green Dominance (Ring light reflecting on green solder mask)
+                    # Real fiducials are metallic (tin/lead-free/copper/gold) with balanced RGB or gold/copper hue.
+                    # Light reflecting on green solder mask has green channel overwhelmingly dominant over (R+B)/2.
+                    if 0 <= px < w and 0 <= py < h:
+                        c_box = max(2, int(pr * 0.45))
+                        c_x1, c_y1 = max(0, px - c_box), max(0, py - c_box)
+                        c_x2, c_y2 = min(w, px + c_box), min(h, py + c_box)
+                        c_patch = frame[c_y1:c_y2, c_x1:c_x2]
+                        if c_patch.size > 0:
+                            b_c, g_c, r_c = cv2.mean(c_patch)[:3]
+                            green_dom = g_c - (r_c + b_c) / 2.0
+                            if green_dom > 12.0 and core_mean > 140:
+                                continue  # Glare reflection on green solder mask
 
                     # --- Filter 2: Solid Fill Check (Rejects False Geometries) ---
                     # Bumpy, shiny solder has extreme bright spots (255) and dark shadows (120).
-                    # We use Otsu's method to automatically find the perfect split between the
-                    # silver metal foreground and the dark green board background.
+                    # We use Otsu's method to automatically find the split between foreground and background.
                     blurred_roi = cv2.GaussianBlur(roi, (5, 5), 0)
                     _, thresh = cv2.threshold(blurred_roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-                    # Create a perfect circular mask for the detected area
+                    # Create a circular mask for the detected area
                     mask = np.zeros_like(roi)
                     cv2.circle(mask, (roi_cx, roi_cy), pr, 255, -1)
 
@@ -415,8 +429,8 @@ def vision_loop():
                     fill_count = cv2.countNonZero(filled_pixels)
                     expected_area = np.pi * (pr * pr)
 
-                    # A solid fiducial is mostly filled. A through-hole is hollow (e.g. 40-50% filled).
-                    if expected_area == 0 or (fill_count / expected_area) < 0.65:
+                    # Relaxed to 0.40 to allow for shiny solder reflections and highlight washouts
+                    if expected_area == 0 or (fill_count / expected_area) < 0.40:
                         continue  # Reject hollow through-holes
 
                     # --- Filter 2: Strict Circularity Check (Rejects Trace Pads / Lollipops) ---
@@ -441,10 +455,9 @@ def vision_loop():
                     perimeter = cv2.arcLength(best_cnt, True)
                     if perimeter == 0 or area == 0: continue
 
-                    # Relaxed slightly to 0.65 to allow for jagged edges caused by solder bumps
                     circularity = (4 * np.pi * area) / (perimeter * perimeter)
-                    if circularity < 0.65:
-                        continue  # Reject trace pads (they have a tail, ruining circularity)
+                    if circularity < 0.50:
+                        continue  # Reject non-circular shapes and trace pads
                             
                     dx_px = px - cx
                     dy_px = cy - py  # Invert Y: camera Y down → machine Y up
@@ -454,16 +467,16 @@ def vision_loop():
                     # --- COMPOSITE FIDUCIAL CONFIDENCE SCORING ---
                     # 1. Size match score
                     size_err = abs(radius_mm - exp_radius_mm) / exp_radius_mm
-                    size_score = max(0.0, 1.0 - (size_err * 2.2))
+                    size_score = max(0.0, 1.0 - (size_err * 2.0))
                     # 2. Circularity score
-                    circ_score = max(0.0, min(1.0, (circularity - 0.60) / 0.40))
+                    circ_score = max(0.0, min(1.0, (circularity - 0.50) / 0.50))
                     # 3. Isolation contrast score
-                    contrast_score = max(0.0, min(1.0, isolation_contrast / 75.0))
-                    # 4. Proximity to expected design position
-                    dist_from_exp = np.hypot(dx_mm - exp_dx, dy_mm - exp_dy)
-                    prox_score = max(0.0, 1.0 - (dist_from_exp / 4.0))
+                    contrast_score = max(0.0, min(1.0, max(0.0, isolation_contrast) / 50.0))
+                    # 4. Proximity to crosshair / expected position
+                    dist_from_cross = np.hypot(dx_mm, dy_mm)
+                    prox_score = max(0.0, 1.0 - (dist_from_cross / 12.0))
 
-                    conf = round(float((size_score * 0.35) + (circ_score * 0.25) + (contrast_score * 0.20) + (prox_score * 0.20)), 3)
+                    conf = round(float((size_score * 0.40) + (circ_score * 0.30) + (contrast_score * 0.20) + (prox_score * 0.10)), 3)
 
                     detected_circles.append({
                         "pixel_x": int(px), "pixel_y": int(py), "radius": int(pr),
@@ -473,16 +486,31 @@ def vision_loop():
                     })
 
                 if detected_circles:
-                    # Best circle = candidate with highest fiducial confidence score
-                    current_best = max(detected_circles, key=lambda c: c["confidence"])
-                    is_locked = current_best["confidence"] >= 0.48
+                    lock_decay_frames = 0
+                    best_candidate = max(detected_circles, key=lambda c: c["confidence"])
+                    if sticky_best_circle is not None:
+                        nearby = [c for c in detected_circles if np.hypot(c["pixel_x"] - sticky_best_circle["pixel_x"],
+                                                                         c["pixel_y"] - sticky_best_circle["pixel_y"]) < 60.0]
+                        if nearby:
+                            local_best = max(nearby, key=lambda c: c["confidence"])
+                            if best_candidate["confidence"] > local_best["confidence"] + 0.15:
+                                current_best = best_candidate
+                            else:
+                                current_best = local_best
+                        else:
+                            current_best = best_candidate
+                    else:
+                        current_best = best_candidate
 
-                    # --- ANTI-JITTER EMA FILTER & TARGET LOCK ---
+                    is_locked = current_best["confidence"] >= 0.55
+
+                    # --- ANTI-JITTER & INSTANT MOTION TRACKING ---
                     if sticky_best_circle is not None:
                         dist = np.hypot(current_best["pixel_x"] - sticky_best_circle["pixel_x"],
                                         current_best["pixel_y"] - sticky_best_circle["pixel_y"])
-                        if dist < 28.0:
-                            alpha = 0.55
+                        if dist < 3.0:
+                            # Subtle subpixel smoothing only when stationary (prevents jitter)
+                            alpha = 0.85
                             best_circle = {
                                 "pixel_x": int(alpha * current_best["pixel_x"] + (1 - alpha) * sticky_best_circle["pixel_x"]),
                                 "pixel_y": int(alpha * current_best["pixel_y"] + (1 - alpha) * sticky_best_circle["pixel_y"]),
@@ -496,6 +524,7 @@ def vision_loop():
                             best_circle["offset_dx"] = round(dx_px / eff_px_mm, 4)
                             best_circle["offset_dy"] = round(dy_px / eff_px_mm, 4)
                         else:
+                            # Direct 100% instantaneous tracking when machine moves (no lag, no shift!)
                             best_circle = {**current_best, "locked": is_locked, "target_label": target_label}
                     else:
                         best_circle = {**current_best, "locked": is_locked, "target_label": target_label}
@@ -505,8 +534,17 @@ def vision_loop():
                     offset_dy = best_circle["offset_dy"]
                     locked_state = is_locked
                     conf_state = best_circle["confidence"]
+                elif sticky_best_circle is not None and lock_decay_frames < 6:
+                    # Bridge over brief motion-blur frames while machine is physically moving
+                    lock_decay_frames += 1
+                    best_circle = sticky_best_circle
+                    offset_dx = best_circle["offset_dx"]
+                    offset_dy = best_circle["offset_dy"]
+                    locked_state = is_locked
+                    conf_state = best_circle.get("confidence", 0.7)
                 else:
                     sticky_best_circle = None
+                    lock_decay_frames = 0
                     locked_state = False
                     conf_state = 0.0
 
@@ -556,6 +594,69 @@ def annotate_frame(frame: np.ndarray) -> np.ndarray:
 
     target_label = target_info.get("target_id", "FID") if target_info else "TARGET"
 
+    # ── High-Speed Per-Frame Target Lock ──────────────────────────
+    # Locks the green overlay directly onto the physical fiducial on EVERY video frame,
+    # completely eliminating any shifting, lagging, or detachment while the machine moves.
+    if detecting and best_circle is not None:
+        last_x = best_circle["pixel_x"]
+        last_y = best_circle["pixel_y"]
+        pr = best_circle.get("radius", 20)
+
+        # Fast local search window around the fiducial
+        margin = max(45, int(pr * 2.5))
+        x1 = max(0, last_x - margin)
+        y1 = max(0, last_y - margin)
+        x2 = min(w, last_x + margin)
+        y2 = min(h, last_y + margin)
+
+        if x2 - x1 > 20 and y2 - y1 > 20:
+            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            roi = gray_frame[y1:y2, x1:x2]
+            blurred_roi = cv2.GaussianBlur(roi, (5, 5), 0)
+            _, thresh = cv2.threshold(blurred_roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            roi_last_cx = last_x - x1
+            roi_last_cy = last_y - y1
+            best_cnt = None
+            best_score = float('inf')
+            expected_area = np.pi * (pr * pr)
+
+            for cnt in contours:
+                M = cv2.moments(cnt)
+                if M["m00"] == 0: continue
+                cx_cnt = int(M["m10"] / M["m00"])
+                cy_cnt = int(M["m01"] / M["m00"])
+                area = cv2.contourArea(cnt)
+                dist = np.hypot(cx_cnt - roi_last_cx, cy_cnt - roi_last_cy)
+                size_ratio = area / max(1.0, expected_area)
+                if 0.35 <= size_ratio <= 2.2:
+                    score = dist + abs(size_ratio - 1.0) * 20.0
+                    if score < best_score:
+                        best_score = score
+                        best_cnt = cnt
+
+            if best_cnt is not None:
+                M = cv2.moments(best_cnt)
+                tracked_x = int(round(x1 + M["m10"] / M["m00"]))
+                tracked_y = int(round(y1 + M["m01"] / M["m00"]))
+
+                # Update best_circle coordinates instantaneously to lock with this frame
+                best_circle["pixel_x"] = tracked_x
+                best_circle["pixel_y"] = tracked_y
+                eff_px_mm = get_effective_px_per_mm(w)
+                dx_px = tracked_x - cx
+                dy_px = cy - tracked_y
+                offset_dx = round(dx_px / eff_px_mm, 4)
+                offset_dy = round(dy_px / eff_px_mm, 4)
+                best_circle["offset_dx"] = offset_dx
+                best_circle["offset_dy"] = offset_dy
+
+                with state_lock:
+                    shared_state["best_circle"] = best_circle
+                    shared_state["offset_dx"]   = offset_dx
+                    shared_state["offset_dy"]   = offset_dy
+
     # ── Detected Circles ──────────────────────────────────────────
     # Draw all alternative raw circles in faint orange
     for c in circles:
@@ -568,29 +669,28 @@ def annotate_frame(frame: np.ndarray) -> np.ndarray:
     # Draw the primary tracking circle with lock brackets
     if best_circle is not None:
         bx, by, br = best_circle["pixel_x"], best_circle["pixel_y"], best_circle["radius"]
-        circle_color = (0, 255, 0) if locked else (0, 220, 255)
-        circle_thick = 2 if locked else 1
+        circle_color = (0, 255, 0)
+        circle_thick = 2
 
         cv2.circle(out, (bx, by), br, circle_color, circle_thick)
         cv2.circle(out, (bx, by), 3, circle_color, -1)
 
-        # Draw lock brackets if locked
-        if locked:
-            b_len = 10
-            pad = 6
-            cv2.line(out, (bx - br - pad, by - br - pad), (bx - br - pad + b_len, by - br - pad), (0, 255, 0), 2)
-            cv2.line(out, (bx - br - pad, by - br - pad), (bx - br - pad, by - br - pad + b_len), (0, 255, 0), 2)
-            cv2.line(out, (bx + br + pad, by - br - pad), (bx + br + pad - b_len, by - br - pad), (0, 255, 0), 2)
-            cv2.line(out, (bx + br + pad, by - br - pad), (bx + br + pad, by - br - pad + b_len), (0, 255, 0), 2)
-            cv2.line(out, (bx - br - pad, by + br + pad), (bx - br - pad + b_len, by + br + pad), (0, 255, 0), 2)
-            cv2.line(out, (bx - br - pad, by + br + pad), (bx - br - pad, by + br + pad - b_len), (0, 255, 0), 2)
-            cv2.line(out, (bx + br + pad, by + br + pad), (bx + br + pad - b_len, by + br + pad), (0, 255, 0), 2)
-            cv2.line(out, (bx + br + pad, by + br + pad), (bx + br + pad, by + br + pad - b_len), (0, 255, 0), 2)
+        # Draw lock brackets (cyan during tracking, bright green when locked)
+        b_len = 10
+        pad = 6
+        bracket_color = (0, 255, 0) if locked else (0, 220, 255)
+        cv2.line(out, (bx - br - pad, by - br - pad), (bx - br - pad + b_len, by - br - pad), bracket_color, 2)
+        cv2.line(out, (bx - br - pad, by - br - pad), (bx - br - pad, by - br - pad + b_len), bracket_color, 2)
+        cv2.line(out, (bx + br + pad, by - br - pad), (bx + br + pad - b_len, by - br - pad), bracket_color, 2)
+        cv2.line(out, (bx + br + pad, by - br - pad), (bx + br + pad, by - br - pad + b_len), bracket_color, 2)
+        cv2.line(out, (bx - br - pad, by + br + pad), (bx - br - pad + b_len, by + br + pad), bracket_color, 2)
+        cv2.line(out, (bx - br - pad, by + br + pad), (bx - br - pad, by + br + pad - b_len), bracket_color, 2)
+        cv2.line(out, (bx + br + pad, by + br + pad), (bx + br + pad - b_len, by + br + pad), bracket_color, 2)
+        cv2.line(out, (bx + br + pad, by + br + pad), (bx + br + pad, by + br + pad - b_len), bracket_color, 2)
 
     # ── Offset HUD ───────────────────────────────────────────────
     if detecting and best_circle:
-        lock_txt = f"LOCKED: {target_label} ({int(confidence*100)}%)" if locked else f"SCANNING: {target_label}"
-        hud_color = (0, 255, 0) if locked else (0, 220, 255)
+        lock_txt = f"LOCKED: {target_label} ({int(confidence*100)}%)" if locked else f"TRACKING: {target_label} ({int(confidence*100)}%)"
         hud_txt = [
             lock_txt,
             f"dx: {offset_dx:+.3f} mm",

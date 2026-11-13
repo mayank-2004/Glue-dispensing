@@ -121,8 +121,8 @@ export class SafePathPlanner {
 
       // Execute each path segment (Lift, Travel, Lower)
       pad.safePath.segments.forEach(segment => {
-        const defaultTravelFeed = settings.travelFeed || 1200;
-        const defaultPlungeFeed = settings.plungeFeed || 600;
+        const defaultTravelFeed = settings.travelFeed || 500;
+        const defaultPlungeFeed = settings.plungeFeed || 400;
         const speed = segment.type === 'travel' ? defaultTravelFeed : defaultPlungeFeed;
 
         // Transform the end point (target) of the segment
